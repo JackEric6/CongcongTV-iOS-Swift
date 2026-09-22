@@ -1,0 +1,16 @@
+{
+  "sites": [
+    {
+      "key": "kktvs",
+      "name": "KKT影视",
+      "type": 1,
+      "api": "https://www.kktvs.com/api.php/provide/vod",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 0,
+      "timeout": 20,
+      "icon": "https://www.kktvs.com/favicon.ico"
+    }
+  ]
+}

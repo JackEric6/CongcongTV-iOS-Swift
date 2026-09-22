@@ -1,0 +1,49 @@
+name: CongcongTV
+
+options:
+  bundleIdPrefix: com.congcong
+  xcodeVersion: "15.0"
+  minimumXcodeGenVersion: "2.35"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CODE_SIGN_STYLE: Automatic
+
+packages:
+  VLCKitSPM:
+    url: https://github.com/tylerjonesio/vlckit-spm
+    from: 3.6.0
+
+targets:
+  CongcongTV:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    dependencies:
+      - package: VLCKitSPM
+        product: VLCKitSPM
+    sources:
+      - path: tvbox
+        excludes:
+          - Info.plist
+          - Resources/movie2_kktvs.json
+      - path: tvbox/Resources/movie2_kktvs.json
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.congcong.tv.ios
+        PRODUCT_NAME: CongcongTV
+        INFOPLIST_FILE: tvbox/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "1.0.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1,2"
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"

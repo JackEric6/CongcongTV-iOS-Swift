@@ -1,0 +1,52 @@
+name: Build CongcongTV iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "tvbox/**"
+      - "project.yml"
+      - ".github/workflows/build-ios.yml"
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build unsigned app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project CongcongTV.xcodeproj \
+            -scheme CongcongTV \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM= \
+            | tee build.log
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p ipa/Payload
+          cp -R build/Build/Products/Release-iphoneos/CongcongTV.app ipa/Payload/
+          cd ipa
+          zip -qry ../CongcongTV-unsigned.ipa Payload
+
+      - name: Upload IPA and build log
+        uses: actions/upload-artifact@v4
+        with:
+          name: CongcongTV-unsigned-ipa
+          path: |
+            CongcongTV-unsigned.ipa
+            build.log

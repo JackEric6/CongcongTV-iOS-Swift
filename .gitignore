@@ -1,0 +1,17 @@
+.DS_Store
+/.build
+/Packages
+xcuserdata/
+DerivedData/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
+/build
+TVBox-*.dmg
+*.py
+/IOS-key
+/TVBox.ipa
+/ExportOptions.plist
+.kiro
+package_ios.sh
+image_cache
