@@ -1,14 +1,17 @@
 import Foundation
 
 @main
-struct KktvsNormalizerSmokeTest {
+struct CmsNormalizerSmokeTest {
     static func main() throws {
         let legacyAPI = "http://127.0.0.1:9978/kktvs?source=https%3A%2F%2Fwww.kktvs.com%2Fapi.php%2Fprovide%2Fvod"
         let directAPI = KktvsResponseNormalizer.normalizeSourceAPI(legacyAPI, sourceKey: "kktvs")
         precondition(directAPI == "https://www.kktvs.com/api.php/provide/vod", "legacy localhost API was not rewritten")
         precondition(
-            KktvsResponseNormalizer.normalizeSourceAPI(legacyAPI, sourceKey: "other") == legacyAPI,
-            "unrelated sources must not be rewritten"
+            KktvsResponseNormalizer.normalizeSourceAPI(
+                "http://127.0.0.1:9978/xgzy?source=https%3A%2F%2Fcaiji.xgzyapi.com%2Fapi.php%2Fprovide%2Fvod%2Ffrom%2Fxiguam3u8%2F",
+                sourceKey: "xgzy"
+            ) == "https://caiji.xgzyapi.com/api.php/provide/vod/from/xiguam3u8/",
+            "xgzy localhost API was not rewritten"
         )
 
         let input = #"{"list":[{"vod_play_from":"2mplayer$$$hxplayer","vod_play_url":"01$https://www.kktvs.com/vod/?url=https%3A%2F%2Fmedia.test%2Ftwo.mp4$$$01$//media.test/one.m3u8","vod_play_server":"two$$$hls"}]}"#
@@ -33,6 +36,6 @@ struct KktvsNormalizerSmokeTest {
             "player page media URL extraction failed"
         )
 
-        print("KKT NORMALIZER SMOKE TESTS PASSED")
+        print("CMS NORMALIZER SMOKE TESTS PASSED")
     }
 }

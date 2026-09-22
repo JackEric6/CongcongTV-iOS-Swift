@@ -5,7 +5,7 @@ import Combine
 enum CongcongBrand {
     static let appName = "丛丛影视"
     static let credit = "Made By 丛丛"
-    static let defaultConfigURL = "https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/main/movie2_kktvs"
+    static let defaultConfigURL = "https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/xgzy-config-20260922/movie2_xgzy"
 }
 
 /// 应用入口。

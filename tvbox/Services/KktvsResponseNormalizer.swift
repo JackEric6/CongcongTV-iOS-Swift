@@ -1,6 +1,6 @@
 import Foundation
 
-/// 对 movie2_kktvs 对应的 KKT影视 CMS 响应做轻量整理。
+/// 对 TVBox CMS 响应和旧本机代理地址做轻量整理。
 ///
 /// KKT影视部分历史数据会把播放器页、真实媒体地址和多集地址混在同一组
 /// `vod_play_url` 中。这里保持 TVBox 的字段格式，只调整线路优先级并解开
@@ -30,10 +30,9 @@ enum KktvsResponseNormalizer {
         return normalized
     }
 
-    /// 远程 movie2_kktvs 仍包含旧 Android 本地代理地址；iOS 端直接访问其 source 参数中的 CMS API。
+    /// 部分 Android 配置仍包含旧本机代理地址；iOS 端直接访问其 source 参数中的 CMS API。
     static func normalizeSourceAPI(_ value: String, sourceKey: String) -> String {
-        guard sourceKey.caseInsensitiveCompare("kktvs") == .orderedSame,
-              let components = URLComponents(string: value),
+        guard let components = URLComponents(string: value),
               let host = components.host?.lowercased(),
               ["127.0.0.1", "localhost", "::1"].contains(host),
               let source = components.queryItems?.first(where: {

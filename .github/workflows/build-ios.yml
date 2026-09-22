@@ -1,4 +1,4 @@
-name: Build CongcongTV iOS IPA
+name: Build CongcongTV iOS IPA (XGZY)
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
-      - name: Verify KKT compatibility
+      - name: Verify CMS compatibility
         run: |
           mkdir -p build
           swiftc -parse-as-library \
@@ -53,10 +53,14 @@ jobs:
           import plistlib
           from pathlib import Path
 
+          expected_default_url = "https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/xgzy-config-20260922/movie2_xgzy"
+          app_source = Path("tvbox/tvboxApp.swift").read_text(encoding="utf-8")
+          assert expected_default_url in app_source
+
           app = Path("build/Build/Products/Release-iphoneos/CongcongTV.app")
           with (app / "Info.plist").open("rb") as stream:
               info = plistlib.load(stream)
-          assert info["CFBundleIdentifier"] == "com.congcong.tv.ios"
+          assert info["CFBundleIdentifier"] == "com.congcong.tv.xgzy"
           assert info["CFBundleExecutable"] == "CongcongTV"
           assert info["CFBundlePackageType"] == "APPL"
           assert info["CFBundleDisplayName"] == "丛丛影视"
