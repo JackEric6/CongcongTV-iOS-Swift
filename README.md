@@ -7,6 +7,7 @@
 - 只保留 iOS App target，最低系统版本为 iOS 17。
 - 默认配置为 `movie2_kktvs`：
   `https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/main/movie2_kktvs`
+- 该远程文件仍可能含 Android `127.0.0.1` 本地代理地址；iOS 会将 KKT影视源的 loopback `source` 参数转换为直连 CMS API，不依赖本地 Gateway。
 - 关于页显示 `Made By 丛丛`。
 - 保留 SwiftUI、SwiftData、AVPlayer 和 VLCKit 播放能力。
 - 已移植本地 KKT影视适配逻辑：`vod_play_from`、`vod_play_url`、`$$$` 多线路、`#` 多集、`hxplayer`/`2mplayer` 以及播放器页中的直接媒体地址提取。

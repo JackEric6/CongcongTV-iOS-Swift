@@ -30,6 +30,23 @@ enum KktvsResponseNormalizer {
         return normalized
     }
 
+    /// 远程 movie2_kktvs 仍包含旧 Android 本地代理地址；iOS 端直接访问其 source 参数中的 CMS API。
+    static func normalizeSourceAPI(_ value: String, sourceKey: String) -> String {
+        guard sourceKey.caseInsensitiveCompare("kktvs") == .orderedSame,
+              let components = URLComponents(string: value),
+              let host = components.host?.lowercased(),
+              ["127.0.0.1", "localhost", "::1"].contains(host),
+              let source = components.queryItems?.first(where: {
+                  $0.name.caseInsensitiveCompare("source") == .orderedSame
+              })?.value,
+              let sourceComponents = URLComponents(string: source),
+              ["http", "https"].contains(sourceComponents.scheme?.lowercased() ?? ""),
+              sourceComponents.host != nil else {
+            return value
+        }
+        return source
+    }
+
     /// 供播放前使用：先处理协议相对地址和播放器页查询参数。
     static func normalizeMediaURL(_ value: String) -> String {
         var url = unescape(value.trimmingCharacters(in: .whitespacesAndNewlines))

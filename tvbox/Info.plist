@@ -5,7 +5,9 @@
     <key>CFBundleDisplayName</key>
     <string>丛丛影视</string>
     <key>CFBundleName</key>
-    <string>CongcongTV</string>
+    <string>丛丛影视</string>
+    <key>UILaunchScreen</key>
+    <dict/>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

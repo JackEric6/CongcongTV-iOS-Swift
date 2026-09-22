@@ -583,7 +583,10 @@ class ApiConfig: ObservableObject {
                     let bean = SourceBean(
                         key: site.key ?? UUID().uuidString,
                         name: site.name ?? "未命名",
-                        api: site.api ?? "",
+                        api: KktvsResponseNormalizer.normalizeSourceAPI(
+                            site.api ?? "",
+                            sourceKey: site.key ?? ""
+                        ),
                         searchable: site.searchable?.value ?? 1,
                         filterable: site.filterable?.value ?? 1,
                         quickSearch: site.quickSearch?.value ?? 0,

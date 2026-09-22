@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - "tvbox/**"
+      - "scripts/**"
       - "project.yml"
       - ".github/workflows/build-ios.yml"
 
@@ -21,6 +22,15 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
+      - name: Verify KKT compatibility
+        run: |
+          mkdir -p build
+          swiftc -parse-as-library \
+            -o build/verify-kktvs-normalizer \
+            tvbox/Services/KktvsResponseNormalizer.swift \
+            scripts/verify-kktvs-normalizer.swift
+          build/verify-kktvs-normalizer
+
       - name: Build unsigned app
         run: |
           set -o pipefail
@@ -35,6 +45,29 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM= \
             | tee build.log
+
+      - name: Verify built app metadata and config
+        run: |
+          python3 - <<'PY'
+          import json
+          import plistlib
+          from pathlib import Path
+
+          app = Path("build/Build/Products/Release-iphoneos/CongcongTV.app")
+          with (app / "Info.plist").open("rb") as stream:
+              info = plistlib.load(stream)
+          assert info["CFBundleIdentifier"] == "com.congcong.tv.ios"
+          assert info["CFBundleExecutable"] == "CongcongTV"
+          assert info["CFBundlePackageType"] == "APPL"
+          assert info["CFBundleDisplayName"] == "丛丛影视"
+          assert info["MinimumOSVersion"] == "17.0"
+          assert (app / info["CFBundleExecutable"]).is_file()
+          with (app / "movie2_kktvs.json").open(encoding="utf-8") as stream:
+              config = json.load(stream)
+          site = next(site for site in config["sites"] if site["key"] == "kktvs")
+          assert site["api"] == "https://www.kktvs.com/api.php/provide/vod"
+          print("APP METADATA AND CONFIG RESOURCE CHECKS PASSED")
+          PY
 
       - name: Package unsigned IPA
         run: |
