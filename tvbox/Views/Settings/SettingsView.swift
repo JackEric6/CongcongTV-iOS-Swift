@@ -4,19 +4,16 @@ import SwiftUI
 struct SettingsView: View {
     enum ApiInputType {
         case vod
-        case live
         
         var title: String {
             switch self {
             case .vod: return "点播接口地址"
-            case .live: return "直播接口地址"
             }
         }
         
         var placeholder: String {
             switch self {
             case .vod: return "请输入点播接口地址"
-            case .live: return "请输入直播接口地址（可留空跟随点播）"
             }
         }
     }
@@ -33,7 +30,6 @@ struct SettingsView: View {
     enum PickerType {
         case none
         case vodPlayer
-        case livePlayer
         case decode
         case vlcBuffer
         case playTimeStep
@@ -51,15 +47,6 @@ struct SettingsView: View {
                             value: viewModel.vodApiUrl.isEmpty ? "未配置" : viewModel.vodApiUrl
                         ) {
                             editingApiType = .vod
-                            showApiInput = true
-                        }
-                        Divider().background(Color.white.opacity(0.1))
-                        SettingsRow(
-                            icon: "tv",
-                            title: "直播接口地址",
-                            value: viewModel.liveApiUrl.isEmpty ? "跟随点播接口" : viewModel.liveApiUrl
-                        ) {
-                            editingApiType = .live
                             showApiInput = true
                         }
                         Divider().background(Color.white.opacity(0.1))
@@ -83,12 +70,6 @@ struct SettingsView: View {
                             }
                         }
                         #endif
-                        Divider().background(Color.white.opacity(0.1))
-                        SettingsRow(icon: "dot.radiowaves.left.and.right", title: "直播播放器", value: viewModel.livePlayerEngine.title) {
-                            if viewModel.playerEngineOptions.count > 1 {
-                                showingPicker = .livePlayer
-                            }
-                        }
                         Divider().background(Color.white.opacity(0.1))
                         SettingsRow(icon: "cpu", title: "视频解码", value: viewModel.decodeMode.title) {
                             showingPicker = .decode
@@ -138,8 +119,6 @@ struct SettingsView: View {
                         SettingsRow(icon: "globe", title: "站点数量", value: "\(apiConfig.sourceBeanList.count)", action: nil)
                         Divider().background(Color.white.opacity(0.1))
                         SettingsRow(icon: "wand.and.stars", title: "解析数量", value: "\(apiConfig.parseBeanList.count)", action: nil)
-                        Divider().background(Color.white.opacity(0.1))
-                        SettingsRow(icon: "tv", title: "直播分组", value: "\(apiConfig.liveChannelGroupList.count)", action: nil)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -181,19 +160,6 @@ struct SettingsView: View {
             #else
             EmptyView()
             #endif
-        case .livePlayer:
-            SelectionModal(
-                title: "选择直播播放器",
-                icon: "dot.radiowaves.left.and.right",
-                items: viewModel.playerEngineOptions,
-                selectedItem: viewModel.livePlayerEngine,
-                itemTitle: { $0.title },
-                onSelect: { engine in
-                    viewModel.setLivePlayerEngine(engine)
-                    showingPicker = .none
-                },
-                onCancel: { showingPicker = .none }
-            )
         case .decode:
             SelectionModal(
                 title: "视频解码模式",
@@ -382,8 +348,6 @@ struct SettingsView: View {
         switch editingApiType {
         case .vod:
             return $viewModel.vodApiUrl
-        case .live:
-            return $viewModel.liveApiUrl
         }
     }
     

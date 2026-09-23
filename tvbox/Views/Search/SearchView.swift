@@ -22,43 +22,41 @@ struct SearchView: View {
     #endif
     
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                // 搜索栏
-                searchBar
-                
-                // 内容
-                if viewModel.isSearching {
-                    Spacer()
-                    ProgressView("搜索中...")
-                        .tint(.orange)
-                    Spacer()
-                } else if !viewModel.results.isEmpty {
-                    searchResults
-                } else if viewModel.keyword.isEmpty {
-                    // 输入为空时显示历史；输入非空但无结果时显示提示文案。
-                    searchHistorySection
-                } else if let error = viewModel.errorMessage {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.largeTitle)
-                            .foregroundColor(.gray)
-                        Text(error)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
+        VStack(spacing: 0) {
+            // 搜索栏
+            searchBar
+
+            // 内容
+            if viewModel.isSearching {
+                Spacer()
+                ProgressView("搜索中...")
+                    .tint(.orange)
+                Spacer()
+            } else if !viewModel.results.isEmpty {
+                searchResults
+            } else if viewModel.keyword.isEmpty {
+                // 输入为空时显示历史；输入非空但无结果时显示提示文案。
+                searchHistorySection
+            } else if let error = viewModel.errorMessage {
+                Spacer()
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.largeTitle)
+                        .foregroundColor(.gray)
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
                 }
+                Spacer()
             }
-            .background(Color(red: 0.08, green: 0.08, blue: 0.1))
-            .navigationTitle("搜索")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .task {
-                await loadTrending()
-            }
+        }
+        .background(Color(red: 0.08, green: 0.08, blue: 0.1))
+        .navigationTitle("搜索")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .task {
+            await loadTrending()
         }
     }
 
@@ -145,7 +143,7 @@ struct SearchView: View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(viewModel.results) { video in
-                    NavigationLink(value: video) {
+                    NavigationLink(destination: DetailView(video: video)) {
                         VodCardView(video: video)
                     }
                     #if os(iOS)
@@ -157,9 +155,6 @@ struct SearchView: View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
-        }
-        .navigationDestination(for: Movie.Video.self) { video in
-            DetailView(video: video)
         }
     }
     
@@ -256,7 +251,8 @@ struct SearchView: View {
                                     if let image = phase.image {
                                         image.resizable().scaledToFill()
                                     } else {
-                                        Color.white.opacity(0.08)
+                                        // 热榜封面加载失败时保持透明，不绘制黑色占位框。
+                                        Color.clear
                                     }
                                 }
                                 .frame(width: 38, height: 52)

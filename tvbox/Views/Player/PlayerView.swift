@@ -97,6 +97,7 @@ struct PlayerView: View {
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
+    var onBack: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
     var systemController: SystemPlayerSessionController? = nil
@@ -124,7 +125,8 @@ struct PlayerView: View {
                 urlString: urlString,
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
-                onPlaybackEnded: onPlaybackEnded
+                onPlaybackEnded: onPlaybackEnded,
+                onBack: onBack
             )
             #else
             switch selectedEngine {

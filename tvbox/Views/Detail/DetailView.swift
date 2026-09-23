@@ -11,11 +11,10 @@ struct DetailView: View {
     @StateObject private var sharedSystemController = SystemPlayerSessionController()
     @StateObject private var sharedVLCController = VLCPlayerController()
     @EnvironmentObject var appState: AppState
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @State private var showFullScreen = false
-    /// VLC 全屏退出动画期间为 true，防止内联播放器与全屏播放器同时争抢 drawable
-    @State private var isFullScreenDismissing = false
     #if os(macOS)
+    @State private var showFullScreen = false
     @State private var pendingMacWindowFullScreen = false
     #endif
     @State private var lastPersistedProgress: Double = 0
@@ -28,15 +27,14 @@ struct DetailView: View {
         ScrollView {
             VStack(spacing: 0) {
                 // 播放器区域
-                if !showFullScreen, !isFullScreenDismissing, viewModel.isPlaying, let url = viewModel.playUrl {
+                if shouldShowInlinePlayer, viewModel.isPlaying, let url = viewModel.playUrl {
                     PlayerView(
                         urlString: url,
                         startPosition: viewModel.currentPlaybackSeconds(),
                         onProgressChanged: handlePlaybackProgress,
                         onPlaybackEnded: playNextEpisodeIfNeeded,
-                        onToggleFullScreen: {
-                            openFullScreenPlayer()
-                        },
+                        onToggleFullScreen: inlineFullScreenHandler,
+                        onBack: { dismiss() },
                         canPlayNext: canPlayNextEpisode,
                         onPlayNext: playNextEpisodeIfNeeded,
                         systemController: sharedSystemController,
@@ -45,9 +43,6 @@ struct DetailView: View {
                         .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
                         .aspectRatio(16/9, contentMode: .fit)
                         .background(Color.black)
-                        .onTapGesture(count: 2) {
-                            openFullScreenPlayer()
-                        }
                 }
                 
                 // 视频信息
@@ -99,7 +94,9 @@ struct DetailView: View {
         .onDisappear {
             viewModel.commitPlaybackProgressSnapshot()
             persistHistoryIfNeeded(force: true)
+            #if os(macOS)
             showFullScreen = false
+            #endif
             sharedSystemController.stop()
             sharedVLCController.stop()
             #if os(macOS)
@@ -139,29 +136,21 @@ struct DetailView: View {
             appState.exitPlayerFullScreen()
         }
         #endif
-        #if os(iOS)
-        .fullScreenCover(isPresented: $showFullScreen, onDismiss: {
-            isFullScreenDismissing = false
-            // 全屏播放器退出后恢复竖屏。
-            OrientationLock.portrait()
-        }) {
-            if let url = viewModel.playUrl {
-                FullScreenPlayerView(
-                    urlString: url,
-                    startPosition: viewModel.currentPlaybackSeconds(),
-                    onProgressChanged: handlePlaybackProgress,
-                    onPlaybackEnded: playNextEpisodeIfNeeded,
-                    canPlayNext: canPlayNextEpisode,
-                    onPlayNext: playNextEpisodeIfNeeded,
-                    systemController: sharedSystemController,
-                    vlcController: sharedVLCController,
-                    onCloseRequested: {
-                        isFullScreenDismissing = true
-                        showFullScreen = false
-                    }
-                )
-            }
-        }
+    }
+
+    private var shouldShowInlinePlayer: Bool {
+        #if os(macOS)
+        return !showFullScreen
+        #else
+        return true
+        #endif
+    }
+
+    private var inlineFullScreenHandler: (() -> Void)? {
+        #if os(macOS)
+        return { openFullScreenPlayer() }
+        #else
+        return nil
         #endif
     }
     
@@ -446,6 +435,8 @@ struct DetailView: View {
     // MARK: - 简介
     
     private func descriptionSection(_ des: String) -> some View {
+        let cleanedDescription = normalizedDescription(des)
+
         VStack(alignment: .leading, spacing: 12) {
             Button {
                 #if os(iOS)
@@ -468,7 +459,7 @@ struct DetailView: View {
             }
             .buttonStyle(.plain)
 
-            Text(des)
+            Text(cleanedDescription)
                 .font(.system(size: 13))
                 .foregroundColor(.white.opacity(0.68))
                 .lineSpacing(3)
@@ -479,6 +470,20 @@ struct DetailView: View {
                 #endif
         }
         .padding(.top, 2)
+    }
+
+    /// 清理资源站简介中的 HTML 空白实体和不可见空白，避免界面出现 "nbsp" 前缀。
+    private func normalizedDescription(_ value: String) -> String {
+        let decoded = value
+            .replacingOccurrences(of: "&nbsp;", with: " ", options: .caseInsensitive)
+            .replacingOccurrences(of: "&#160;", with: " ", options: .caseInsensitive)
+            .replacingOccurrences(of: "\\u00a0", with: " ", options: .caseInsensitive)
+            .replacingOccurrences(of: "nbsp", with: " ", options: .caseInsensitive)
+
+        return decoded
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     private var canPlayNextEpisode: Bool {
@@ -569,12 +574,8 @@ struct DetailView: View {
         }
     }
     
+    #if os(macOS)
     private func openFullScreenPlayer() {
-        #if os(iOS)
-        // 全屏播放器进入前锁定横屏，退出后恢复竖屏（见 fullScreenCover onDismiss）。
-        OrientationLock.landscape()
-        showFullScreen = true
-        #else
         guard viewModel.playUrl != nil else { return }
         appState.enterPlayerFullScreen()
         
@@ -588,10 +589,8 @@ struct DetailView: View {
         if !pendingMacWindowFullScreen {
             showFullScreen = true
         }
-        #endif
     }
-    
-    #if os(macOS)
+
     @discardableResult
     private func requestMacWindowFullScreen(enter: Bool) -> Bool {
         guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return false }
@@ -636,6 +635,7 @@ struct FullScreenPlayerView: View {
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
+                onBack: onCloseRequested,
                 onToggleFullScreen: {
                     if let onCloseRequested {
                         onCloseRequested()
