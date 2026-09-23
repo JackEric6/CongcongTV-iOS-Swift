@@ -879,6 +879,78 @@ struct VLCVodPlayerView: View {
     }
     
     var body: some View {
+        decoratedPlayer
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(_): wakeUpControls()
+                case .ended: break
+                }
+            }
+            .onAppear {
+                startPlayback()
+                wakeUpControls()
+            }
+            .onChange(of: urlString) { _, _ in
+                startPlayback()
+                wakeUpControls()
+            }
+            .onChange(of: controller.currentTimeSeconds) { _, newValue in
+                if !isDraggingProgress {
+                    draggingSeconds = newValue
+                }
+            }
+            .onDisappear {
+                startPlaybackTask?.cancel()
+                startPlaybackTask = nil
+                if sharedController == nil {
+                    controller.stop()
+                }
+                controlsTimer?.invalidate()
+                osdTimer?.invalidate()
+            }
+    }
+
+    private var decoratedPlayer: some View {
+        playerSurface
+            #if os(iOS)
+            .overlay {
+                VLCDanmakuOverlayView(
+                    title: title,
+                    episode: episode,
+                    resourceKey: urlString,
+                    currentTime: controller.currentTimeSeconds,
+                    duration: controller.durationSeconds
+                )
+                .allowsHitTesting(false)
+            }
+            .overlay {
+                PlayerGestureLayer(
+                    onSeek: { offset in controller.seek(by: offset) },
+                    onTogglePlayPause: { togglePlaybackWithOSD() },
+                    onToggleControls: { wakeUpControls() },
+                    onZoomChanged: { _ in },
+                    currentTime: controller.currentTimeSeconds,
+                    duration: controller.durationSeconds
+                )
+            }
+            #endif
+            .overlay(alignment: .bottom) {
+                controlsOverlay
+            }
+            #if os(iOS)
+            .overlay(alignment: .topLeading) {
+                headerOverlay
+            }
+            .overlay(alignment: .trailing) {
+                verticalSeekOverlay
+            }
+            .overlay {
+                keyboardOverlay
+            }
+            #endif
+    }
+
+    private var playerSurface: some View {
         ZStack {
             VLCDrawableView(controller: controller, onDrawableReady: onDrawableReady)
                 .background(Color.black)
@@ -907,45 +979,23 @@ struct VLCVodPlayerView: View {
                     .allowsHitTesting(false)
             }
         }
-        #if os(iOS)
-        // 弹幕独立覆盖在视频画面上方、控制层下方；不要挂到 VLC drawable
-        // 上，否则切全屏时 drawable 重绑会把弹幕视图一起移走。
-        .overlay {
-            VLCDanmakuOverlayView(
-                title: title,
-                episode: episode,
-                resourceKey: urlString,
-                currentTime: controller.currentTimeSeconds,
-                duration: controller.durationSeconds
-            )
-            .allowsHitTesting(false)
+    }
+
+    private var controlsOverlay: some View {
+        GeometryReader { proxy in
+            playbackControls(containerSize: proxy.size)
+                #if os(macOS)
+                .padding(12)
+                #endif
+                .opacity(showControls ? 1.0 : 0.0)
+                .animation(.easeInOut(duration: 0.3), value: showControls)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
-        #endif
-        #if os(iOS)
-        .overlay {
-            PlayerGestureLayer(
-                onSeek: { offset in controller.seek(by: offset) },
-                onTogglePlayPause: { togglePlaybackWithOSD() },
-                onToggleControls: { wakeUpControls() },
-                onZoomChanged: { _ in },
-                currentTime: controller.currentTimeSeconds,
-                duration: controller.durationSeconds
-            )
-        }
-        #endif
-        .overlay(alignment: .bottom) {
-            GeometryReader { proxy in
-                playbackControls(containerSize: proxy.size)
-                    #if os(macOS)
-                    .padding(12)
-                    #endif
-                    .opacity(showControls ? 1.0 : 0.0)
-                    .animation(.easeInOut(duration: 0.3), value: showControls)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            }
-        }
-        #if os(iOS)
-        .overlay(alignment: .topLeading) {
+    }
+
+    #if os(iOS)
+    private var headerOverlay: some View {
+        Group {
             if showControls {
                 HStack(spacing: 10) {
                     if let onBack {
@@ -983,72 +1033,46 @@ struct VLCVodPlayerView: View {
                 )
             }
         }
-        .overlay(alignment: .trailing) {
-            GeometryReader { proxy in
-                if proxy.size.height > proxy.size.width {
-                    VStack(spacing: 10) {
-                        seekButton(icon: "gobackward.15", offset: -15)
-                        seekButton(icon: "goforward.15", offset: 15)
-                    }
-                    .padding(.trailing, 12)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .centerTrailing)
-                    .opacity(showControls ? 1 : 0)
+    }
+
+    private var verticalSeekOverlay: some View {
+        GeometryReader { proxy in
+            if proxy.size.height > proxy.size.width {
+                VStack(spacing: 10) {
+                    seekButton(icon: "gobackward.15", offset: -15)
+                    seekButton(icon: "goforward.15", offset: 15)
                 }
+                .padding(.trailing, 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .centerTrailing)
+                .opacity(showControls ? 1 : 0)
             }
-        }
-        .overlay {
-            KeyboardShortcutCaptureView(
-                onLeft: { wakeUpControls(); controller.seek(by: -seekStep); showOSD(icon: "gobackward.\(Int(seekStep))") },
-                onRight: { wakeUpControls(); controller.seek(by: seekStep); showOSD(icon: "goforward.\(Int(seekStep))") },
-                onTogglePlayPause: { wakeUpControls(); togglePlaybackWithOSD() },
-                onToggleFullScreen: { wakeUpControls(); onToggleFullScreen?() },
-                onDecreaseSpeed: { wakeUpControls(); controller.decreasePlaybackRate(); showOSD(icon: "tortoise.fill") },
-                onIncreaseSpeed: { wakeUpControls(); controller.increasePlaybackRate(); showOSD(icon: "hare.fill") },
-                onVolumeDown: {
-                    wakeUpControls()
-                    controller.setVolume(controller.volume - volumeStep)
-                    showOSD(icon: controller.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                },
-                onVolumeUp: {
-                    wakeUpControls()
-                    controller.setVolume(controller.volume + volumeStep)
-                    showOSD(icon: controller.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                }
-            )
-            .frame(width: 1, height: 1)
-            .opacity(0.01)
-            .allowsHitTesting(false)
-        }
-        #endif
-        .onContinuousHover { phase in
-            switch phase {
-            case .active(_): wakeUpControls()
-            case .ended: break
-            }
-        }
-        .onAppear {
-            startPlayback()
-            wakeUpControls()
-        }
-        .onChange(of: urlString) { _, _ in
-            startPlayback()
-            wakeUpControls()
-        }
-        .onChange(of: controller.currentTimeSeconds) { _, newValue in
-            if !isDraggingProgress {
-                draggingSeconds = newValue
-            }
-        }
-        .onDisappear {
-            startPlaybackTask?.cancel()
-            startPlaybackTask = nil
-            if sharedController == nil {
-                controller.stop()
-            }
-            controlsTimer?.invalidate()
-            osdTimer?.invalidate()
         }
     }
+
+    private var keyboardOverlay: some View {
+        KeyboardShortcutCaptureView(
+            onLeft: { wakeUpControls(); controller.seek(by: -seekStep); showOSD(icon: "gobackward.\(Int(seekStep))") },
+            onRight: { wakeUpControls(); controller.seek(by: seekStep); showOSD(icon: "goforward.\(Int(seekStep))") },
+            onTogglePlayPause: { wakeUpControls(); togglePlaybackWithOSD() },
+            onToggleFullScreen: { wakeUpControls(); onToggleFullScreen?() },
+            onDecreaseSpeed: { wakeUpControls(); controller.decreasePlaybackRate(); showOSD(icon: "tortoise.fill") },
+            onIncreaseSpeed: { wakeUpControls(); controller.increasePlaybackRate(); showOSD(icon: "hare.fill") },
+            onVolumeDown: {
+                wakeUpControls()
+                controller.setVolume(controller.volume - volumeStep)
+                showOSD(icon: controller.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            },
+            onVolumeUp: {
+                wakeUpControls()
+                controller.setVolume(controller.volume + volumeStep)
+                showOSD(icon: controller.volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            }
+        )
+        .frame(width: 1, height: 1)
+        .opacity(0.01)
+        .allowsHitTesting(false)
+    }
+    #endif
     
     private func wakeUpControls() {
         withAnimation { showControls = true }
