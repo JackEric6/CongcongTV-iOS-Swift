@@ -82,8 +82,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
     private func configure(_ view: IOSVideoPlayerView, coordinator: Coordinator) {
         coordinator.url = url
+        KSOptions.isAutoPlay = true
         let options = KSOptions()
-        options.isAutoPlay = true
         options.startPlayTime = startPosition
         view.set(url: url, options: options)
         view.playTimeDidChange = { [weak coordinator] current, total in
