@@ -437,7 +437,7 @@ struct DetailView: View {
     private func descriptionSection(_ des: String) -> some View {
         let cleanedDescription = normalizedDescription(des)
 
-        VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: 12) {
             Button {
                 #if os(iOS)
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -635,7 +635,6 @@ struct FullScreenPlayerView: View {
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
-                onBack: onCloseRequested,
                 onToggleFullScreen: {
                     if let onCloseRequested {
                         onCloseRequested()
@@ -643,6 +642,7 @@ struct FullScreenPlayerView: View {
                         dismiss()
                     }
                 },
+                onBack: onCloseRequested,
                 canPlayNext: canPlayNext,
                 onPlayNext: onPlayNext,
                 systemController: systemController,
