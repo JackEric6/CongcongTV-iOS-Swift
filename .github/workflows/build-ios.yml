@@ -63,9 +63,10 @@ jobs:
           assert info["CFBundleIdentifier"] == "com.congcong.tv.xgzy"
           assert info["CFBundleExecutable"] == "CongcongTV"
           assert info["CFBundlePackageType"] == "APPL"
-          assert info["CFBundleDisplayName"] == "丛丛影视"
+          assert info["CFBundleDisplayName"] == "CongcongTV"
           assert info["MinimumOSVersion"] == "17.0"
           assert (app / info["CFBundleExecutable"]).is_file()
+          assert (app / "zh-Hans.lproj/InfoPlist.strings").is_file()
           with (app / "movie2_kktvs.json").open(encoding="utf-8") as stream:
               config = json.load(stream)
           site = next(site for site in config["sites"] if site["key"] == "kktvs")
