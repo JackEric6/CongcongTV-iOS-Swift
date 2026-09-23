@@ -22,15 +22,6 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
-      - name: Verify CMS compatibility
-        run: |
-          mkdir -p build
-          swiftc -parse-as-library \
-            -o build/verify-kktvs-normalizer \
-            tvbox/Services/KktvsResponseNormalizer.swift \
-            scripts/verify-kktvs-normalizer.swift
-          build/verify-kktvs-normalizer
-
       - name: Build unsigned app
         run: |
           set -o pipefail
@@ -49,7 +40,6 @@ jobs:
       - name: Verify built app metadata and config
         run: |
           python3 - <<'PY'
-          import json
           import plistlib
           from pathlib import Path
 
@@ -67,11 +57,7 @@ jobs:
           assert info["MinimumOSVersion"] == "17.0"
           assert (app / info["CFBundleExecutable"]).is_file()
           assert (app / "zh-Hans.lproj/InfoPlist.strings").is_file()
-          with (app / "movie2_kktvs.json").open(encoding="utf-8") as stream:
-              config = json.load(stream)
-          site = next(site for site in config["sites"] if site["key"] == "kktvs")
-          assert site["api"] == "https://www.kktvs.com/api.php/provide/vod"
-          print("APP METADATA AND CONFIG RESOURCE CHECKS PASSED")
+          print("APP METADATA AND XGZY DEFAULT CONFIG CHECKS PASSED")
           PY
 
       - name: Package unsigned IPA

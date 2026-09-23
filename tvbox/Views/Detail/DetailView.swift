@@ -20,6 +20,9 @@ struct DetailView: View {
     #endif
     @State private var lastPersistedProgress: Double = 0
     @State private var isCollected = false
+    #if os(iOS)
+    @State private var isDescriptionExpanded = false
+    #endif
     
     var body: some View {
         ScrollView {
@@ -49,34 +52,27 @@ struct DetailView: View {
                 
                 // 视频信息
                 videoInfoSection
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
                 
                 // 线路选择
                 if viewModel.flags.count > 1 {
                     flagSelector
-                        .padding(.horizontal, 20)
-                        .padding(.top, 16)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 10)
                 }
                 
                 // 清晰度选择
                 if viewModel.hasQualityChoices {
                     qualitySelector
-                        .padding(.horizontal, 20)
-                        .padding(.top, 16)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 10)
                 }
                 
                 // 剧集列表
                 if !viewModel.currentEpisodes.isEmpty {
                     episodeSection
-                        .padding(.top, 16)
-                }
-                
-                // 简介
-                if let info = viewModel.vodInfo, !info.des.isEmpty {
-                    descriptionSection(info.des)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 16)
+                        .padding(.top, 10)
                 }
             }
             .padding(.bottom, 40)
@@ -174,29 +170,21 @@ struct DetailView: View {
     #if os(iOS)
     @ViewBuilder
     private var videoInfoSection: some View {
-        VStack(spacing: 16) {
-            // Poster centered, height capped to 30% of screen
-            let posterHeight = UIScreen.main.bounds.height * 0.30
-            CachedAsyncImage(url: URL.posterURL(from: video.pic)) { image in
-                image.resizable().aspectRatio(2/3, contentMode: .fit)
-            } placeholder: {
-                Color.white.opacity(0.05)
-                    .aspectRatio(2/3, contentMode: .fit)
-            }
-            .frame(maxHeight: posterHeight)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius))
-
-            // Info below poster
-            videoDetails
-
-            // Action buttons with 48pt height
-            HStack(spacing: 12) {
-                playButton
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 10) {
+                videoDetails
+                Spacer(minLength: 0)
+                if !viewModel.isPlaying {
+                    playButton
+                }
                 collectButton
             }
-            .frame(minHeight: 48)
+
+            if let info = viewModel.vodInfo, !info.des.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                descriptionSection(info.des)
+            }
         }
-        .padding(15)
+        .padding(12)
         .glassCard(cornerRadius: AppTheme.glassRadius)
     }
     #else
@@ -234,11 +222,12 @@ struct DetailView: View {
     private var videoDetails: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(viewModel.vodInfo?.name ?? video.name)
-                .font(.system(size: 24, weight: .bold))
+                .font(.system(size: 20, weight: .bold))
                 .foregroundColor(.white)
+                .lineLimit(2)
             
             if let info = viewModel.vodInfo {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 3) {
                     infoRow("年份", info.year)
                     infoRow("地区", info.area)
                     infoRow("类型", info.typeName)
@@ -458,18 +447,38 @@ struct DetailView: View {
     
     private func descriptionSection(_ des: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("影片简介")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundColor(.white)
-            
+            Button {
+                #if os(iOS)
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isDescriptionExpanded.toggle()
+                }
+                #endif
+            } label: {
+                HStack {
+                    Text("影片简介")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.white)
+                    Spacer()
+                    #if os(iOS)
+                    Image(systemName: isDescriptionExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.white.opacity(0.65))
+                    #endif
+                }
+            }
+            .buttonStyle(.plain)
+
             Text(des)
-                .font(.system(size: 14))
-                .foregroundColor(.white.opacity(0.6))
-                .lineSpacing(4)
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.68))
+                .lineSpacing(3)
+                #if os(iOS)
+                .lineLimit(isDescriptionExpanded ? nil : 2)
+                #else
                 .lineLimit(nil)
+                #endif
         }
-        .padding(15)
-        .glassCard(cornerRadius: AppTheme.glassRadius)
+        .padding(.top, 2)
     }
 
     private var canPlayNextEpisode: Bool {

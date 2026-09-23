@@ -24,6 +24,7 @@ class HomeViewModel: ObservableObject {
     
     /// 源数据访问服务。
     private let sourceService = SourceService.shared
+    private let trendingService = DoubanTrendingService.shared
     /// 标记上次加载是否因网络错误失败（用于网络恢复自动重试）。
     private var lastLoadFailedDueToNetwork = false
     private var networkRestoredCancellable: AnyCancellable?
@@ -46,7 +47,7 @@ class HomeViewModel: ObservableObject {
             allSorts.append(contentsOf: result.sorts)
             
             self.sorts = allSorts
-            self.homeVideos = result.homeVideos
+            self.homeVideos = await loadDoubanRecommendations()
             lastLoadFailedDueToNetwork = false
             
             if selectedSort == nil {
@@ -58,6 +59,55 @@ class HomeViewModel: ObservableObject {
         }
         
         isLoading = false
+    }
+
+    /// 从豆瓣热门榜中筛出西瓜源确实存在的条目，避免推荐卡片无法播放。
+    private func loadDoubanRecommendations() async -> [Movie.Video] {
+        guard let xiguaSource = ApiConfig.shared.sourceBeanList.first(where: isXiguaSource) else { return [] }
+        let trending = await trendingService.fetchTrending(limit: 20)
+        guard !trending.isEmpty else { return [] }
+
+        let indexedResults = await withTaskGroup(of: (Int, Movie.Video?).self, returning: [(Int, Movie.Video?)].self) { group in
+            for (index, item) in trending.enumerated() {
+                group.addTask { [sourceService] in
+                    guard let coverURL = URL(string: item.cover),
+                          let scheme = coverURL.scheme?.lowercased(),
+                          scheme == "http" || scheme == "https" else { return (index, nil) }
+                    guard let matches = try? await sourceService.search(sourceBean: xiguaSource, keyword: item.title) else {
+                        return (index, nil)
+                    }
+                    let target = Self.normalizedTitle(item.title)
+                    guard let match = matches.first(where: { Self.normalizedTitle($0.name) == target }) else {
+                        return (index, nil)
+                    }
+                    var video = match
+                    video.pic = item.cover
+                    video.sourceKey = xiguaSource.key
+                    return (index, video)
+                }
+            }
+
+            var results: [(Int, Movie.Video?)] = []
+            for await result in group {
+                results.append(result)
+            }
+            return results
+        }
+
+        return indexedResults
+            .sorted { $0.0 < $1.0 }
+            .compactMap(\.1)
+    }
+
+    private func isXiguaSource(_ source: SourceBean) -> Bool {
+        let identity = "\(source.key) \(source.name) \(source.api)".lowercased()
+        return identity.contains("xgzy") || identity.contains("西瓜")
+    }
+
+    private nonisolated static func normalizedTitle(_ value: String) -> String {
+        value.lowercased().unicodeScalars.filter { scalar in
+            CharacterSet.alphanumerics.contains(scalar) || (scalar.value >= 0x3400 && scalar.value <= 0x9FFF)
+        }.map(String.init).joined()
     }
     
     /// 网络恢复时，若上次因网络错误导致首页为空，自动重新加载。

@@ -84,9 +84,14 @@ class SettingsViewModel: ObservableObject {
         let defaultLiveRaw = PlayerEngine.isVLCAvailable
             ? PlayerEngine.vlc.rawValue
             : PlayerEngine.system.rawValue
+        #if os(iOS)
+        // 点播已固定使用 KSPlayer，旧版本保存的 AVPlayer/VLC 值仅作兼容占位。
+        defaults.set(PlayerEngine.system.rawValue, forKey: HawkConfig.PLAY_TYPE_VOD)
+        #else
         if defaults.object(forKey: HawkConfig.PLAY_TYPE_VOD) == nil {
             defaults.set(hasLegacyPlayer ? legacyPlayerRaw : defaultVodRaw, forKey: HawkConfig.PLAY_TYPE_VOD)
         }
+        #endif
         if defaults.object(forKey: HawkConfig.PLAY_TYPE_LIVE) == nil {
             defaults.set(hasLegacyPlayer ? legacyPlayerRaw : defaultLiveRaw, forKey: HawkConfig.PLAY_TYPE_LIVE)
         }
@@ -257,9 +262,13 @@ class SettingsViewModel: ObservableObject {
     
     /// 设置点播播放器内核
     func setVodPlayerEngine(_ engine: PlayerEngine) {
+        #if os(iOS)
+        return
+        #else
         guard playerEngineOptions.contains(engine) else { return }
         vodPlayerEngine = engine
         UserDefaults.standard.set(engine.rawValue, forKey: HawkConfig.PLAY_TYPE_VOD)
+        #endif
     }
     
     /// 设置直播播放器内核

@@ -74,11 +74,15 @@ struct SettingsView: View {
                     
                     // 播放设置
                     SectionCard(title: "播放设置") {
+                        #if os(iOS)
+                        SettingsRow(icon: "play.rectangle", title: "点播播放器", value: "KSPlayer", action: nil)
+                        #else
                         SettingsRow(icon: "play.rectangle", title: "点播播放器", value: viewModel.vodPlayerEngine.title) {
                             if viewModel.playerEngineOptions.count > 1 {
                                 showingPicker = .vodPlayer
                             }
                         }
+                        #endif
                         Divider().background(Color.white.opacity(0.1))
                         SettingsRow(icon: "dot.radiowaves.left.and.right", title: "直播播放器", value: viewModel.livePlayerEngine.title) {
                             if viewModel.playerEngineOptions.count > 1 {
@@ -161,6 +165,7 @@ struct SettingsView: View {
     private var pickerOverlay: some View {
         switch showingPicker {
         case .vodPlayer:
+            #if os(macOS)
             SelectionModal(
                 title: "选择点播播放器",
                 icon: "play.rectangle.fill",
@@ -173,6 +178,9 @@ struct SettingsView: View {
                 },
                 onCancel: { showingPicker = .none }
             )
+            #else
+            EmptyView()
+            #endif
         case .livePlayer:
             SelectionModal(
                 title: "选择直播播放器",

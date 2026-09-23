@@ -119,6 +119,14 @@ struct PlayerView: View {
     
     var body: some View {
         Group {
+            #if os(iOS)
+            KSPlayerVodPlayerView(
+                urlString: urlString,
+                startPosition: startPosition,
+                onProgressChanged: onProgressChanged,
+                onPlaybackEnded: onPlaybackEnded
+            )
+            #else
             switch selectedEngine {
             case .system:
                 AVPlayerContentView(
@@ -143,6 +151,7 @@ struct PlayerView: View {
                     sharedController: vlcController
                 )
             }
+            #endif
         }
         .id(selectedEngine.rawValue)
         .onAppear {

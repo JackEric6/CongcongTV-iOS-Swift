@@ -71,17 +71,19 @@ struct ContentView: View {
                 }
                 .tag(0)
             
-            LiveView(onExit: {
-                selectedTab = 0
-            })
+            NavigationStack {
+                HistoryView()
+            }
                 .tabItem {
-                    Label("直播", systemImage: "tv.fill")
+                    Label("历史", systemImage: "clock.fill")
                 }
                 .tag(1)
             
-            SearchView()
+            NavigationStack {
+                FavoritesView()
+            }
                 .tabItem {
-                    Label("搜索", systemImage: "magnifyingglass")
+                    Label("收藏", systemImage: "heart.fill")
                 }
                 .tag(2)
             

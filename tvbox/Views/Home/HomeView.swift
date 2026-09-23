@@ -90,6 +90,18 @@ struct HomeView: View {
             .fixedSize()
             
             Spacer()
+
+            NavigationLink {
+                SearchView()
+            } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("搜索")
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
@@ -266,4 +278,3 @@ struct HomeView: View {
         }
     }
 }
-
