@@ -156,10 +156,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
             onBack: onBack,
             onPlayerAction: onPlayerAction,
             canPlayPrevious: canPlayPrevious,
-            onPlayPrevious: onPlayPrevious,
             canPlayNext: canPlayNext,
-            onPlayNext: onPlayNext,
             canSelectEpisode: canSelectEpisode,
+            onPlayPrevious: onPlayPrevious,
+            onPlayNext: onPlayNext,
             onSelectEpisode: onSelectEpisode,
             danmakuTitle: danmakuTitle,
             danmakuEpisode: danmakuEpisode
