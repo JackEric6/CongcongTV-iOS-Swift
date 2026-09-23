@@ -85,7 +85,7 @@ class SettingsViewModel: ObservableObject {
             ? PlayerEngine.vlc.rawValue
             : PlayerEngine.system.rawValue
         #if os(iOS)
-        // 点播已固定使用 KSPlayer，旧版本保存的 AVPlayer/VLC 值仅作兼容占位。
+        // iOS 点播已固定使用 VLC；旧版本保存的播放器值仅作兼容占位。
         defaults.set(PlayerEngine.system.rawValue, forKey: HawkConfig.PLAY_TYPE_VOD)
         #else
         if defaults.object(forKey: HawkConfig.PLAY_TYPE_VOD) == nil {

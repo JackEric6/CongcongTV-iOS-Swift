@@ -62,7 +62,7 @@ struct SettingsView: View {
                     // 播放设置
                     SectionCard(title: "播放设置") {
                         #if os(iOS)
-                        SettingsRow(icon: "play.rectangle", title: "点播播放器", value: "KSPlayer", action: nil)
+                        SettingsRow(icon: "play.rectangle", title: "点播播放器", value: "VLC", action: nil)
                         #else
                         SettingsRow(icon: "play.rectangle", title: "点播播放器", value: viewModel.vodPlayerEngine.title) {
                             if viewModel.playerEngineOptions.count > 1 {

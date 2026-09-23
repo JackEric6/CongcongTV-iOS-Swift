@@ -106,6 +106,9 @@ struct PlayerView: View {
     var onSelectEpisode: (() -> Void)? = nil
     var danmakuTitle: String = ""
     var danmakuEpisode: String = ""
+    #if os(iOS)
+    var onDrawableReady: ((UIView) -> Void)? = nil
+    #endif
     var systemController: SystemPlayerSessionController? = nil
     var vlcController: VLCPlayerController? = nil
     @AppStorage(HawkConfig.PLAY_TYPE_VOD) private var vodPlayTypeRaw = -1
@@ -123,15 +126,24 @@ struct PlayerView: View {
         }
         return PlayerEngine.fromStoredValue(rawValue)
     }
+
+    private var activeEngine: PlayerEngine {
+        #if os(iOS)
+        return .vlc
+        #else
+        return selectedEngine
+        #endif
+    }
     
     var body: some View {
         Group {
             #if os(iOS)
-            KSPlayerVodPlayerView(
+            VLCVodPlayerView(
                 urlString: urlString,
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
+                onToggleFullScreen: onToggleFullScreen,
                 onBack: onBack,
                 canPlayPrevious: canPlayPrevious,
                 onPlayPrevious: onPlayPrevious,
@@ -139,8 +151,10 @@ struct PlayerView: View {
                 onPlayNext: onPlayNext,
                 canSelectEpisode: canSelectEpisode,
                 onSelectEpisode: onSelectEpisode,
-                danmakuTitle: danmakuTitle,
-                danmakuEpisode: danmakuEpisode
+                title: danmakuTitle,
+                episode: danmakuEpisode,
+                onDrawableReady: onDrawableReady,
+                sharedController: vlcController
             )
             #else
             switch selectedEngine {
@@ -169,16 +183,16 @@ struct PlayerView: View {
             }
             #endif
         }
-        .id(selectedEngine.rawValue)
+        .id(activeEngine.rawValue)
         .onAppear {
-            if selectedEngine != .system {
+            if activeEngine != .system {
                 systemController?.stop()
             }
-            if selectedEngine != .vlc {
+            if activeEngine != .vlc {
                 vlcController?.stop()
             }
         }
-        .onChange(of: selectedEngine) { _, newValue in
+        .onChange(of: activeEngine) { _, newValue in
             if newValue != .system {
                 systemController?.stop()
             }

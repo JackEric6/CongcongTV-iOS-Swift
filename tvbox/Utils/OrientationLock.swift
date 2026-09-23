@@ -1,11 +1,12 @@
 import Foundation
 #if os(iOS)
 import UIKit
-import KSPlayer
 
 /// iOS 屏幕方向辅助：配合 `UIWindowScene.requestGeometryUpdate` 在播放器全屏时
 /// 强制进入横屏，退出全屏后恢复竖屏。项目已声明支持水平/垂直全部方向。
 enum OrientationLock {
+    private(set) static var supportedInterfaceOrientations: UIInterfaceOrientationMask = .portrait
+
     /// 进入播放器全屏时旋转为横屏（Home 右侧）。
     static func landscape() {
         setOrientation(.landscapeRight)
@@ -17,10 +18,7 @@ enum OrientationLock {
     }
 
     private static func setOrientation(_ orientation: UIInterfaceOrientationMask) {
-        // KSPlayer 的原生全屏控制器通过这个全局掩码向应用委托声明方向。
-        // 先更新掩码，再请求 scene 几何变化，避免系统在呈现全屏控制器时仍
-        // 只看到 portrait 而拒绝横屏请求。
-        KSOptions.supportedInterfaceOrientations = orientation
+        supportedInterfaceOrientations = orientation
 
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first else {

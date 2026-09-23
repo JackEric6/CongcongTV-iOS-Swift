@@ -1,7 +1,7 @@
 #if os(iOS)
 import UIKit
 
-/// UIKit-only danmaku layer intended to live inside the native KSPlayer content overlay.
+/// UIKit-only danmaku layer intended to live inside the native player content layer.
 /// It deliberately does not own media time; the player supplies it through `update`.
 final class DanmakuOverlayView: UIView {
     private enum Placement {
@@ -63,7 +63,7 @@ final class DanmakuOverlayView: UIView {
     }
 
     /// Supplies the current player time. The display link only interpolates between
-    /// these callbacks to keep scrolling smooth while KSPlayer is playing.
+    /// these callbacks to keep scrolling smooth while the player is playing.
     func update(currentTime: TimeInterval, duration: TimeInterval = 0) {
         let boundedTime = max(0, currentTime)
         let jumped = !hasTimeAnchor || abs(boundedTime - mediaTime) > 1.25

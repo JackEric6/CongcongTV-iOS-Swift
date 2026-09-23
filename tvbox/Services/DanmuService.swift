@@ -138,24 +138,27 @@ public final class DanmuService {
     ) async throws -> [DanmuCue] {
         let number = Self.extractNumber(from: episode)
         let queries = number > 0 ? [String(number), ""] : [""]
+        let titleVariants = Self.searchTitleVariants(title)
 
-        for query in queries {
-            try Task.checkCancellation()
-            let searchURL = try Self.makeURL(
-                baseURL: baseURL,
-                path: "/api/v2/search/episodes",
-                queryItems: [
-                    URLQueryItem(name: "anime", value: Self.transliterateToSimplified(title)),
-                    query.isEmpty ? nil : URLQueryItem(name: "episode", value: query)
-                ].compactMap { $0 }
-            )
-            guard let body = try? await network.getString(from: searchURL.absoluteString) else {
-                continue
-            }
-            for match in Self.findEpisodes(in: body, requestedEpisode: episode) {
-                if let cues = try? await loadComments(baseURL: baseURL, match: match),
-                   !cues.isEmpty {
-                    return cues
+        for titleVariant in titleVariants {
+            for query in queries {
+                try Task.checkCancellation()
+                let searchURL = try Self.makeURL(
+                    baseURL: baseURL,
+                    path: "/api/v2/search/episodes",
+                    queryItems: [
+                        URLQueryItem(name: "anime", value: titleVariant),
+                        query.isEmpty ? nil : URLQueryItem(name: "episode", value: query)
+                    ].compactMap { $0 }
+                )
+                guard let body = try? await network.getString(from: searchURL.absoluteString) else {
+                    continue
+                }
+                for match in Self.findEpisodes(in: body, requestedEpisode: episode) {
+                    if let cues = try? await loadComments(baseURL: baseURL, match: match),
+                       !cues.isEmpty {
+                        return cues
+                    }
                 }
             }
         }
@@ -164,7 +167,7 @@ public final class DanmuService {
         let animeURL = try Self.makeURL(
             baseURL: baseURL,
             path: "/api/v2/search/anime",
-            queryItems: [URLQueryItem(name: "keyword", value: Self.transliterateToSimplified(title))]
+            queryItems: [URLQueryItem(name: "keyword", value: titleVariants.first ?? title)]
         )
         guard let animeBody = try? await network.getString(from: animeURL.absoluteString) else {
             return []
@@ -191,13 +194,22 @@ public final class DanmuService {
     }
 
     private func loadComments(baseURL: String, match: EpisodeMatch) async throws -> [DanmuCue] {
-        let commentURL = try Self.makeURL(
-            baseURL: baseURL,
-            path: "/api/v2/comment/\(Self.urlPathEscape(match.id))",
-            queryItems: [URLQueryItem(name: "format", value: "json")]
-        )
-        let comments = try await network.getString(from: commentURL.absoluteString)
-        return try await Self.parseOffMain(comments)
+        // Some deployments reject the optional format query with 404 while
+        // returning the same JSON from the canonical path. Keep both forms,
+        // matching the Android client's tolerant behaviour.
+        let paths = [
+            ("/api/v2/comment/\(Self.urlPathEscape(match.id))", []),
+            ("/api/v2/comment/\(Self.urlPathEscape(match.id))", [URLQueryItem(name: "format", value: "json")])
+        ]
+        for (path, queryItems) in paths {
+            guard let commentURL = try? Self.makeURL(baseURL: baseURL, path: path, queryItems: queryItems),
+                  let comments = try? await network.getString(from: commentURL.absoluteString) else {
+                continue
+            }
+            let cues = try await Self.parseOffMain(comments)
+            if !cues.isEmpty { return cues }
+        }
+        return []
     }
 
     private func loadCustom(apiURL: String, title: String, episode: String) async throws -> String {
@@ -296,6 +308,33 @@ public final class DanmuService {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// XGZY episode names often contain source/quality suffixes that are not
+    /// part of the title indexed by the danmaku service. Search both the raw
+    /// title and a conservative cleaned form before falling back to anime API.
+    private static func searchTitleVariants(_ value: String) -> [String] {
+        let raw = transliterateToSimplified(value)
+        var cleaned = raw
+        let patterns = [
+            #"\[[^\]]*\]"#,
+            #"【[^】]*】"#,
+            #"\([^\)]*\)"#,
+            #"（[^）]*）"#
+        ]
+        for pattern in patterns {
+            cleaned = cleaned.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        cleaned = cleaned
+            .replacingOccurrences(of: "HD中字", with: "")
+            .replacingOccurrences(of: "HD国语", with: "")
+            .replacingOccurrences(of: "HD粤语", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var result: [String] = []
+        for item in [raw, cleaned] where !item.isEmpty && !result.contains(item) {
+            result.append(item)
+        }
+        return result.isEmpty ? [raw] : result
+    }
+
     private struct EpisodeMatch {
         let id: String
         let title: String
@@ -333,7 +372,7 @@ public final class DanmuService {
             let number = parseEpisodeNumber(rawNumber)
             let match = EpisodeMatch(id: id, title: title, number: number)
             let exactTitle = !requestedEpisode.isEmpty && !title.isEmpty
-                && title.localizedCaseInsensitiveContains(requestedEpisode)
+                && normalizedEpisodeTitle(title).localizedCaseInsensitiveContains(normalizedEpisodeTitle(requestedEpisode))
             let exactNumber = requestedNumber > 0 && (number == requestedNumber
                 || extractNumber(from: title) == requestedNumber)
             if requestedEpisode.isEmpty || exactTitle || exactNumber {
@@ -341,18 +380,75 @@ public final class DanmuService {
             }
         }
 
-        if matches.isEmpty, requestedEpisode.isEmpty {
-            return episodeArrays.compactMap { item in
-                let id = firstString(item, keys: ["episodeId", "id"])
-                guard !id.isEmpty else { return nil }
-                return EpisodeMatch(
-                    id: id,
-                    title: firstString(item, keys: ["episodeTitle", "title", "name"]),
-                    number: parseEpisodeNumber(firstString(item, keys: ["episodeNumber", "number", "sort"]))
-                )
+        if matches.isEmpty {
+            // Movies are represented by the same `episodes` array, but their
+            // names are usually "国语/粤语/中字" rather than "第1集". The
+            // Android client deliberately falls back to the first movie
+            // episode (preferring the requested language) in this case.
+            if isMovieResult(object) {
+                let preferCantonese = requestedEpisode.localizedCaseInsensitiveContains("粤")
+                let movieMatches = episodeArrays.compactMap { item -> EpisodeMatch? in
+                    let id = firstString(item, keys: ["episodeId", "id"])
+                    guard !id.isEmpty else { return nil }
+                    return EpisodeMatch(
+                        id: id,
+                        title: firstString(item, keys: ["episodeTitle", "title", "name"]),
+                        number: parseEpisodeNumber(firstString(item, keys: ["episodeNumber", "number", "sort"]))
+                    )
+                }
+                if let preferred = movieMatches.first(where: {
+                    preferCantonese
+                        ? $0.title.localizedCaseInsensitiveContains("粤")
+                        : ($0.title.localizedCaseInsensitiveContains("国")
+                            || $0.title.localizedCaseInsensitiveContains("普通话"))
+                }) {
+                    return [preferred]
+                }
+                if let first = movieMatches.first { return [first] }
+            }
+            if requestedEpisode.isEmpty {
+                return episodeArrays.compactMap { item in
+                    let id = firstString(item, keys: ["episodeId", "id"])
+                    guard !id.isEmpty else { return nil }
+                    return EpisodeMatch(
+                        id: id,
+                        title: firstString(item, keys: ["episodeTitle", "title", "name"]),
+                        number: parseEpisodeNumber(firstString(item, keys: ["episodeNumber", "number", "sort"]))
+                    )
+                }
             }
         }
         return matches
+    }
+
+    private static func isMovieResult(_ object: [String: Any]) -> Bool {
+        func isMovie(_ value: String) -> Bool {
+            value.localizedCaseInsensitiveContains("电影")
+                || value.localizedCaseInsensitiveContains("movie")
+        }
+        if isMovie(firstString(object, keys: ["type", "typeDescription"])) { return true }
+        if let bangumi = object["bangumi"] as? [String: Any],
+           isMovie(firstString(bangumi, keys: ["type", "typeDescription"])) {
+            return true
+        }
+        for key in ["animes", "anime", "data"] {
+            guard let items = object[key] as? [[String: Any]] else { continue }
+            if items.contains(where: {
+                isMovie(firstString($0, keys: ["type", "typeDescription"]))
+            }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func normalizedEpisodeTitle(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "集", with: "")
+            .replacingOccurrences(of: "话", with: "")
+            .replacingOccurrences(of: "第", with: "")
+            .replacingOccurrences(of: " ", with: "")
+            .lowercased()
     }
 
     private static func episodeArrays(in object: [String: Any]) -> [[String: Any]] {

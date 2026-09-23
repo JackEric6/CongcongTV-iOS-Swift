@@ -3,7 +3,6 @@ import SwiftData
 import Combine
 #if os(iOS)
 import UIKit
-import KSPlayer
 #endif
 
 enum CongcongBrand {
@@ -20,7 +19,7 @@ final class CongcongTVAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         supportedInterfaceOrientationsFor window: UIWindow?
     ) -> UIInterfaceOrientationMask {
-        KSOptions.supportedInterfaceOrientations
+        OrientationLock.supportedInterfaceOrientations
     }
 }
 #endif

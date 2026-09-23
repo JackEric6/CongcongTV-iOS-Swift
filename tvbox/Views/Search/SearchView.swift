@@ -164,8 +164,6 @@ struct SearchView: View {
     private var searchHistorySection: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                trendingSection
-
                 if !viewModel.searchHistory.isEmpty {
                     HStack {
                         Text("搜索历史")
@@ -217,6 +215,8 @@ struct SearchView: View {
                     }
                     .padding(.horizontal, 20)
                 }
+
+                trendingSection
 
                 if trendingItems.isEmpty, !isLoadingTrending, let trendingError {
                     Text(trendingError)

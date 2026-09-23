@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// KSPlayer 全屏状态下的轻量选集浮层。
-/// 使用 overFullScreen 呈现，不触发 KSPlayer 的退出全屏逻辑。
+/// 全屏状态下的轻量选集浮层。
+/// 使用独立呈现，不触发播放器的退出全屏逻辑。
 struct FullscreenEpisodePickerView: View {
     let episodes: [VodInfo.Episode]
     let selectedIndex: Int

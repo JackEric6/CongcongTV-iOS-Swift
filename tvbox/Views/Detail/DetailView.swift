@@ -15,8 +15,8 @@ struct DetailView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    #if os(macOS)
     @State private var showFullScreen = false
+    #if os(macOS)
     @State private var pendingMacWindowFullScreen = false
     #endif
     @State private var lastPersistedProgress: Double = 0
@@ -31,9 +31,8 @@ struct DetailView: View {
             VStack(spacing: 0) {
                 // 播放器区域
                 if shouldShowInlinePlayer, viewModel.isPlaying, let url = viewModel.playUrl {
-                    // 给 KSPlayer 一个稳定的父容器。播放器原生全屏会暂时把同一个
-                    // UIView 移到全屏控制器，退出时再放回这里；比例约束放在父容器上，
-                    // 避免 SwiftUI 重新布局时出现偏移、塌陷或黑屏。
+                    // VLC 的视频输出由共享控制器持有；全屏时通过 SwiftUI cover
+                    // 重建外层视图，不搬运播放器 UIView。
                     ZStack {
                         Color.black
                         PlayerView(
@@ -110,6 +109,41 @@ struct DetailView: View {
                 }
             )
         }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $showFullScreen, onDismiss: {
+            OrientationLock.portrait()
+            sharedVLCController.reattachCurrentDrawable()
+        }) {
+            if let url = viewModel.playUrl {
+                VLCFullscreenPlayerContainer(
+                    urlString: url,
+                    startPosition: viewModel.currentPlaybackSeconds(),
+                    title: viewModel.vodInfo?.name ?? video.name,
+                    episode: currentDanmakuEpisode,
+                    canPlayPrevious: viewModel.selectedEpisodeIndex > 0,
+                    onPlayPrevious: playPreviousEpisode,
+                    canPlayNext: canPlayNextEpisode,
+                    onPlayNext: playNextEpisodeIfNeeded,
+                    episodes: viewModel.currentEpisodes,
+                    selectedEpisodeIndex: viewModel.selectedEpisodeIndex,
+                    onSelectEpisode: { index in
+                        withAnimation {
+                            viewModel.selectEpisode(index: index)
+                        }
+                        saveHistoryForCurrentEpisode()
+                    },
+                    onProgressChanged: handlePlaybackProgress,
+                    onPlaybackEnded: playNextEpisodeIfNeeded,
+                    onClose: { showFullScreen = false },
+                    sharedController: sharedVLCController
+                )
+                .ignoresSafeArea()
+                .onAppear {
+                    OrientationLock.landscape()
+                }
+            }
+        }
+        #endif
         .task(id: "\(video.sourceKey)-\(video.id)") {
             await viewModel.loadDetail(video: video)
             restorePlaybackFromHistory()
@@ -127,8 +161,10 @@ struct DetailView: View {
             #if os(macOS)
             showFullScreen = false
             #endif
-            sharedSystemController.stop()
-            sharedVLCController.stop()
+            if !showFullScreen {
+                sharedSystemController.stop()
+                sharedVLCController.stop()
+            }
             #if os(macOS)
             pendingMacWindowFullScreen = false
             appState.exitPlayerFullScreen()
@@ -144,6 +180,8 @@ struct DetailView: View {
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     canPlayNext: canPlayNextEpisode,
                     onPlayNext: playNextEpisodeIfNeeded,
+                    danmakuTitle: viewModel.vodInfo?.name ?? video.name,
+                    danmakuEpisode: currentDanmakuEpisode,
                     systemController: sharedSystemController,
                     vlcController: sharedVLCController,
                     onCloseRequested: closeMacFullScreenOverlay
@@ -169,76 +207,16 @@ struct DetailView: View {
     }
 
     private var shouldShowInlinePlayer: Bool {
-        #if os(macOS)
         return !showFullScreen
-        #else
-        return true
-        #endif
     }
 
     private var inlineFullScreenHandler: (() -> Void)? {
-        #if os(macOS)
         return { openFullScreenPlayer() }
-        #else
-        return nil
-        #endif
     }
 
     private func handlePlayerEpisodeSelection() {
-        #if os(iOS)
-        // KSPlayer 全屏时会把播放器 UIView 移入它自己的全屏控制器。
-        // 这时不能让详情页的 sheet 抢着 present，否则系统会先退出全屏或拒绝呈现。
-        if let top = topViewController(), top.presentingViewController != nil {
-            presentFullscreenEpisodePicker(from: top)
-        } else {
-            showEpisodePicker = true
-        }
-        #else
         showEpisodePicker = true
-        #endif
     }
-
-    #if os(iOS)
-    private func topViewController(from root: UIViewController? = nil) -> UIViewController? {
-        let root = root ?? UIApplication.shared.connectedScenes
-            .compactMap { scene in
-                (scene as? UIWindowScene)?.windows.first(where: { $0.isKeyWindow })
-            }
-            .first?.rootViewController
-        if let presented = root?.presentedViewController {
-            return topViewController(from: presented)
-        }
-        if let navigation = root as? UINavigationController {
-            return topViewController(from: navigation.visibleViewController)
-        }
-        if let tab = root as? UITabBarController {
-            return topViewController(from: tab.selectedViewController)
-        }
-        return root
-    }
-
-    private func presentFullscreenEpisodePicker(from presenter: UIViewController) {
-        guard viewModel.currentEpisodes.count > 1 else { return }
-        let picker = FullscreenEpisodePickerView(
-            episodes: viewModel.currentEpisodes,
-            selectedIndex: viewModel.selectedEpisodeIndex,
-            onDismiss: { [weak presenter] in presenter?.dismiss(animated: true) },
-            onSelect: { [weak presenter] index in
-                presenter?.dismiss(animated: true) {
-                    withAnimation {
-                        viewModel.selectEpisode(index: index)
-                    }
-                    saveHistoryForCurrentEpisode()
-                }
-            }
-        )
-        let hostingController = UIHostingController(rootView: picker)
-        hostingController.modalPresentationStyle = .overFullScreen
-        hostingController.modalTransitionStyle = .crossDissolve
-        hostingController.view.backgroundColor = .clear
-        presenter.present(hostingController, animated: true)
-    }
-    #endif
     
     // MARK: - 视频信息
     
@@ -690,7 +668,12 @@ struct DetailView: View {
         }
     }
     
-    #if os(macOS)
+    #if os(iOS)
+    private func openFullScreenPlayer() {
+        guard viewModel.playUrl != nil else { return }
+        showFullScreen = true
+    }
+    #elseif os(macOS)
     private func openFullScreenPlayer() {
         guard viewModel.playUrl != nil else { return }
         appState.enterPlayerFullScreen()
@@ -729,6 +712,72 @@ struct DetailView: View {
     #endif
 }
 
+#if os(iOS)
+/// iOS 全屏播放器容器。播放器视图由 SwiftUI cover 管理，控制器和 VLC
+/// 的持久视频表面跨 cover 复用，退出时不会留下旧的全屏 UIView。
+private struct VLCFullscreenPlayerContainer: View {
+    let urlString: String
+    let startPosition: Double
+    let title: String
+    let episode: String
+    let canPlayPrevious: Bool
+    let onPlayPrevious: () -> Void
+    let canPlayNext: Bool
+    let onPlayNext: () -> Void
+    let episodes: [VodInfo.Episode]
+    let selectedEpisodeIndex: Int
+    let onSelectEpisode: (Int) -> Void
+    let onProgressChanged: ((Double, Double?) -> Void)?
+    let onPlaybackEnded: (() -> Void)?
+    let onClose: () -> Void
+    let sharedController: VLCPlayerController
+    @State private var showEpisodePicker = false
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VLCVodPlayerView(
+                urlString: urlString,
+                startPosition: startPosition,
+                onProgressChanged: onProgressChanged,
+                onPlaybackEnded: onPlaybackEnded,
+                onToggleFullScreen: onClose,
+                onBack: onClose,
+                canPlayPrevious: canPlayPrevious,
+                onPlayPrevious: onPlayPrevious,
+                canPlayNext: canPlayNext,
+                onPlayNext: onPlayNext,
+                canSelectEpisode: episodes.count > 1,
+                onSelectEpisode: { showEpisodePicker = true },
+                title: title,
+                episode: episode,
+                sharedController: sharedController
+            )
+            .ignoresSafeArea()
+            if showEpisodePicker {
+                FullscreenEpisodePickerView(
+                    episodes: episodes,
+                    selectedIndex: selectedEpisodeIndex,
+                    onDismiss: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showEpisodePicker = false
+                        }
+                    },
+                    onSelect: { index in
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showEpisodePicker = false
+                        }
+                        onSelectEpisode(index)
+                    }
+                )
+                .transition(.opacity)
+                .zIndex(10)
+            }
+        }
+    }
+}
+#endif
+
 private struct EpisodePickerSheet: View {
     let episodes: [VodInfo.Episode]
     let selectedIndex: Int
@@ -756,6 +805,8 @@ private struct EpisodePickerSheet: View {
 /// 全屏播放器
 struct FullScreenPlayerView: View {
     let urlString: String
+    var danmakuTitle: String = ""
+    var danmakuEpisode: String = ""
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
@@ -785,6 +836,8 @@ struct FullScreenPlayerView: View {
                 onBack: onCloseRequested,
                 canPlayNext: canPlayNext,
                 onPlayNext: onPlayNext,
+                danmakuTitle: danmakuTitle,
+                danmakuEpisode: danmakuEpisode,
                 systemController: systemController,
                 vlcController: vlcController
             )
