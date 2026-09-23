@@ -92,6 +92,12 @@ struct DetailView: View {
         .task(id: "\(video.sourceKey)-\(video.id)") {
             await viewModel.loadDetail(video: video)
             restorePlaybackFromHistory()
+            // 海报点击后默认直接进入播放：先按历史续播，无历史则自动选中第一集播放，
+            // 用户无需再额外点击“立即播放”。
+            if !viewModel.isPlaying {
+                viewModel.selectEpisode(index: 0)
+                saveHistoryForCurrentEpisode()
+            }
             refreshCollectState()
         }
         .onDisappear {
@@ -140,6 +146,8 @@ struct DetailView: View {
         #if os(iOS)
         .fullScreenCover(isPresented: $showFullScreen, onDismiss: {
             isFullScreenDismissing = false
+            // 全屏播放器退出后恢复竖屏。
+            OrientationLock.portrait()
         }) {
             if let url = viewModel.playUrl {
                 FullScreenPlayerView(
@@ -554,6 +562,8 @@ struct DetailView: View {
     
     private func openFullScreenPlayer() {
         #if os(iOS)
+        // 全屏播放器进入前锁定横屏，退出后恢复竖屏（见 fullScreenCover onDismiss）。
+        OrientationLock.landscape()
         showFullScreen = true
         #else
         guard viewModel.playUrl != nil else { return }
@@ -650,5 +660,10 @@ struct FullScreenPlayerView: View {
                 Spacer()
             }
         }
+        #if os(iOS)
+        // 全屏时隐藏状态栏与 Home 指示条，让视频铺满屏幕。
+        .statusBarHidden(true)
+        .persistentSystemOverlays(.hidden)
+        #endif
     }
 }

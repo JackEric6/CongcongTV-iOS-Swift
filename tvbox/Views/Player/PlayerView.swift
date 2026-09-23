@@ -1,10 +1,25 @@
 import SwiftUI
 import AVKit
+import AVFoundation
 
 #if os(macOS)
 import AppKit
 #else
 import UIKit
+#endif
+
+#if os(iOS)
+/// AirPlay 投屏入口按钮（仅系统 AVPlayer 播放器，配合 allowsExternalPlayback 使用）。
+struct AirPlayRoutePickerView: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let pickerView = AVRoutePickerView()
+        pickerView.tintColor = .white
+        pickerView.activeTintColor = UIColor.systemOrange
+        return pickerView
+    }
+
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
 #endif
 
 /// 跨平台播放器：macOS 使用 AVPlayerView，避免 SwiftUI.VideoPlayer 在 macOS 的崩溃问题
@@ -304,7 +319,17 @@ struct AVPlayerContentView: View {
         }
     }
     
+    /// 配置音频会话为后台播放模式，确保播放器出声并支持 AirPlay 投屏。
+    private func configureAudioSessionIfNeeded() {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
+        #endif
+    }
+
     private func setupPlayer() {
+        configureAudioSessionIfNeeded()
         guard let url = Self.sanitizedURL(from: urlString) else {
             print("[AVPlayer] URL sanitization failed for: \(urlString)")
             return
@@ -334,6 +359,8 @@ struct AVPlayerContentView: View {
                 }
             }
             #endif
+            sharedPlayer.allowsExternalPlayback = true
+            sharedPlayer.usesExternalPlaybackWhileExternalScreenIsActive = true
             player = sharedPlayer
             applyPreferredPlaybackRate(to: sharedPlayer)
             bindPlayerObservers(for: sharedPlayer)
@@ -351,6 +378,8 @@ struct AVPlayerContentView: View {
         playerItem.preferredForwardBufferDuration = 0
         let newPlayer = AVPlayer(playerItem: playerItem)
         newPlayer.defaultRate = preferredRate
+        newPlayer.allowsExternalPlayback = true
+        newPlayer.usesExternalPlaybackWhileExternalScreenIsActive = true
         if let sharedController {
             sharedController.setPlayer(newPlayer, urlString: targetURLString)
         }
@@ -663,7 +692,11 @@ struct AVPlayerContentView: View {
                 
                 Spacer()
                 
-                // 右：全屏
+                // 右：投屏 + 全屏
+                #if os(iOS)
+                AirPlayRoutePickerView()
+                    .frame(width: 36, height: 36)
+                #endif
                 if let onToggleFullScreen {
                     Button {
                         wakeUpControls()
