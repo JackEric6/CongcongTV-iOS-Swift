@@ -53,7 +53,10 @@ struct Movie: Codable {
 
         static func formatDoubanRating(_ value: String) -> String {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let number = Double(trimmed), number.isFinite, number > 0 else { return "" }
+            guard let range = trimmed.range(of: #"\d+(?:\.\d+)?"#, options: .regularExpression),
+                  let number = Double(String(trimmed[range])),
+                  number.isFinite,
+                  number > 0 else { return "" }
             return String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), number)
         }
         

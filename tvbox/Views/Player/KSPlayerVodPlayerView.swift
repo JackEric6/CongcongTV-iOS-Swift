@@ -391,7 +391,6 @@ private struct KSPlayerUIView: UIViewRepresentable {
             let overlay = DanmakuOverlayView()
             overlay.translatesAutoresizingMaskIntoConstraints = false
             view.contentOverlayView.addSubview(overlay)
-            overlay.layer.zPosition = 100
             NSLayoutConstraint.activate([
                 overlay.leadingAnchor.constraint(equalTo: view.contentOverlayView.leadingAnchor),
                 overlay.trailingAnchor.constraint(equalTo: view.contentOverlayView.trailingAnchor),
