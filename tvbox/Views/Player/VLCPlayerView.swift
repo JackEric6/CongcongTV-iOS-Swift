@@ -952,7 +952,7 @@ struct VLCVodPlayerView: View {
 
     private var playerSurface: some View {
         ZStack {
-            VLCDrawableView(controller: controller, onDrawableReady: onDrawableReady)
+            VLCDrawableView(controller: controller)
                 .background(Color.black)
             #if !os(iOS)
                 .onTapGesture(count: 2) {
@@ -1043,7 +1043,7 @@ struct VLCVodPlayerView: View {
                     seekButton(icon: "goforward.15", offset: 15)
                 }
                 .padding(.trailing, 12)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .centerTrailing)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                 .opacity(showControls ? 1 : 0)
             }
         }
