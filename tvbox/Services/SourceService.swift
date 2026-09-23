@@ -394,6 +394,16 @@ class SourceService {
                 }
             }
             url = try buildURL(base: api, queryItems: queryItems)
+        } else if isXgzySource(sourceBean) {
+            // 西瓜资源等部分 CMS 接口仅带 wd 会被 WAF 拦截或返回空数据，
+            // 需要附带 ac=detail 才会返回 JSON 搜索结果。
+            url = try buildURL(
+                base: api,
+                queryItems: [
+                    URLQueryItem(name: "ac", value: "detail"),
+                    URLQueryItem(name: "wd", value: keyword)
+                ]
+            )
         } else {
             // JSON 接口 (type=1)
             url = try buildURL(
@@ -522,6 +532,15 @@ class SourceService {
     private func isKktvsSource(_ sourceBean: SourceBean) -> Bool {
         sourceBean.key.caseInsensitiveCompare("kktvs") == .orderedSame
             || sourceBean.api.range(of: "kktvs.com", options: [.caseInsensitive]) != nil
+    }
+
+    private func isXgzySource(_ sourceBean: SourceBean) -> Bool {
+        let key = sourceBean.key.lowercased()
+        let api = sourceBean.api.lowercased()
+        return key == "xgzy"
+            || key.contains("xigua")
+            || api.contains("xgzyapi.com")
+            || api.contains("xiguam3u8")
     }
 
     private func parseXMLDetail(_ xml: String, sourceKey: String) -> VodInfo? {
