@@ -89,7 +89,7 @@ final class DoubanTrendingService: @unchecked Sendable {
                 id: id,
                 title: title,
                 cover: normalizeImageURL(cover),
-                rating: ratingValue,
+                rating: Movie.Video.formatDoubanRating(ratingValue),
                 type: itemType.isEmpty ? fallbackType : itemType,
                 year: string(item["year"])
             )

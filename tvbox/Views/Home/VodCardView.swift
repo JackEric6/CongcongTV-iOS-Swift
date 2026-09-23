@@ -60,8 +60,8 @@ struct VodCardView: View {
                 }
 
                 // 豆瓣评分固定在海报右下角，避免与左侧备注重叠。
-                if !video.doubanRating.isEmpty {
-                    Text(video.doubanRating)
+                if !video.formattedDoubanRating.isEmpty {
+                    Text(video.formattedDoubanRating)
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.white)
                         .padding(.horizontal, 6)

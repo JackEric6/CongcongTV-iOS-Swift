@@ -171,8 +171,11 @@ final class DanmakuOverlayView: UIView {
     private func enqueue(_ cue: DanmuCue, at cueTime: TimeInterval) {
         let placement: Placement
         switch cue.type {
-        case 1: placement = .top
-        case 2: placement = .bottom
+        // The endpoint follows Bilibili's XML convention: 1/2/3/6 are
+        // scrolling, 4 is bottom and 5 is top. Unsupported special effects
+        // are rendered as scrolling text instead of being dropped.
+        case 4: placement = .bottom
+        case 5: placement = .top
         default: placement = .scrolling
         }
 

@@ -57,6 +57,7 @@ class SearchViewModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
         let requestId = UUID()
         latestSearchRequestId = requestId
+        addToHistory(trimmed)
         
         isSearching = true
         errorMessage = nil

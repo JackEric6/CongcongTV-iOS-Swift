@@ -152,15 +152,10 @@ public final class DanmuService {
             guard let body = try? await network.getString(from: searchURL.absoluteString) else {
                 continue
             }
-            if let match = Self.findEpisode(in: body, requestedEpisode: episode) {
-                let commentURL = try Self.makeURL(
-                    baseURL: baseURL,
-                    path: "/api/v2/comment/\(Self.urlPathEscape(match.id))",
-                    queryItems: [URLQueryItem(name: "format", value: "json")]
-                )
-                if let comments = try? await network.getString(from: commentURL.absoluteString) {
-                    let cues = try await Self.parseOffMain(comments)
-                    if !cues.isEmpty { return cues }
+            for match in Self.findEpisodes(in: body, requestedEpisode: episode) {
+                if let cues = try? await loadComments(baseURL: baseURL, match: match),
+                   !cues.isEmpty {
+                    return cues
                 }
             }
         }
@@ -171,30 +166,37 @@ public final class DanmuService {
             path: "/api/v2/search/anime",
             queryItems: [URLQueryItem(name: "keyword", value: Self.transliterateToSimplified(title))]
         )
-        guard let animeBody = try? await network.getString(from: animeURL.absoluteString),
-              let animeID = Self.findAnimeID(in: animeBody) else {
+        guard let animeBody = try? await network.getString(from: animeURL.absoluteString) else {
             return []
         }
 
-        try Task.checkCancellation()
-        let bangumiURL = try Self.makeURL(
-            baseURL: baseURL,
-            path: "/api/v2/bangumi/\(Self.urlPathEscape(animeID))",
-            queryItems: []
-        )
-        guard let bangumiBody = try? await network.getString(from: bangumiURL.absoluteString),
-              let match = Self.findEpisode(in: bangumiBody, requestedEpisode: episode) else {
-            return []
+        for animeID in Self.findAnimeIDs(in: animeBody) {
+            try Task.checkCancellation()
+            let bangumiURL = try Self.makeURL(
+                baseURL: baseURL,
+                path: "/api/v2/bangumi/\(Self.urlPathEscape(animeID))",
+                queryItems: []
+            )
+            guard let bangumiBody = try? await network.getString(from: bangumiURL.absoluteString) else {
+                continue
+            }
+            for match in Self.findEpisodes(in: bangumiBody, requestedEpisode: episode) {
+                if let cues = try? await loadComments(baseURL: baseURL, match: match),
+                   !cues.isEmpty {
+                    return cues
+                }
+            }
         }
+        return []
+    }
 
+    private func loadComments(baseURL: String, match: EpisodeMatch) async throws -> [DanmuCue] {
         let commentURL = try Self.makeURL(
             baseURL: baseURL,
             path: "/api/v2/comment/\(Self.urlPathEscape(match.id))",
             queryItems: [URLQueryItem(name: "format", value: "json")]
         )
-        guard let comments = try? await network.getString(from: commentURL.absoluteString) else {
-            return []
-        }
+        let comments = try await network.getString(from: commentURL.absoluteString)
         return try await Self.parseOffMain(comments)
     }
 
@@ -300,22 +302,28 @@ public final class DanmuService {
         let number: Int
     }
 
-    private static func findAnimeID(in body: String) -> String? {
-        guard let object = jsonObject(body) else { return nil }
+    private static func findAnimeIDs(in body: String) -> [String] {
+        guard let object = jsonObject(body) else { return [] }
         let arrays = ["animes", "anime", "data"]
+        var ids: [String] = []
         for key in arrays {
-            if let items = object[key] as? [[String: Any]], let first = items.first {
-                return firstString(first, keys: ["animeId", "id"])
+            if let items = object[key] as? [[String: Any]] {
+                ids.append(contentsOf: items.map { firstString($0, keys: ["animeId", "id"]) })
             }
         }
-        return firstString(object, keys: ["animeId", "id"])
+        if ids.isEmpty {
+            let id = firstString(object, keys: ["animeId", "id"])
+            if !id.isEmpty { ids.append(id) }
+        }
+        var seen = Set<String>()
+        return ids.filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
-    private static func findEpisode(in body: String, requestedEpisode: String) -> EpisodeMatch? {
-        guard let object = jsonObject(body) else { return nil }
+    private static func findEpisodes(in body: String, requestedEpisode: String) -> [EpisodeMatch] {
+        guard let object = jsonObject(body) else { return [] }
         let episodeArrays = episodeArrays(in: object)
         let requestedNumber = extractNumber(from: requestedEpisode)
-        var first: EpisodeMatch?
+        var matches: [EpisodeMatch] = []
 
         for item in episodeArrays {
             let id = firstString(item, keys: ["episodeId", "id"])
@@ -324,15 +332,27 @@ public final class DanmuService {
             let rawNumber = firstString(item, keys: ["episodeNumber", "number", "sort"])
             let number = parseEpisodeNumber(rawNumber)
             let match = EpisodeMatch(id: id, title: title, number: number)
-            first = first ?? match
-            if !requestedEpisode.isEmpty, !title.isEmpty, title.localizedCaseInsensitiveContains(requestedEpisode) {
-                return match
+            let exactTitle = !requestedEpisode.isEmpty && !title.isEmpty
+                && title.localizedCaseInsensitiveContains(requestedEpisode)
+            let exactNumber = requestedNumber > 0 && (number == requestedNumber
+                || extractNumber(from: title) == requestedNumber)
+            if requestedEpisode.isEmpty || exactTitle || exactNumber {
+                matches.append(match)
             }
-            if requestedNumber > 0 && number == requestedNumber { return match }
-            if requestedNumber > 0 && extractNumber(from: title) == requestedNumber { return match }
         }
 
-        return requestedEpisode.isEmpty ? first : nil
+        if matches.isEmpty, requestedEpisode.isEmpty {
+            return episodeArrays.compactMap { item in
+                let id = firstString(item, keys: ["episodeId", "id"])
+                guard !id.isEmpty else { return nil }
+                return EpisodeMatch(
+                    id: id,
+                    title: firstString(item, keys: ["episodeTitle", "title", "name"]),
+                    number: parseEpisodeNumber(firstString(item, keys: ["episodeNumber", "number", "sort"]))
+                )
+            }
+        }
+        return matches
     }
 
     private static func episodeArrays(in object: [String: Any]) -> [[String: Any]] {

@@ -2,6 +2,8 @@ import SwiftUI
 import SwiftData
 #if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
 #endif
 
 /// 详情页 - 对应 Android 版 DetailActivity
@@ -29,27 +31,35 @@ struct DetailView: View {
             VStack(spacing: 0) {
                 // 播放器区域
                 if shouldShowInlinePlayer, viewModel.isPlaying, let url = viewModel.playUrl {
-                    PlayerView(
-                        urlString: url,
-                        startPosition: viewModel.currentPlaybackSeconds(),
-                        onProgressChanged: handlePlaybackProgress,
-                        onPlaybackEnded: playNextEpisodeIfNeeded,
-                        onToggleFullScreen: inlineFullScreenHandler,
-                        onBack: { dismiss() },
-                        canPlayPrevious: viewModel.selectedEpisodeIndex > 0,
-                        onPlayPrevious: playPreviousEpisode,
-                        canPlayNext: canPlayNextEpisode,
-                        onPlayNext: playNextEpisodeIfNeeded,
-                        canSelectEpisode: viewModel.currentEpisodes.count > 1,
-                        onSelectEpisode: { showEpisodePicker = true },
-                        danmakuTitle: viewModel.vodInfo?.name ?? video.name,
-                        danmakuEpisode: currentDanmakuEpisode,
-                        systemController: sharedSystemController,
-                        vlcController: sharedVLCController
-                    )
+                    // 给 KSPlayer 一个稳定的父容器。播放器原生全屏会暂时把同一个
+                    // UIView 移到全屏控制器，退出时再放回这里；比例约束放在父容器上，
+                    // 避免 SwiftUI 重新布局时出现偏移、塌陷或黑屏。
+                    ZStack {
+                        Color.black
+                        PlayerView(
+                            urlString: url,
+                            startPosition: viewModel.currentPlaybackSeconds(),
+                            onProgressChanged: handlePlaybackProgress,
+                            onPlaybackEnded: playNextEpisodeIfNeeded,
+                            onToggleFullScreen: inlineFullScreenHandler,
+                            onBack: { dismiss() },
+                            canPlayPrevious: viewModel.selectedEpisodeIndex > 0,
+                            onPlayPrevious: playPreviousEpisode,
+                            canPlayNext: canPlayNextEpisode,
+                            onPlayNext: playNextEpisodeIfNeeded,
+                            canSelectEpisode: viewModel.currentEpisodes.count > 1,
+                            onSelectEpisode: handlePlayerEpisodeSelection,
+                            danmakuTitle: viewModel.vodInfo?.name ?? video.name,
+                            danmakuEpisode: currentDanmakuEpisode,
+                            systemController: sharedSystemController,
+                            vlcController: sharedVLCController
+                        )
                         .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
-                        .aspectRatio(16/9, contentMode: .fit)
-                        .background(Color.black)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                    .clipped()
                 }
                 
                 // 视频信息
@@ -173,6 +183,62 @@ struct DetailView: View {
         return nil
         #endif
     }
+
+    private func handlePlayerEpisodeSelection() {
+        #if os(iOS)
+        // KSPlayer 全屏时会把播放器 UIView 移入它自己的全屏控制器。
+        // 这时不能让详情页的 sheet 抢着 present，否则系统会先退出全屏或拒绝呈现。
+        if let top = topViewController(), top.presentingViewController != nil {
+            presentFullscreenEpisodePicker(from: top)
+        } else {
+            showEpisodePicker = true
+        }
+        #else
+        showEpisodePicker = true
+        #endif
+    }
+
+    #if os(iOS)
+    private func topViewController(from root: UIViewController? = nil) -> UIViewController? {
+        let root = root ?? UIApplication.shared.connectedScenes
+            .compactMap { scene in
+                (scene as? UIWindowScene)?.windows.first(where: { $0.isKeyWindow })
+            }
+            .first?.rootViewController
+        if let presented = root?.presentedViewController {
+            return topViewController(from: presented)
+        }
+        if let navigation = root as? UINavigationController {
+            return topViewController(from: navigation.visibleViewController)
+        }
+        if let tab = root as? UITabBarController {
+            return topViewController(from: tab.selectedViewController)
+        }
+        return root
+    }
+
+    private func presentFullscreenEpisodePicker(from presenter: UIViewController) {
+        guard viewModel.currentEpisodes.count > 1 else { return }
+        let picker = FullscreenEpisodePickerView(
+            episodes: viewModel.currentEpisodes,
+            selectedIndex: viewModel.selectedEpisodeIndex,
+            onDismiss: { [weak presenter] in presenter?.dismiss(animated: true) },
+            onSelect: { [weak presenter] index in
+                presenter?.dismiss(animated: true) {
+                    withAnimation {
+                        viewModel.selectEpisode(index: index)
+                    }
+                    saveHistoryForCurrentEpisode()
+                }
+            }
+        )
+        let hostingController = UIHostingController(rootView: picker)
+        hostingController.modalPresentationStyle = .overFullScreen
+        hostingController.modalTransitionStyle = .crossDissolve
+        hostingController.view.backgroundColor = .clear
+        presenter.present(hostingController, animated: true)
+    }
+    #endif
     
     // MARK: - 视频信息
     
@@ -234,6 +300,16 @@ struct DetailView: View {
                 .font(.system(size: 20, weight: .bold))
                 .foregroundColor(.white)
                 .lineLimit(2)
+
+            if !video.formattedDoubanRating.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "star.fill")
+                        .foregroundColor(.yellow)
+                    Text(video.formattedDoubanRating)
+                        .foregroundColor(.yellow)
+                }
+                .font(.system(size: 14, weight: .semibold))
+            }
             
             if let info = viewModel.vodInfo {
                 VStack(alignment: .leading, spacing: 3) {

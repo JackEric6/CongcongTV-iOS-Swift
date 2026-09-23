@@ -45,6 +45,17 @@ struct Movie: Codable {
         var dt: String = ""
         /// 豆瓣评分；旧 CMS 数据通常没有该字段，空字符串表示未提供。
         var doubanRating: String = ""
+
+        /// 用于界面展示的豆瓣评分，始终保留一位小数。
+        var formattedDoubanRating: String {
+            Self.formatDoubanRating(doubanRating)
+        }
+
+        static func formatDoubanRating(_ value: String) -> String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let number = Double(trimmed), number.isFinite, number > 0 else { return "" }
+            return String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), number)
+        }
         
         init(id: String = UUID().uuidString, name: String = "", pic: String = "",
              note: String = "", sourceKey: String = "", doubanRating: String = "") {

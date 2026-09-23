@@ -187,19 +187,32 @@ struct SearchView: View {
 
                     FlowLayout(spacing: 8) {
                         ForEach(viewModel.searchHistory, id: \.self) { keyword in
-                            Button {
-                                viewModel.keyword = keyword
-                                Task { await viewModel.search() }
-                            } label: {
-                                Text(keyword)
-                                    .font(.subheadline)
-                                    .foregroundColor(.white.opacity(0.8))
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 7)
-                                    .background(Color.white.opacity(0.1))
-                                    .cornerRadius(16)
+                            HStack(spacing: 4) {
+                                Button {
+                                    viewModel.keyword = keyword
+                                    Task { await viewModel.search() }
+                                } label: {
+                                    Text(keyword)
+                                        .font(.subheadline)
+                                        .foregroundColor(.white.opacity(0.8))
+                                        .padding(.leading, 14)
+                                        .padding(.vertical, 7)
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    viewModel.removeFromHistory(keyword)
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundColor(.white.opacity(0.55))
+                                        .frame(width: 26, height: 28)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
+                            .padding(.trailing, 3)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Capsule())
                         }
                     }
                     .padding(.horizontal, 20)
