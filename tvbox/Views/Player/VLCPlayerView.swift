@@ -1019,6 +1019,7 @@ struct VLCVodPlayerView: View {
             .opacity(0.01)
             .allowsHitTesting(false)
         }
+        #endif
         .onContinuousHover { phase in
             switch phase {
             case .active(_): wakeUpControls()
