@@ -141,6 +141,7 @@ struct ParseBean: Codable, Identifiable, Hashable {
 struct AppConfigData: Codable {
     var spider: String?
     var wallpaper: String?
+    var danmaku: String?
     var sites: [SiteConfig]?
     var parses: [ParseConfig]?
     var lives: [LiveConfig]?

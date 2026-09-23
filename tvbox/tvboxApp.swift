@@ -1,6 +1,10 @@
 import SwiftUI
 import SwiftData
 import Combine
+#if os(iOS)
+import UIKit
+import KSPlayer
+#endif
 
 enum CongcongBrand {
     static let appName = "丛丛影视"
@@ -10,8 +14,22 @@ enum CongcongBrand {
 
 /// 应用入口。
 /// 负责初始化 SwiftData 容器，并将全局状态 `AppState` 注入到根视图。
+#if os(iOS)
+final class CongcongTVAppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        supportedInterfaceOrientationsFor window: UIWindow?
+    ) -> UIInterfaceOrientationMask {
+        KSOptions.supportedInterfaceOrientations
+    }
+}
+#endif
+
 @main
 struct CongcongTVApp: App {
+#if os(iOS)
+    @UIApplicationDelegateAdaptor(CongcongTVAppDelegate.self) private var appDelegate
+#endif
     /// 全局运行时状态（配置加载状态、当前源、分栏布局状态等）。
     @StateObject private var appState = AppState()
     /// 网络状态监控。

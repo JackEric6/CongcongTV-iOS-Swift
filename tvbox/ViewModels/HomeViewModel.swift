@@ -83,6 +83,7 @@ class HomeViewModel: ObservableObject {
                     var video = match
                     video.pic = item.cover
                     video.sourceKey = xiguaSource.key
+                    video.doubanRating = item.rating
                     return (index, video)
                 }
             }

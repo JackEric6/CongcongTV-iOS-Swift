@@ -19,6 +19,7 @@ struct DetailView: View {
     #endif
     @State private var lastPersistedProgress: Double = 0
     @State private var isCollected = false
+    @State private var showEpisodePicker = false
     #if os(iOS)
     @State private var isDescriptionExpanded = false
     #endif
@@ -35,8 +36,14 @@ struct DetailView: View {
                         onPlaybackEnded: playNextEpisodeIfNeeded,
                         onToggleFullScreen: inlineFullScreenHandler,
                         onBack: { dismiss() },
+                        canPlayPrevious: viewModel.selectedEpisodeIndex > 0,
+                        onPlayPrevious: playPreviousEpisode,
                         canPlayNext: canPlayNextEpisode,
                         onPlayNext: playNextEpisodeIfNeeded,
+                        canSelectEpisode: viewModel.currentEpisodes.count > 1,
+                        onSelectEpisode: { showEpisodePicker = true },
+                        danmakuTitle: viewModel.vodInfo?.name ?? video.name,
+                        danmakuEpisode: currentDanmakuEpisode,
                         systemController: sharedSystemController,
                         vlcController: sharedVLCController
                     )
@@ -80,6 +87,19 @@ struct DetailView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .sheet(isPresented: $showEpisodePicker) {
+            EpisodePickerSheet(
+                episodes: viewModel.currentEpisodes,
+                selectedIndex: viewModel.selectedEpisodeIndex,
+                onSelect: { index in
+                    showEpisodePicker = false
+                    withAnimation {
+                        viewModel.selectEpisode(index: index)
+                    }
+                    saveHistoryForCurrentEpisode()
+                }
+            )
+        }
         .task(id: "\(video.sourceKey)-\(video.id)") {
             await viewModel.loadDetail(video: video)
             restorePlaybackFromHistory()
@@ -489,6 +509,16 @@ struct DetailView: View {
     private var canPlayNextEpisode: Bool {
         viewModel.selectedEpisodeIndex + 1 < viewModel.currentEpisodes.count
     }
+
+    private var currentDanmakuEpisode: String {
+        guard viewModel.selectedEpisodeIndex >= 0,
+              viewModel.selectedEpisodeIndex < viewModel.currentEpisodes.count else {
+            return "第\(viewModel.selectedEpisodeIndex + 1)集"
+        }
+        let name = viewModel.currentEpisodes[viewModel.selectedEpisodeIndex].name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "第\(viewModel.selectedEpisodeIndex + 1)集" : name
+    }
     
     private func saveHistoryForCurrentEpisode(progressOverride: Double? = nil) {
         let episodeName = viewModel.vodInfo?.currentEpisode?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -573,6 +603,16 @@ struct DetailView: View {
             saveHistoryForCurrentEpisode()
         }
     }
+
+    private func playPreviousEpisode() {
+        var moved = false
+        withAnimation {
+            moved = viewModel.playPrevious()
+        }
+        if moved {
+            saveHistoryForCurrentEpisode()
+        }
+    }
     
     #if os(macOS)
     private func openFullScreenPlayer() {
@@ -611,6 +651,30 @@ struct DetailView: View {
         appState.exitPlayerFullScreen()
     }
     #endif
+}
+
+private struct EpisodePickerSheet: View {
+    let episodes: [VodInfo.Episode]
+    let selectedIndex: Int
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                EpisodeListView(
+                    episodes: episodes,
+                    selectedIndex: selectedIndex,
+                    onSelect: onSelect
+                )
+                .padding(.top, 12)
+            }
+            .navigationTitle("选集")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            .presentationDetents([.medium, .large])
+            #endif
+        }
+    }
 }
 
 /// 全屏播放器

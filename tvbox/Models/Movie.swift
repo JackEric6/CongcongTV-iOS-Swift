@@ -43,14 +43,17 @@ struct Movie: Codable {
         var last: String = ""
         /// 播放来源信息（部分接口会复用该字段）。
         var dt: String = ""
+        /// 豆瓣评分；旧 CMS 数据通常没有该字段，空字符串表示未提供。
+        var doubanRating: String = ""
         
         init(id: String = UUID().uuidString, name: String = "", pic: String = "",
-             note: String = "", sourceKey: String = "") {
+             note: String = "", sourceKey: String = "", doubanRating: String = "") {
             self.id = id
             self.name = name
             self.pic = pic
             self.note = note
             self.sourceKey = sourceKey
+            self.doubanRating = doubanRating
         }
         
         enum CodingKeys: String, CodingKey {
@@ -68,6 +71,7 @@ struct Movie: Codable {
             case last = "vod_time"
             case dt = "vod_play_from"
             case sourceKey
+            case doubanRating
         }
         
         /// 自定义解码以兼容多源字段类型差异（如 `vod_id` / `type_id` 可能是 Int 或 String）。
@@ -97,6 +101,7 @@ struct Movie: Codable {
             self.last = (try? container.decode(String.self, forKey: .last)) ?? ""
             self.dt = (try? container.decode(String.self, forKey: .dt)) ?? ""
             self.sourceKey = (try? container.decode(String.self, forKey: .sourceKey)) ?? ""
+            self.doubanRating = (try? container.decode(String.self, forKey: .doubanRating)) ?? ""
         }
     }
 }

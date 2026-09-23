@@ -58,6 +58,20 @@ struct VodCardView: View {
                         )
                         .padding(8)
                 }
+
+                // 豆瓣评分固定在海报右下角，避免与左侧备注重叠。
+                if !video.doubanRating.isEmpty {
+                    Text(video.doubanRating)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule().fill(Color.black.opacity(0.72))
+                        )
+                        .padding(8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                }
             }
             // 悬停缩放只增强视觉反馈，不影响点击命中区域。
             .scaleEffect(isHovered ? 1.05 : 1.0)

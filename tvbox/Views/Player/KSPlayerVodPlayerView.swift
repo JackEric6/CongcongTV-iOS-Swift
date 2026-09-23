@@ -13,6 +13,14 @@ struct KSPlayerVodPlayerView: View {
     var onPlaybackEnded: (() -> Void)? = nil
     /// Called when KSPlayer's native back button is pressed.
     var onBack: (() -> Void)? = nil
+    var canPlayPrevious: Bool = false
+    var onPlayPrevious: (() -> Void)? = nil
+    var canPlayNext: Bool = false
+    var onPlayNext: (() -> Void)? = nil
+    var canSelectEpisode: Bool = false
+    var onSelectEpisode: (() -> Void)? = nil
+    var danmakuTitle: String = ""
+    var danmakuEpisode: String = ""
     /// Forwards native toolbar actions to the host without replacing KSPlayer's handling.
     var onPlayerAction: ((PlayerButtonType) -> Void)? = nil
 
@@ -24,7 +32,15 @@ struct KSPlayerVodPlayerView: View {
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
                 onBack: onBack,
-                onPlayerAction: onPlayerAction
+                onPlayerAction: onPlayerAction,
+                canPlayPrevious: canPlayPrevious,
+                onPlayPrevious: onPlayPrevious,
+                canPlayNext: canPlayNext,
+                onPlayNext: onPlayNext,
+                canSelectEpisode: canSelectEpisode,
+                onSelectEpisode: onSelectEpisode,
+                danmakuTitle: danmakuTitle,
+                danmakuEpisode: danmakuEpisode
             )
             .background(Color.black)
         } else {
@@ -54,7 +70,13 @@ struct KSPlayerVodPlayerView: View {
 }
 
 private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
+    private weak var interactivePopGestureRecognizer: UIGestureRecognizer?
+
     override func updateUI(isFullScreen: Bool) {
+        // KSPlayer 的原生全屏控制器会在呈现完成后写入同一个全局掩码。
+        // 这里提前写入，确保 UIKit 在 present 的那一帧就允许横屏，避免
+        // 被应用默认的 portrait 掩码卡住。
+        KSOptions.supportedInterfaceOrientations = isFullScreen ? .landscapeRight : .portrait
         super.updateUI(isFullScreen: isFullScreen)
 
         // KSPlayer owns the presentation controller. Keep the app orientation
@@ -66,7 +88,46 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
             } else {
                 OrientationLock.portrait()
             }
+            self.syncInteractivePopGesture()
         }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        syncInteractivePopGesture()
+    }
+
+    override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        syncInteractivePopGesture()
+    }
+
+    private func syncInteractivePopGesture() {
+        guard let navigationController = owningNavigationController,
+              let popGesture = navigationController.interactivePopGestureRecognizer else {
+            return
+        }
+
+        if interactivePopGestureRecognizer !== popGesture {
+            interactivePopGestureRecognizer = popGesture
+            // KSPlayer 的 pan 手势覆盖在播放器控制层上；让系统边缘返回
+            // 优先识别，避免左滑偶发被播放器快进手势吞掉。
+            panGesture.require(toFail: popGesture)
+            panGesture.cancelsTouchesInView = false
+        }
+
+        popGesture.isEnabled = !landscapeButton.isSelected
+    }
+
+    private var owningNavigationController: UINavigationController? {
+        var responder: UIResponder? = self
+        while let next = responder?.next {
+            if let viewController = next as? UIViewController {
+                return viewController.navigationController
+            }
+            responder = next
+        }
+        return nil
     }
 }
 
@@ -79,13 +140,29 @@ private struct KSPlayerUIView: UIViewRepresentable {
     let onPlaybackEnded: (() -> Void)?
     let onBack: (() -> Void)?
     let onPlayerAction: ((PlayerButtonType) -> Void)?
+    let canPlayPrevious: Bool
+    let onPlayPrevious: (() -> Void)?
+    let canPlayNext: Bool
+    let onPlayNext: (() -> Void)?
+    let canSelectEpisode: Bool
+    let onSelectEpisode: (() -> Void)?
+    let danmakuTitle: String
+    let danmakuEpisode: String
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onProgressChanged: onProgressChanged,
             onPlaybackEnded: onPlaybackEnded,
             onBack: onBack,
-            onPlayerAction: onPlayerAction
+            onPlayerAction: onPlayerAction,
+            canPlayPrevious: canPlayPrevious,
+            onPlayPrevious: onPlayPrevious,
+            canPlayNext: canPlayNext,
+            onPlayNext: onPlayNext,
+            canSelectEpisode: canSelectEpisode,
+            onSelectEpisode: onSelectEpisode,
+            danmakuTitle: danmakuTitle,
+            danmakuEpisode: danmakuEpisode
         )
     }
 
@@ -101,14 +178,23 @@ private struct KSPlayerUIView: UIViewRepresentable {
         context.coordinator.onPlaybackEnded = onPlaybackEnded
         context.coordinator.onBack = onBack
         context.coordinator.onPlayerAction = onPlayerAction
+        context.coordinator.onPlayPrevious = onPlayPrevious
+        context.coordinator.onPlayNext = onPlayNext
+        context.coordinator.onSelectEpisode = onSelectEpisode
+        context.coordinator.updateDanmakuMetadata(title: danmakuTitle, episode: danmakuEpisode)
+        context.coordinator.updateActionButtons(
+            canPlayPrevious: canPlayPrevious,
+            canPlayNext: canPlayNext,
+            canSelectEpisode: canSelectEpisode
+        )
         guard context.coordinator.url != url else { return }
         configure(view, coordinator: context.coordinator)
     }
 
     static func dismantleUIView(_ view: CongcongKSVideoPlayerView, coordinator: Coordinator) {
+        coordinator.tearDownDanmaku()
         view.pause()
         view.backBlock = nil
-        view.playerLayer = nil
         view.delegate = nil
         view.playTimeDidChange = nil
     }
@@ -138,8 +224,18 @@ private struct KSPlayerUIView: UIViewRepresentable {
         view.routeButton.isHidden = false
         view.routeButton.tintColor = .white
         view.routeButton.activeTintColor = .systemOrange
+        view.toolBar.playbackRateButton.setTitle("倍速", for: .normal)
+        view.toolBar.playbackRateButton.accessibilityLabel = "倍速"
+        coordinator.installActionButtons(
+            on: view,
+            canPlayPrevious: canPlayPrevious,
+            canPlayNext: canPlayNext,
+            canSelectEpisode: canSelectEpisode
+        )
+        coordinator.installDanmaku(on: view)
         view.playTimeDidChange = { [weak coordinator] current, total in
             guard let coordinator else { return }
+            coordinator.updateDanmaku(currentTime: current, duration: total > 0 ? total : 0)
             coordinator.onProgressChanged?(current, total > 0 ? total : nil)
         }
         view.play()
@@ -156,17 +252,41 @@ private struct KSPlayerUIView: UIViewRepresentable {
         var onPlaybackEnded: (() -> Void)?
         var onBack: (() -> Void)?
         var onPlayerAction: ((PlayerButtonType) -> Void)?
+        var onPlayPrevious: (() -> Void)?
+        var onPlayNext: (() -> Void)?
+        var onSelectEpisode: (() -> Void)?
+        private var danmakuTitle: String
+        private var danmakuEpisode: String
+        private weak var danmakuView: DanmakuOverlayView?
+        private var danmakuTask: Task<Void, Never>?
+        private let previousButton = UIButton(type: .system)
+        private let nextButton = UIButton(type: .system)
+        private let episodeButton = UIButton(type: .system)
+        private var actionButtonsInstalled = false
 
         init(
             onProgressChanged: ((Double, Double?) -> Void)?,
             onPlaybackEnded: (() -> Void)?,
             onBack: (() -> Void)?,
-            onPlayerAction: ((PlayerButtonType) -> Void)?
+            onPlayerAction: ((PlayerButtonType) -> Void)?,
+            canPlayPrevious _: Bool,
+            canPlayNext _: Bool,
+            canSelectEpisode _: Bool,
+            onPlayPrevious: (() -> Void)?,
+            onPlayNext: (() -> Void)?,
+            onSelectEpisode: (() -> Void)?,
+            danmakuTitle: String,
+            danmakuEpisode: String
         ) {
             self.onProgressChanged = onProgressChanged
             self.onPlaybackEnded = onPlaybackEnded
             self.onBack = onBack
             self.onPlayerAction = onPlayerAction
+            self.onPlayPrevious = onPlayPrevious
+            self.onPlayNext = onPlayNext
+            self.onSelectEpisode = onSelectEpisode
+            self.danmakuTitle = danmakuTitle
+            self.danmakuEpisode = danmakuEpisode
         }
 
         func configure(_ view: IOSVideoPlayerView) {
@@ -176,11 +296,119 @@ private struct KSPlayerUIView: UIViewRepresentable {
             }
         }
 
+        func updateDanmakuMetadata(title: String, episode: String) {
+            let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedEpisode = episode.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard normalizedTitle != danmakuTitle || normalizedEpisode != danmakuEpisode else { return }
+            danmakuTitle = normalizedTitle
+            danmakuEpisode = normalizedEpisode
+            guard let danmakuView else { return }
+            loadDanmaku(into: danmakuView)
+        }
+
+        func installDanmaku(on view: IOSVideoPlayerView) {
+            if let existing = danmakuView, existing.superview === view.contentOverlayView {
+                loadDanmaku(into: existing)
+                return
+            }
+
+            let overlay = DanmakuOverlayView()
+            overlay.translatesAutoresizingMaskIntoConstraints = false
+            view.contentOverlayView.addSubview(overlay)
+            NSLayoutConstraint.activate([
+                overlay.leadingAnchor.constraint(equalTo: view.contentOverlayView.leadingAnchor),
+                overlay.trailingAnchor.constraint(equalTo: view.contentOverlayView.trailingAnchor),
+                overlay.topAnchor.constraint(equalTo: view.contentOverlayView.topAnchor),
+                overlay.bottomAnchor.constraint(equalTo: view.contentOverlayView.bottomAnchor)
+            ])
+            danmakuView = overlay
+            loadDanmaku(into: overlay)
+        }
+
+        func tearDownDanmaku() {
+            danmakuTask?.cancel()
+            danmakuTask = nil
+            danmakuView?.clear()
+            danmakuView?.removeFromSuperview()
+            danmakuView = nil
+        }
+
+        func updateDanmaku(currentTime: TimeInterval, duration: TimeInterval) {
+            danmakuView?.update(currentTime: currentTime, duration: duration)
+        }
+
+        private func loadDanmaku(into overlay: DanmakuOverlayView) {
+            danmakuTask?.cancel()
+            overlay.clear()
+
+            let title = danmakuTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let episode = danmakuEpisode.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return }
+
+            danmakuTask = Task { [weak self, weak overlay] in
+                let cues = await DanmuService.shared.loadCues(title: title, episode: episode)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self, let overlay, self.danmakuView === overlay else { return }
+                    overlay.setCues(cues)
+                }
+            }
+        }
+
+        func installActionButtons(
+            on view: IOSVideoPlayerView,
+            canPlayPrevious: Bool,
+            canPlayNext: Bool,
+            canSelectEpisode: Bool
+        ) {
+            guard !actionButtonsInstalled else { return }
+            actionButtonsInstalled = true
+            configureButton(previousButton, imageName: "backward.end", label: "上一集", action: #selector(previousPressed))
+            configureButton(nextButton, imageName: "forward.end", label: "下一集", action: #selector(nextPressed))
+            configureButton(episodeButton, imageName: "list.bullet", label: "选集", action: #selector(selectEpisodePressed))
+            view.toolBar.insertArrangedSubview(previousButton, at: 1)
+            view.toolBar.insertArrangedSubview(nextButton, at: 2)
+            view.toolBar.insertArrangedSubview(episodeButton, at: 3)
+            updateActionButtons(
+                canPlayPrevious: canPlayPrevious,
+                canPlayNext: canPlayNext,
+                canSelectEpisode: canSelectEpisode
+            )
+        }
+
+        func updateActionButtons(canPlayPrevious: Bool, canPlayNext: Bool, canSelectEpisode: Bool) {
+            previousButton.isHidden = !canPlayPrevious
+            nextButton.isHidden = !canPlayNext
+            episodeButton.isHidden = !canSelectEpisode
+        }
+
+        private func configureButton(_ button: UIButton, imageName: String, label: String, action: Selector) {
+            button.setImage(UIImage(systemName: imageName), for: .normal)
+            button.tintColor = .white
+            button.accessibilityLabel = label
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.widthAnchor.constraint(equalToConstant: 30).isActive = true
+            button.addTarget(self, action: action, for: .primaryActionTriggered)
+        }
+
+        @objc private func previousPressed() {
+            onPlayPrevious?()
+        }
+
+        @objc private func nextPressed() {
+            onPlayNext?()
+        }
+
+        @objc private func selectEpisodePressed() {
+            onSelectEpisode?()
+        }
+
         func playerController(state _: KSPlayerState) {}
 
         func playerController(currentTime _: TimeInterval, totalTime _: TimeInterval) {}
 
         func playerController(finish error: Error?) {
+            danmakuView?.reset()
             guard error == nil else { return }
             DispatchQueue.main.async { [weak self] in
                 self?.onPlaybackEnded?()
@@ -197,7 +425,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
         func playerController(bufferedCount _: Int, consumeTime _: TimeInterval) {}
 
-        func playerController(seek _: TimeInterval) {}
+        func playerController(seek _: TimeInterval) {
+            danmakuView?.reset()
+        }
     }
 }
 #else

@@ -98,8 +98,14 @@ struct PlayerView: View {
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onBack: (() -> Void)? = nil
+    var canPlayPrevious: Bool = false
+    var onPlayPrevious: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
+    var canSelectEpisode: Bool = false
+    var onSelectEpisode: (() -> Void)? = nil
+    var danmakuTitle: String = ""
+    var danmakuEpisode: String = ""
     var systemController: SystemPlayerSessionController? = nil
     var vlcController: VLCPlayerController? = nil
     @AppStorage(HawkConfig.PLAY_TYPE_VOD) private var vodPlayTypeRaw = -1
@@ -126,7 +132,15 @@ struct PlayerView: View {
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
-                onBack: onBack
+                onBack: onBack,
+                canPlayPrevious: canPlayPrevious,
+                onPlayPrevious: onPlayPrevious,
+                canPlayNext: canPlayNext,
+                onPlayNext: onPlayNext,
+                canSelectEpisode: canSelectEpisode,
+                onSelectEpisode: onSelectEpisode,
+                danmakuTitle: danmakuTitle,
+                danmakuEpisode: danmakuEpisode
             )
             #else
             switch selectedEngine {

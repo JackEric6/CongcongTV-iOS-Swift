@@ -26,6 +26,7 @@ class ApiConfig: ObservableObject {
     @Published var configUrl: String = ""
     @Published var liveConfigUrl: String = ""
     @Published var wallpaper: String = ""
+    @Published var danmaku: String = ""
     
     private let network = NetworkManager.shared
     private var activeLoadToken = UUID()
@@ -629,6 +630,7 @@ class ApiConfig: ObservableObject {
             
             // 壁纸
             self.wallpaper = config.wallpaper ?? ""
+            self.danmaku = config.danmaku?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         }
         
         if includeLive {

@@ -247,13 +247,18 @@ struct SearchView: View {
                                     .foregroundColor(index < 3 ? .orange : .secondary)
                                     .frame(width: 24)
 
-                                AsyncImage(url: URL(string: item.cover)) { phase in
-                                    if let image = phase.image {
-                                        image.resizable().scaledToFill()
-                                    } else {
-                                        // 热榜封面加载失败时保持透明，不绘制黑色占位框。
-                                        Color.clear
-                                    }
+                                CachedAsyncImage(url: URL.posterURL(from: item.cover)) { image in
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                } placeholder: {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color.white.opacity(0.08))
+                                        .overlay(
+                                            Image(systemName: "film")
+                                                .font(.caption)
+                                                .foregroundColor(.white.opacity(0.3))
+                                        )
                                 }
                                 .frame(width: 38, height: 52)
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
