@@ -31,14 +31,16 @@ targets:
           - Resources/movie2_kktvs.json
       - path: tvbox/Resources/movie2_kktvs.json
         buildPhase: resources
+      - path: tvbox/Resources/zh-Hans.lproj/InfoPlist.strings
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.congcong.tv.ios
         PRODUCT_NAME: CongcongTV
         INFOPLIST_FILE: tvbox/Info.plist
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: 丛丛影视
-        INFOPLIST_KEY_CFBundleName: 丛丛影视
+        INFOPLIST_KEY_CFBundleDisplayName: CongcongTV
+        INFOPLIST_KEY_CFBundleName: CongcongTV
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
