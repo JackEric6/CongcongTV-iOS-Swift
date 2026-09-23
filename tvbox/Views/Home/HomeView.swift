@@ -39,6 +39,18 @@ struct HomeView: View {
                 viewModel.selectSort(first)
             }
         }
+        // 去掉了首启配置页后，主页可能先于配置加载完成出现；
+        // 配置就绪后自动拉取分类与首页数据。
+        .onChange(of: appState.isConfigLoaded) { _, loaded in
+            if loaded && viewModel.sorts.isEmpty && viewModel.homeVideos.isEmpty {
+                Task {
+                    await viewModel.loadSorts()
+                    if let first = viewModel.sorts.first {
+                        viewModel.selectSort(first)
+                    }
+                }
+            }
+        }
     }
     
     // MARK: - 顶部栏（源选择器）
