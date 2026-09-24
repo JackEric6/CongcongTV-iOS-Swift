@@ -127,9 +127,9 @@ struct PlayerView: View {
     var onSelectEpisode: (() -> Void)? = nil
     var danmakuTitle: String = ""
     var danmakuEpisode: String = ""
+    var onFullScreenChanged: ((Bool) -> Void)? = nil
     #if os(iOS)
     var onDrawableReady: ((UIView) -> Void)? = nil
-    var onFullScreenChanged: ((Bool) -> Void)? = nil
     #endif
     var systemController: SystemPlayerSessionController? = nil
     var vlcController: VLCPlayerController? = nil

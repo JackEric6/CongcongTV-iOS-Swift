@@ -31,8 +31,7 @@ struct DetailView: View {
             VStack(spacing: 0) {
                 // 播放器区域
                 if shouldShowInlinePlayer, viewModel.isPlaying, let url = viewModel.playUrl {
-                    // VLC 的视频输出由共享控制器持有；全屏时通过 SwiftUI cover
-                    // 重建外层视图，不搬运播放器 UIView。
+                    // 播放器会话由共享控制器持有；AVKit 全屏时复用同一个控制器。
                     ZStack {
                         Color.black
                         PlayerView(
@@ -51,7 +50,8 @@ struct DetailView: View {
                             danmakuTitle: viewModel.vodInfo?.name ?? video.name,
                             danmakuEpisode: currentDanmakuEpisode,
                             systemController: sharedSystemController,
-                            vlcController: sharedVLCController
+                            vlcController: sharedVLCController,
+                            onFullScreenChanged: { showFullScreen = $0 }
                         )
                         .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
