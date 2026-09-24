@@ -76,6 +76,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     private var inlineFrame = CGRect.zero
     private var inlineTranslatesAutoresizingMaskIntoConstraints = false
     private var restoreTask: DispatchWorkItem?
+    private var transitionAnimationTask: DispatchWorkItem?
     private var routeButtonLayoutInstalled = false
     var customControlsLayout: ((Bool) -> Void)?
 
@@ -87,7 +88,24 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
 
     override func updateUI(isFullScreen: Bool) {
         if isFullScreen {
+            transitionAnimationTask?.cancel()
+            transitionAnimationTask = nil
+            restoreTask?.cancel()
+            restoreTask = nil
             captureInlineLayout()
+            // Keep the native KSPlayer presentation animation, but avoid a
+            // hard jump when the same view is reparented into the landscape
+            // controller.
+            alpha = 0
+            transform = CGAffineTransform(scaleX: 0.985, y: 0.985)
+        } else if landscapeButton.isSelected {
+            // Hide before KSPlayer dismisses its full-screen controller. Its
+            // own completion reattaches the view, and keeping it hidden here
+            // prevents one frame of the stale window/top-left layout.
+            transitionAnimationTask?.cancel()
+            transitionAnimationTask = nil
+            alpha = 0
+            transform = CGAffineTransform(scaleX: 0.985, y: 0.985)
         }
 
         // KSPlayer 的原生全屏控制器会在呈现完成后写入同一个全局掩码。
@@ -115,6 +133,21 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         DispatchQueue.main.async {
             self.syncInteractivePopGesture()
             self.landscapeButton.isHidden = false
+            guard isFullScreen else { return }
+            self.transitionAnimationTask?.cancel()
+            let task = DispatchWorkItem { [weak self] in
+                guard let self, self.landscapeButton.isSelected else { return }
+                UIView.animate(
+                    withDuration: 0.24,
+                    delay: 0,
+                    options: [.beginFromCurrentState, .curveEaseOut]
+                ) {
+                    self.alpha = 1
+                    self.transform = .identity
+                }
+            }
+            self.transitionAnimationTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: task)
         }
 
         if !isFullScreen {
@@ -152,7 +185,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
 
     private func styleControlLayers(isLandscape: Bool) {
         // 横屏时播放器可能在视频上下出现留边；控制层本身不能把留边固化成黑色。
-        // 按钮仍保留各自的深色背景，控制区域以外保持透明。
+        // 控制层和按钮都不应固化为黑色背景。
         let colors: [CGColor]
         if isLandscape {
             colors = [UIColor.clear.cgColor, UIColor.clear.cgColor]
@@ -204,9 +237,6 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     override func didMoveToSuperview() {
         super.didMoveToSuperview()
         applyTransparentSurfaces()
-        if !landscapeButton.isSelected, superview === inlineSuperview {
-            restoreInlineLayout()
-        }
         syncInteractivePopGesture()
     }
 
@@ -239,23 +269,27 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
 
     private func scheduleInlineRestoration() {
         restoreTask?.cancel()
+        transitionAnimationTask?.cancel()
         let task = DispatchWorkItem { [weak self] in
             self?.restoreInlineLayout()
         }
         restoreTask = task
 
+        // Wait for KSPlayer's PlayerTransitionAnimator to finish before
+        // restoring the inline constraints. Reattaching during the animation
+        // is what causes the view to briefly jump to the window's top-left.
         if let coordinator = owningViewController?.transitionCoordinator {
             coordinator.animate(alongsideTransition: nil) { [weak self] _ in
                 self?.restoreInlineLayout()
             }
         }
-        // The native animator normally completes in 0.3s. This also covers a
-        // dismissal that has no transition coordinator (for example rotation).
+        // Covers rotation and dismissals without a transition coordinator.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: task)
     }
 
     private func restoreInlineLayout() {
         guard !landscapeButton.isSelected, let container = inlineSuperview else { return }
+        restoreTask?.cancel()
         restoreTask = nil
 
         if superview !== container {
@@ -272,6 +306,35 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         container.setNeedsLayout()
         container.layoutIfNeeded()
         updateUI(isLandscape: false)
+
+        // The native controller has finished dismissing. Reattach the view
+        // invisibly, lay out its 16:9 constraints first, then reveal it with
+        // a short fade/scale so the transient window top-left frame is never
+        // shown to the user.
+        alpha = 0
+        transform = CGAffineTransform(scaleX: 0.985, y: 0.985)
+        let task = DispatchWorkItem { [weak self] in
+            guard let self, !self.landscapeButton.isSelected else { return }
+            UIView.animate(
+                withDuration: 0.24,
+                delay: 0,
+                options: [.beginFromCurrentState, .curveEaseInOut]
+            ) {
+                self.alpha = 1
+                self.transform = .identity
+            }
+        }
+        transitionAnimationTask = task
+        DispatchQueue.main.async(execute: task)
+    }
+
+    /// Stop and release the current media item before installing another URL.
+    /// Pausing alone leaves the old AVPlayerItem and audio pipeline alive.
+    func stopCurrentPlayback() {
+        playerLayer?.delegate = nil
+        playerLayer?.stop()
+        playerLayer = nil
+        playTimeDidChange = nil
     }
 
     private func applyTransparentSurfaces() {
@@ -390,13 +453,15 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
     static func dismantleUIView(_ view: CongcongKSVideoPlayerView, coordinator: Coordinator) {
         coordinator.tearDownDanmaku()
-        view.pause()
+        view.stopCurrentPlayback()
         view.backBlock = nil
         view.delegate = nil
-        view.playTimeDidChange = nil
     }
 
     private func configure(_ view: CongcongKSVideoPlayerView, coordinator: Coordinator) {
+        if let previousURL = coordinator.url, previousURL != url {
+            view.stopCurrentPlayback()
+        }
         coordinator.url = url
         // KSPlayer's AV player configures the audio session too, but doing it here
         // keeps background audio available across view reattachment.
@@ -694,9 +759,14 @@ private struct KSPlayerUIView: UIViewRepresentable {
             button.accessibilityLabel = label
             button.translatesAutoresizingMaskIntoConstraints = false
             button.widthAnchor.constraint(equalToConstant: 30).isActive = true
-            button.backgroundColor = UIColor.black.withAlphaComponent(0.58)
-            button.layer.cornerRadius = 21
-            button.clipsToBounds = true
+            button.backgroundColor = .clear
+            button.layer.backgroundColor = UIColor.clear.cgColor
+            button.layer.shadowColor = UIColor.clear.cgColor
+            button.layer.shadowOpacity = 0
+            button.layer.shadowRadius = 0
+            button.layer.shadowOffset = .zero
+            button.layer.cornerRadius = 0
+            button.clipsToBounds = false
             button.addTarget(self, action: action, for: .primaryActionTriggered)
         }
 

@@ -53,7 +53,6 @@ struct DetailView: View {
                             systemController: sharedSystemController,
                             vlcController: sharedVLCController
                         )
-                        .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
                         .frame(maxWidth: .infinity)
                     }
                     .frame(maxWidth: .infinity)
