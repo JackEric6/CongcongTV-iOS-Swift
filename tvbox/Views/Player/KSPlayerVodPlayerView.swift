@@ -472,7 +472,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             verticalSeekStack.addArrangedSubview(verticalForwardButton)
             view.controllerView.addSubview(verticalSeekStack)
             NSLayoutConstraint.activate([
-                verticalSeekStack.trailingAnchor.constraint(equalTo: view.safeTrailingAnchor, constant: -14),
+                verticalSeekStack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
                 verticalSeekStack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
                 verticalSeekStack.widthAnchor.constraint(equalToConstant: 46),
                 verticalRewindButton.heightAnchor.constraint(equalToConstant: 42),
