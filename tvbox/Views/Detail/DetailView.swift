@@ -191,8 +191,62 @@ struct DetailView: View {
     }
 
     private func handlePlayerEpisodeSelection() {
+        #if os(iOS)
+        // KSPlayer 全屏时播放器 UIView 会被移到它自己的全屏控制器；
+        // 从顶层控制器呈现选集，避免底层 SwiftUI sheet 抢占当前转场。
+        if let top = topViewController(), top.presentingViewController != nil {
+            presentFullscreenEpisodePicker(from: top)
+        } else {
+            showEpisodePicker = true
+        }
+        #else
         showEpisodePicker = true
+        #endif
     }
+
+    #if os(iOS)
+    private func topViewController(from root: UIViewController? = nil) -> UIViewController? {
+        let root = root ?? UIApplication.shared.connectedScenes
+            .compactMap { scene in
+                (scene as? UIWindowScene)?.windows.first(where: { $0.isKeyWindow })
+            }
+            .first?.rootViewController
+        if let presented = root?.presentedViewController {
+            return topViewController(from: presented)
+        }
+        if let navigation = root as? UINavigationController {
+            return topViewController(from: navigation.visibleViewController)
+        }
+        if let tab = root as? UITabBarController {
+            return topViewController(from: tab.selectedViewController)
+        }
+        return root
+    }
+
+    private func presentFullscreenEpisodePicker(from presenter: UIViewController) {
+        guard viewModel.currentEpisodes.count > 1 else { return }
+        let picker = FullscreenEpisodePickerView(
+            episodes: viewModel.currentEpisodes,
+            selectedIndex: viewModel.selectedEpisodeIndex,
+            onDismiss: { [weak presenter] in
+                presenter?.dismiss(animated: true)
+            },
+            onSelect: { [weak presenter] index in
+                presenter?.dismiss(animated: true) {
+                    withAnimation {
+                        viewModel.selectEpisode(index: index)
+                    }
+                    saveHistoryForCurrentEpisode()
+                }
+            }
+        )
+        let hostingController = UIHostingController(rootView: picker)
+        hostingController.modalPresentationStyle = .overFullScreen
+        hostingController.modalTransitionStyle = .crossDissolve
+        hostingController.view.backgroundColor = .clear
+        presenter.present(hostingController, animated: true)
+    }
+    #endif
     
     // MARK: - 视频信息
     

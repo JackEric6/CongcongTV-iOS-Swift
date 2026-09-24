@@ -160,12 +160,11 @@ struct PlayerView: View {
     var body: some View {
         Group {
             #if os(iOS)
-            AVPlayerContentView(
+            KSPlayerVodPlayerView(
                 urlString: urlString,
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
-                onToggleFullScreen: onToggleFullScreen,
                 onBack: onBack,
                 canPlayPrevious: canPlayPrevious,
                 onPlayPrevious: onPlayPrevious,
@@ -173,10 +172,8 @@ struct PlayerView: View {
                 onPlayNext: onPlayNext,
                 canSelectEpisode: canSelectEpisode,
                 onSelectEpisode: onSelectEpisode,
-                title: danmakuTitle,
-                episode: danmakuEpisode,
-                sharedController: systemController,
-                onFullScreenChanged: onFullScreenChanged
+                danmakuTitle: danmakuTitle,
+                danmakuEpisode: danmakuEpisode
             )
             #else
             switch selectedEngine {
