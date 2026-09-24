@@ -54,7 +54,7 @@ struct DetailView: View {
                             vlcController: sharedVLCController
                         )
                         .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
                     }
                     .frame(maxWidth: .infinity)
                     .aspectRatio(16 / 9, contentMode: .fit)
@@ -175,7 +175,7 @@ struct DetailView: View {
         #if os(macOS)
         return !showFullScreen
         #else
-        // iOS 的 AVPlayerViewController 自己负责进入/退出全屏；
+        // iOS 的 KSPlayer 原生全屏控制器自己负责进入/退出全屏；
         // 详情页始终保留唯一的播放器实例，避免重建第二个控制器。
         return true
         #endif
@@ -185,7 +185,7 @@ struct DetailView: View {
         #if os(macOS)
         return { openFullScreenPlayer() }
         #else
-        // iOS 使用 AVPlayerViewController 自带的全屏按钮和退出手势。
+        // iOS 使用 KSPlayer 原生全屏按钮和退出手势。
         return nil
         #endif
     }

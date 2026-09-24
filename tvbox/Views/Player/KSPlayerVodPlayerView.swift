@@ -42,7 +42,7 @@ struct KSPlayerVodPlayerView: View {
                 danmakuTitle: danmakuTitle,
                 danmakuEpisode: danmakuEpisode
             )
-            .background(Color.black)
+            .background(Color.clear)
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -71,9 +71,25 @@ struct KSPlayerVodPlayerView: View {
 
 private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     private weak var interactivePopGestureRecognizer: UIGestureRecognizer?
+    private weak var inlineSuperview: UIView?
+    private var inlineFrameConstraints: [NSLayoutConstraint] = []
+    private var inlineFrame = CGRect.zero
+    private var inlineTranslatesAutoresizingMaskIntoConstraints = false
+    private var restoreTask: DispatchWorkItem?
+    private var routeButtonLayoutInstalled = false
     var customControlsLayout: ((Bool) -> Void)?
 
+    override var isMaskShow: Bool {
+        didSet {
+            owningViewController?.setNeedsStatusBarAppearanceUpdate()
+        }
+    }
+
     override func updateUI(isFullScreen: Bool) {
+        if isFullScreen {
+            captureInlineLayout()
+        }
+
         // KSPlayer 的原生全屏控制器会在呈现完成后写入同一个全局掩码。
         // 这里提前写入，确保 UIKit 在 present 的那一帧就允许横屏，避免
         // 被应用默认的 portrait 掩码卡住。
@@ -100,6 +116,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
             self.syncInteractivePopGesture()
             self.landscapeButton.isHidden = false
         }
+
+        if !isFullScreen {
+            scheduleInlineRestoration()
+        }
     }
 
     override func updateUI(isLandscape: Bool) {
@@ -109,16 +129,43 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         landscapeButton.isEnabled = true
         styleControlLayers(isLandscape: isLandscape)
         customControlsLayout?(isLandscape)
+        owningViewController?.setNeedsStatusBarAppearanceUpdate()
+    }
+
+    fileprivate func installRouteButtonLayout() {
+        guard !routeButtonLayoutInstalled else { return }
+        routeButtonLayoutInstalled = true
+
+        // KSPlayer 默认把 routeButton 放进顶部 navigationBar；移到控制层右侧中部，
+        // 避免横屏时和标题/返回按钮挤在一起，也避免重复显示。
+        navigationBar.removeArrangedSubview(routeButton)
+        routeButton.removeFromSuperview()
+        controllerView.addSubview(routeButton)
+        routeButton.translatesAutoresizingMaskIntoConstraints = false
+        routeButton.layer.zPosition = 120
+        NSLayoutConstraint.activate([
+            routeButton.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            routeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            routeButton.heightAnchor.constraint(equalToConstant: 30),
+        ])
     }
 
     private func styleControlLayers(isLandscape: Bool) {
-        // ExoPlayer/Media3 风格的纯黑控制层，保证白色图标和时间文本清晰可见。
-        let alpha: CGFloat = isLandscape ? 0.94 : 0.88
-        let color = UIColor.black.withAlphaComponent(alpha).cgColor
-        topMaskView.gradientLayer.colors = [color, color]
-        bottomMaskView.gradientLayer.colors = [color, color]
-        topMaskView.backgroundColor = .black
-        bottomMaskView.backgroundColor = .black
+        // 横屏时播放器可能在视频上下出现留边；控制层本身不能把留边固化成黑色。
+        // 按钮仍保留各自的深色背景，控制区域以外保持透明。
+        let colors: [CGColor]
+        if isLandscape {
+            colors = [UIColor.clear.cgColor, UIColor.clear.cgColor]
+        } else {
+            let color = UIColor.black.withAlphaComponent(0.5).cgColor
+            colors = [color, UIColor.clear.cgColor]
+        }
+        topMaskView.gradientLayer.colors = colors
+        bottomMaskView.gradientLayer.colors = colors
+        topMaskView.backgroundColor = .clear
+        bottomMaskView.backgroundColor = .clear
+        topMaskView.isOpaque = false
+        bottomMaskView.isOpaque = false
     }
 
     override func player(layer: KSPlayerLayer, state: KSPlayerState) {
@@ -150,12 +197,83 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        applyTransparentSurfaces()
         syncInteractivePopGesture()
     }
 
     override func didMoveToSuperview() {
         super.didMoveToSuperview()
+        applyTransparentSurfaces()
+        if !landscapeButton.isSelected, superview === inlineSuperview {
+            restoreInlineLayout()
+        }
         syncInteractivePopGesture()
+    }
+
+    private func captureInlineLayout() {
+        guard let container = superview else { return }
+        if inlineSuperview === container, !inlineFrameConstraints.isEmpty {
+            return
+        }
+        inlineSuperview = container
+        inlineFrameConstraints = frameConstraints
+        inlineFrame = frame
+        inlineTranslatesAutoresizingMaskIntoConstraints = translatesAutoresizingMaskIntoConstraints
+    }
+
+    private func scheduleInlineRestoration() {
+        restoreTask?.cancel()
+        let task = DispatchWorkItem { [weak self] in
+            self?.restoreInlineLayout()
+        }
+        restoreTask = task
+
+        if let coordinator = owningViewController?.transitionCoordinator {
+            coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+                self?.restoreInlineLayout()
+            }
+        }
+        // The native animator normally completes in 0.3s. This also covers a
+        // dismissal that has no transition coordinator (for example rotation).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: task)
+    }
+
+    private func restoreInlineLayout() {
+        guard !landscapeButton.isSelected, let container = inlineSuperview else { return }
+        restoreTask = nil
+
+        if superview !== container {
+            container.addSubview(self)
+        }
+        translatesAutoresizingMaskIntoConstraints = inlineTranslatesAutoresizingMaskIntoConstraints
+        if inlineFrameConstraints.isEmpty {
+            translatesAutoresizingMaskIntoConstraints = true
+            frame = inlineFrame
+        } else {
+            NSLayoutConstraint.activate(inlineFrameConstraints)
+        }
+        applyTransparentSurfaces()
+        container.setNeedsLayout()
+        container.layoutIfNeeded()
+        updateUI(isLandscape: false)
+    }
+
+    private func applyTransparentSurfaces() {
+        backgroundColor = .clear
+        isOpaque = false
+        contentOverlayView.backgroundColor = .clear
+        contentOverlayView.isOpaque = false
+        controllerView.backgroundColor = .clear
+        controllerView.isOpaque = false
+        topMaskView.backgroundColor = .clear
+        bottomMaskView.backgroundColor = .clear
+        playerLayer?.player.view?.backgroundColor = .clear
+        playerLayer?.player.view?.isOpaque = false
+
+        if landscapeButton.isSelected, let fullScreenViewController = owningViewController {
+            fullScreenViewController.view.backgroundColor = .clear
+            fullScreenViewController.view.isOpaque = false
+        }
     }
 
     private func syncInteractivePopGesture() {
@@ -176,10 +294,14 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     }
 
     private var owningNavigationController: UINavigationController? {
+        owningViewController?.navigationController
+    }
+
+    private var owningViewController: UIViewController? {
         var responder: UIResponder? = self
         while let next = responder?.next {
             if let viewController = next as? UIViewController {
-                return viewController.navigationController
+                return viewController
             }
             responder = next
         }
@@ -258,7 +380,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         view.playTimeDidChange = nil
     }
 
-    private func configure(_ view: IOSVideoPlayerView, coordinator: Coordinator) {
+    private func configure(_ view: CongcongKSVideoPlayerView, coordinator: Coordinator) {
         coordinator.url = url
         // KSPlayer's AV player configures the audio session too, but doing it here
         // keeps background audio available across view reattachment.
@@ -280,12 +402,19 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // 因切后台或系统事件自动进入 PiP。
         options.canStartPictureInPictureAutomaticallyFromInline = false
         view.set(url: url, options: options)
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.contentOverlayView.backgroundColor = .clear
+        view.controllerView.backgroundColor = .clear
+        view.playerLayer?.player.view?.backgroundColor = .clear
+        view.playerLayer?.player.view?.isOpaque = false
         // 完全移除 PiP 入口；投屏仍保留为独立的 AirPlay route 按钮。
         view.toolBar.pipButton.isHidden = true
         view.toolBar.pipButton.isEnabled = false
         view.routeButton.isHidden = false
         view.routeButton.tintColor = .white
         view.routeButton.activeTintColor = .systemOrange
+        view.installRouteButtonLayout()
         view.toolBar.playbackRateButton.setTitle(nil, for: .normal)
         view.toolBar.playbackRateButton.setImage(UIImage(systemName: "speedometer"), for: .normal)
         view.toolBar.playbackRateButton.tintColor = .white
@@ -484,12 +613,12 @@ private struct KSPlayerUIView: UIViewRepresentable {
             self.canSelectEpisode = canSelectEpisode
             let toolbar = view.toolBar
             let orderedViews: [UIView] = [
-                previousButton,
                 rewindButton,
                 toolbar.playButton,
                 forwardButton,
-                nextButton,
                 toolbar.timeLabel,
+                previousButton,
+                nextButton,
                 volumeButton,
                 toolbar.playbackRateButton,
                 episodeButton,
@@ -522,11 +651,13 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
         func updateActionButtonsLayout(isLandscape: Bool) {
             self.isLandscape = isLandscape
-            previousButton.isHidden = !canPlayPrevious
-            nextButton.isHidden = !canPlayNext
-            // 剧集导航只在横屏显示，竖屏保留播放、时间、15秒、音量和全屏。
-            previousButton.isHidden = !isLandscape || !canPlayPrevious
-            nextButton.isHidden = !isLandscape || !canPlayNext
+            // 剧集导航只在横屏显示；横屏固定占位，避免集数变化时控制栏横向跳动。
+            previousButton.isHidden = !isLandscape
+            nextButton.isHidden = !isLandscape
+            previousButton.isEnabled = isLandscape && canPlayPrevious
+            nextButton.isEnabled = isLandscape && canPlayNext
+            previousButton.alpha = canPlayPrevious ? 1 : 0.45
+            nextButton.alpha = canPlayNext ? 1 : 0.45
             episodeButton.isHidden = !isLandscape || !canSelectEpisode
             rewindButton.isHidden = !isLandscape
             forwardButton.isHidden = !isLandscape
@@ -554,6 +685,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         }
 
         @objc private func previousPressed() {
+            guard canPlayPrevious else { return }
             onPlayPrevious?()
         }
 
@@ -573,6 +705,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         }
 
         @objc private func nextPressed() {
+            guard canPlayNext else { return }
             onPlayNext?()
         }
 

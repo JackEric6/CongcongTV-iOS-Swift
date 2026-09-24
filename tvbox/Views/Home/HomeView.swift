@@ -56,52 +56,59 @@ struct HomeView: View {
     // MARK: - 顶部栏（源选择器）
     
     private var headerBar: some View {
-        HStack(spacing: 12) {
-            // 源切换按钮
-            Menu {
-                ForEach(ApiConfig.shared.sourceBeanList.filter { $0.isSupportedInSwift }) { source in
-                    Button {
-                        ApiConfig.shared.setHomeSource(source)
-                        Task { await viewModel.refresh() }
-                    } label: {
-                        HStack {
-                            Text(source.name)
-                            if source.key == ApiConfig.shared.homeSourceBean?.key {
-                                Image(systemName: "checkmark")
+        ZStack {
+            HStack(spacing: 12) {
+                // 左侧保留源切换入口，继续显示当前源和可选源列表。
+                Menu {
+                    ForEach(ApiConfig.shared.sourceBeanList.filter { $0.isSupportedInSwift }) { source in
+                        Button {
+                            ApiConfig.shared.setHomeSource(source)
+                            Task { await viewModel.refresh() }
+                        } label: {
+                            HStack {
+                                Text(source.name)
+                                if source.key == ApiConfig.shared.homeSourceBean?.key {
+                                    Image(systemName: "checkmark")
+                                }
                             }
                         }
                     }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "play.tv.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(.orange)
+                        Text(ApiConfig.shared.homeSourceBean?.name ?? CongcongBrand.appName)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.5))
+                    }
                 }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "play.tv.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(.orange)
-                    Text(ApiConfig.shared.homeSourceBean?.name ?? CongcongBrand.appName)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.5))
-                }
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            
-            Spacer()
+                .menuStyle(.borderlessButton)
+                .fixedSize()
 
-            NavigationLink {
-                SearchView()
-            } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(.white)
-                    .frame(width: 36, height: 36)
-                    .contentShape(Rectangle())
+                Spacer()
+
+                NavigationLink {
+                    SearchView()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("搜索")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("搜索")
+
+            Text(CongcongBrand.appName)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
+                .lineLimit(1)
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
