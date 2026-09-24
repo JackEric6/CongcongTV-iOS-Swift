@@ -216,9 +216,25 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
             return
         }
         inlineSuperview = container
-        inlineFrameConstraints = frameConstraints
+        inlineFrameConstraints = inlineLayoutConstraints(in: container)
         inlineFrame = frame
         inlineTranslatesAutoresizingMaskIntoConstraints = translatesAutoresizingMaskIntoConstraints
+    }
+
+    private func inlineLayoutConstraints(in container: UIView) -> [NSLayoutConstraint] {
+        var result = container.constraints.filter { constraint in
+            constraint.firstItem === self || constraint.secondItem === self
+        }
+        result.append(contentsOf: constraints.filter { constraint in
+            guard constraint.firstItem === self || constraint.secondItem === self else {
+                return false
+            }
+            return constraint.firstAttribute == .width
+                || constraint.firstAttribute == .height
+                || constraint.secondAttribute == .width
+                || constraint.secondAttribute == .height
+        })
+        return result
     }
 
     private func scheduleInlineRestoration() {
