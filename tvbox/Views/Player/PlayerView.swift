@@ -275,10 +275,10 @@ struct AVPlayerContentView: View {
         ZStack {
             Group {
                 if let player = player {
+                    #if os(iOS)
                     PlatformVideoPlayer(
                         player: player,
                         sessionController: sharedController,
-                        #if os(iOS)
                         onWillBeginFullScreen: {
                             isFullScreen = true
                             onFullScreenChanged?(true)
@@ -289,11 +289,14 @@ struct AVPlayerContentView: View {
                             onFullScreenChanged?(false)
                             OrientationLock.portrait()
                         }
-                        #endif
                     )
-                        #if os(iOS)
                         .scaleEffect(videoZoomScale)
-                        #endif
+                    #else
+                    PlatformVideoPlayer(
+                        player: player,
+                        sessionController: sharedController
+                    )
+                    #endif
                 } else {
                     ZStack {
                         Color.black

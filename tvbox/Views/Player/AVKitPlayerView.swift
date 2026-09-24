@@ -63,7 +63,10 @@ struct AVKitPlayerView: UIViewControllerRepresentable {
             _ playerViewController: AVPlayerViewController,
             willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator
         ) {
-            sessionController?.setFullScreenState(true)
+            let sessionController = sessionController
+            Task { @MainActor in
+                sessionController?.setFullScreenState(true)
+            }
             parent.onWillBeginFullScreen?()
         }
 
@@ -71,7 +74,10 @@ struct AVKitPlayerView: UIViewControllerRepresentable {
             _ playerViewController: AVPlayerViewController,
             willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator
         ) {
-            sessionController?.setFullScreenState(false)
+            let sessionController = sessionController
+            Task { @MainActor in
+                sessionController?.setFullScreenState(false)
+            }
             parent.onDidEndFullScreen?()
         }
 
