@@ -5,11 +5,11 @@ import Combine
 /// 首页 ViewModel
 @MainActor
 class HomeViewModel: ObservableObject {
-    /// 分类列表（包含手动注入的"推荐"分类）。
+    /// 首页可见的子分类列表。
     @Published var sorts: [MovieSort.SortData] = []
     /// 当前选中的分类。
     @Published var selectedSort: MovieSort.SortData?
-    /// 首页推荐内容（对应"推荐"分类）。
+    /// 首页推荐内容（用于首页内容兜底，不作为分类标签展示）。
     @Published var homeVideos: [Movie.Video] = []
     /// 普通分类的视频列表（分页加载）。
     @Published var categoryVideos: [Movie.Video] = []
@@ -42,15 +42,14 @@ class HomeViewModel: ObservableObject {
         do {
             let result = try await sourceService.getSort(sourceBean: source)
             
-            // 插入本地"推荐"分类，保持 UI 与 Android 版本习惯一致。
-            var allSorts = [MovieSort.SortData.home()]
-            allSorts.append(contentsOf: result.sorts)
+            // 首页标签只展示源返回的子分类；不要把本地“推荐”或西瓜聚合父类混入标签。
+            let allSorts = visibleChildSorts(result.sorts, source: source)
             
             self.sorts = allSorts
             self.homeVideos = await loadDoubanRecommendations()
             lastLoadFailedDueToNetwork = false
             
-            if selectedSort == nil {
+            if selectedSort == nil || !allSorts.contains(where: { $0.id == selectedSort?.id }) {
                 selectedSort = allSorts.first
             }
         } catch {
@@ -204,9 +203,64 @@ class HomeViewModel: ObservableObject {
         if let matchedSort = sorts.first(where: { $0.id == sort.id }) {
             selectedSort = matchedSort
             await loadCategoryVideos(page: 1, sort: matchedSort)
-        } else if let firstCategory = sorts.first(where: { $0.id != "home" }) {
+        } else if let firstCategory = sorts.first {
             selectedSort = firstCategory
             await loadCategoryVideos(page: 1, sort: firstCategory)
         }
+    }
+
+    /// 过滤明显的父分类并按安卓版规则稳定排序。
+    /// 仅对西瓜额外过滤 1/2/3/4，这些 ID 在西瓜接口中是电影/剧集/综艺/动漫聚合入口。
+    private func visibleChildSorts(_ sourceSorts: [MovieSort.SortData], source: SourceBean) -> [MovieSort.SortData] {
+        let isXigua = isXiguaSource(source)
+        var seen = Set<String>()
+        let filtered = sourceSorts.filter { sort in
+            let id = sort.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = normalizedCategoryName(sort.name)
+            guard !id.isEmpty, !name.isEmpty, id != "home" else { return false }
+            if isXigua && ["1", "2", "3", "4"].contains(id) { return false }
+            if obviousParentCategoryNames.contains(name) { return false }
+            let dedupKey = "\(id)|\(name)"
+            return seen.insert(dedupKey).inserted
+        }
+
+        // 显式携带源序号，保证相同优先级的分类严格保持源返回顺序。
+        return filtered.enumerated()
+            .sorted {
+                let leftRank = categoryRank($0.element.name)
+                let rightRank = categoryRank($1.element.name)
+                return leftRank == rightRank ? $0.offset < $1.offset : leftRank < rightRank
+            }
+            .map(\.element)
+    }
+
+    private var obviousParentCategoryNames: Set<String> {
+        ["电影", "电影片", "电影类", "电视剧", "连续剧", "电视剧类", "剧集", "影视", "影视剧", "综艺", "综艺片", "综艺类", "动漫", "动漫类"]
+    }
+
+    private func normalizedCategoryName(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "\u{3000}", with: "")
+            .lowercased()
+    }
+
+    private func categoryRank(_ value: String) -> Int {
+        let name = normalizedCategoryName(value)
+        if name.contains("伦理") || name.contains("理论片") { return 10000 }
+        if ["国产剧", "大陆剧", "内地剧", "国产电视剧"].contains(name) { return 0 }
+        if ["喜剧片", "喜剧"].contains(name) { return 10 }
+        if ["爱情片", "爱情"].contains(name) { return 20 }
+        if ["动作片", "动作"].contains(name) { return 30 }
+        if ["科幻片", "科幻"].contains(name) { return 40 }
+        if ["恐怖片", "恐怖"].contains(name) { return 50 }
+        if ["剧情片", "剧情"].contains(name) { return 60 }
+        if ["战争片", "战争"].contains(name) { return 70 }
+        if name.contains("纪录片") || name.contains("记录片") { return 80 }
+        if name.contains("动画") || name.contains("动漫") { return 90 }
+        if name.contains("综艺") { return 100 }
+        if name.contains("体育") || name.contains("赛事") { return 110 }
+        if name.contains("短剧") { return 120 }
+        return 1000
     }
 }
