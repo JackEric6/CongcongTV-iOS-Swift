@@ -30,7 +30,7 @@ struct PlatformVideoPlayer: View {
         #if os(macOS)
         MacOSPlayerView(player: player)
         #else
-        VideoPlayer(player: player)
+        AVKitPlayerView(player: player)
         #endif
     }
 }
@@ -129,7 +129,7 @@ struct PlayerView: View {
 
     private var activeEngine: PlayerEngine {
         #if os(iOS)
-        return .vlc
+        return .system
         #else
         return selectedEngine
         #endif
@@ -138,7 +138,7 @@ struct PlayerView: View {
     var body: some View {
         Group {
             #if os(iOS)
-            VLCVodPlayerView(
+            AVPlayerContentView(
                 urlString: urlString,
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
@@ -153,8 +153,7 @@ struct PlayerView: View {
                 onSelectEpisode: onSelectEpisode,
                 title: danmakuTitle,
                 episode: danmakuEpisode,
-                onDrawableReady: onDrawableReady,
-                sharedController: vlcController
+                sharedController: systemController
             )
             #else
             switch selectedEngine {
@@ -205,14 +204,21 @@ struct PlayerView: View {
 
 /// 基于系统 AVPlayer 的点播播放器实现
 struct AVPlayerContentView: View {
-    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
     let urlString: String
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
+    var onBack: (() -> Void)? = nil
+    var canPlayPrevious: Bool = false
+    var onPlayPrevious: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
+    var canSelectEpisode: Bool = false
+    var onSelectEpisode: (() -> Void)? = nil
+    var title: String = ""
+    var episode: String = ""
     var sharedController: SystemPlayerSessionController? = nil
     @AppStorage(HawkConfig.PLAY_SPEED) private var savedPlaybackRate = 1.0
     @State private var player: AVPlayer?
@@ -298,6 +304,18 @@ struct AVPlayerContentView: View {
         }
         #if os(iOS)
         .overlay {
+            if player != nil {
+                AVPlayerDanmakuOverlayView(
+                    title: title,
+                    episode: episode,
+                    resourceKey: urlString,
+                    currentTime: currentTime,
+                    duration: duration
+                )
+                .allowsHitTesting(false)
+            }
+        }
+        .overlay {
             PlayerGestureLayer(
                 onSeek: { offset in seek(by: offset) },
                 onTogglePlayPause: { togglePlayPauseWithOSD() },
@@ -310,6 +328,44 @@ struct AVPlayerContentView: View {
                 currentTime: currentTime,
                 duration: duration
             )
+        }
+        .overlay(alignment: .topLeading) {
+            if showControls {
+                HStack(spacing: 10) {
+                    if let onBack {
+                        Button(action: onBack) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 16, weight: .semibold))
+                                .frame(width: 34, height: 34)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title)
+                                .font(.system(size: 15, weight: .semibold))
+                                .lineLimit(1)
+                            if !episode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text(episode)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.white.opacity(0.72))
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .background(
+                    LinearGradient(
+                        colors: [.black.opacity(0.72), .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+            }
         }
         #endif
         .overlay(alignment: .bottom) {
@@ -382,22 +438,6 @@ struct AVPlayerContentView: View {
            sharedController.mediaURLString == targetURLString,
            let sharedPlayer = sharedController.player {
             cleanupPlayer(keepSharedPlayer: true)
-            // 强制重新关联 AVPlayerItem，修复从全屏退出后 VideoPlayer 黑屏问题。
-            // SwiftUI.VideoPlayer 在复用已有 AVPlayer 时可能无法正确连接视频渲染层，
-            // 通过 replaceCurrentItem 触发内部 layer 重新绑定。
-            #if os(iOS)
-            if let currentItem = sharedPlayer.currentItem {
-                let currentTime = sharedPlayer.currentTime()
-                let wasPlaying = sharedPlayer.rate != 0
-                sharedPlayer.replaceCurrentItem(with: nil)
-                sharedPlayer.replaceCurrentItem(with: currentItem)
-                sharedPlayer.seek(to: currentTime, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
-                    if wasPlaying {
-                        sharedPlayer.playImmediately(atRate: self.normalizedSavedPlaybackRate)
-                    }
-                }
-            }
-            #endif
             sharedPlayer.allowsExternalPlayback = true
             sharedPlayer.usesExternalPlaybackWhileExternalScreenIsActive = true
             player = sharedPlayer
@@ -712,6 +752,22 @@ struct AVPlayerContentView: View {
                     }
                     .buttonStyle(.plain)
 
+                    if let onPlayPrevious {
+                        Button {
+                            guard canPlayPrevious else { return }
+                            wakeUpControls()
+                            onPlayPrevious()
+                            showOSD(icon: "backward.end.fill")
+                        } label: {
+                            Image(systemName: "backward.end.fill")
+                                .font(.system(size: 16, weight: .medium))
+                                .frame(minWidth: 36, minHeight: 36)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canPlayPrevious)
+                        .opacity(canPlayPrevious ? 1 : 0.4)
+                    }
+
                     if let onPlayNext {
                         Button {
                             guard canPlayNext else { return }
@@ -733,6 +789,20 @@ struct AVPlayerContentView: View {
                 
                 // 右：投屏 + 全屏
                 #if os(iOS)
+                if let onSelectEpisode {
+                    Button {
+                        guard canSelectEpisode else { return }
+                        wakeUpControls()
+                        onSelectEpisode()
+                    } label: {
+                        Image(systemName: "list.number")
+                            .font(.system(size: 14, weight: .bold))
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSelectEpisode)
+                    .opacity(canSelectEpisode ? 1 : 0.4)
+                }
                 AirPlayRoutePickerView()
                     .frame(width: 36, height: 36)
                 #endif
@@ -1030,6 +1100,120 @@ struct AVPlayerContentView: View {
         showOSD(icon: target <= 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
     }
 }
+
+#if os(iOS)
+/// Bridges AVPlayer's clock to the shared UIKit danmaku renderer.
+///
+/// The representable owns only the overlay and its loading task. Media playback
+/// remains owned by AVPlayerContentView, so a danmaku request can never block or
+/// replace the player when a feed is unavailable.
+private struct AVPlayerDanmakuOverlayView: UIViewRepresentable {
+    let title: String
+    let episode: String
+    let resourceKey: String
+    let currentTime: Double
+    let duration: Double
+
+    final class Coordinator {
+        weak var overlay: DanmakuOverlayView?
+        var loadedKey = ""
+        var loadTask: Task<Void, Never>?
+
+        deinit {
+            loadTask?.cancel()
+        }
+
+        func update(
+            title: String,
+            episode: String,
+            resourceKey: String,
+            currentTime: Double,
+            duration: Double
+        ) {
+            let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedEpisode = episode.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = "\(resourceKey)|\(normalizedTitle)|\(normalizedEpisode)"
+
+            if key != loadedKey {
+                loadedKey = key
+                load(title: normalizedTitle, episode: normalizedEpisode, resourceKey: key)
+            }
+
+            overlay?.update(
+                currentTime: max(0, currentTime.isFinite ? currentTime : 0),
+                duration: max(0, duration.isFinite ? duration : 0)
+            )
+        }
+
+        private func load(title: String, episode: String, resourceKey: String) {
+            loadTask?.cancel()
+            overlay?.clear()
+
+            guard !title.isEmpty else { return }
+            let targetOverlay = overlay
+            loadTask = Task { [weak self, weak targetOverlay] in
+                let cues = await DanmuService.shared.loadCues(title: title, episode: episode)
+                guard !Task.isCancelled else { return }
+
+                await MainActor.run {
+                    guard let self,
+                          self.loadedKey == resourceKey,
+                          let targetOverlay,
+                          self.overlay === targetOverlay else { return }
+                    targetOverlay.setCues(cues)
+                }
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let host = UIView(frame: .zero)
+        host.backgroundColor = .clear
+        host.isUserInteractionEnabled = false
+
+        let overlay = DanmakuOverlayView(frame: .zero)
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            overlay.topAnchor.constraint(equalTo: host.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: host.bottomAnchor)
+        ])
+
+        context.coordinator.overlay = overlay
+        context.coordinator.update(
+            title: title,
+            episode: episode,
+            resourceKey: resourceKey,
+            currentTime: currentTime,
+            duration: duration
+        )
+        return host
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.update(
+            title: title,
+            episode: episode,
+            resourceKey: resourceKey,
+            currentTime: currentTime,
+            duration: duration
+        )
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.loadTask?.cancel()
+        coordinator.loadTask = nil
+        coordinator.overlay?.clear()
+        coordinator.overlay = nil
+    }
+}
+#endif
 
 #if os(macOS)
 private struct SystemPlayerKeyboardCaptureView: NSViewRepresentable {

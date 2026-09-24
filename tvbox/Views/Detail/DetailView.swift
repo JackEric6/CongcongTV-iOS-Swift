@@ -112,10 +112,9 @@ struct DetailView: View {
         #if os(iOS)
         .fullScreenCover(isPresented: $showFullScreen, onDismiss: {
             OrientationLock.portrait()
-            sharedVLCController.reattachCurrentDrawable()
         }) {
             if let url = viewModel.playUrl {
-                VLCFullscreenPlayerContainer(
+                SystemFullscreenPlayerContainer(
                     urlString: url,
                     startPosition: viewModel.currentPlaybackSeconds(),
                     title: viewModel.vodInfo?.name ?? video.name,
@@ -135,7 +134,7 @@ struct DetailView: View {
                     onProgressChanged: handlePlaybackProgress,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     onClose: { showFullScreen = false },
-                    sharedController: sharedVLCController
+                    sharedController: sharedSystemController
                 )
                 .ignoresSafeArea()
                 .onAppear {
@@ -713,9 +712,8 @@ struct DetailView: View {
 }
 
 #if os(iOS)
-/// iOS 全屏播放器容器。播放器视图由 SwiftUI cover 管理，控制器和 VLC
-/// 的持久视频表面跨 cover 复用，退出时不会留下旧的全屏 UIView。
-private struct VLCFullscreenPlayerContainer: View {
+/// iOS 全屏播放器容器。复用系统 AVPlayer 会话，不搬运或重绑定 VLC drawable。
+private struct SystemFullscreenPlayerContainer: View {
     let urlString: String
     let startPosition: Double
     let title: String
@@ -730,13 +728,13 @@ private struct VLCFullscreenPlayerContainer: View {
     let onProgressChanged: ((Double, Double?) -> Void)?
     let onPlaybackEnded: (() -> Void)?
     let onClose: () -> Void
-    let sharedController: VLCPlayerController
+    let sharedController: SystemPlayerSessionController
     @State private var showEpisodePicker = false
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            VLCVodPlayerView(
+            PlayerView(
                 urlString: urlString,
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
@@ -749,9 +747,9 @@ private struct VLCFullscreenPlayerContainer: View {
                 onPlayNext: onPlayNext,
                 canSelectEpisode: episodes.count > 1,
                 onSelectEpisode: { showEpisodePicker = true },
-                title: title,
-                episode: episode,
-                sharedController: sharedController
+                danmakuTitle: title,
+                danmakuEpisode: episode,
+                systemController: sharedController
             )
             .ignoresSafeArea()
             if showEpisodePicker {
