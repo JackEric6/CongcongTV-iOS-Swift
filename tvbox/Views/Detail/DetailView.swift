@@ -88,7 +88,12 @@ struct DetailView: View {
             .padding(.bottom, 40)
         }
         .background(AppTheme.primaryGradient)
+        #if os(iOS)
+        // 标题只在 16:9 播放器下方显示，避免从导航栏向内容区跳动的中间态。
+        .navigationTitle("")
+        #else
         .navigationTitle(video.name)
+        #endif
         #if os(macOS)
         .toolbar((showFullScreen || pendingMacWindowFullScreen) ? .hidden : .visible, for: .windowToolbar)
         #endif
@@ -303,7 +308,7 @@ struct DetailView: View {
     @ViewBuilder
     private var videoDetails: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(viewModel.vodInfo?.name ?? video.name)
+            Text(video.name)
                 .font(.system(size: 20, weight: .bold))
                 .foregroundColor(.white)
                 .lineLimit(2)
@@ -821,9 +826,10 @@ struct FullScreenPlayerView: View {
             }
         }
         #if os(iOS)
-        // 全屏时隐藏状态栏与 Home 指示条，让视频铺满屏幕。
-        .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden)
+        // 保留系统状态栏与 Home 指示条；KSPlayer 原生全屏控制器负责
+        // 根据 maskShow 更新状态栏可见性，避免时间/电量被 SwiftUI 包装层吞掉。
+        .statusBarHidden(false)
+        .persistentSystemOverlays(.visible)
         #endif
     }
 }

@@ -744,12 +744,24 @@ private struct KSPlayerUIView: UIViewRepresentable {
             forwardButton.isHidden = !isLandscape
             verticalSeekStack.isHidden = isLandscape
             volumeButton.isHidden = false
+            applyControlVisibility()
         }
 
         func updateControlVisibility(isVisible: Bool) {
-            let alpha: CGFloat = isVisible ? 1 : 0
+            controlsVisible = isVisible
+            applyControlVisibility()
+        }
+
+        private var controlsVisible = true
+
+        private func applyControlVisibility() {
+            let alpha: CGFloat = controlsVisible ? 1 : 0
             UIView.animate(withDuration: 0.2) {
-                self.verticalSeekStack.alpha = alpha
+                self.verticalSeekStack.alpha = self.controlsVisible && !self.isLandscape ? 1 : 0
+                self.playerView?.routeButton.alpha = alpha
+                self.playerView?.routeButton.isHidden = !self.controlsVisible
+                self.playerView?.toolBar.playbackRateButton.alpha = alpha
+                self.playerView?.toolBar.playbackRateButton.isHidden = !self.controlsVisible
             }
         }
 

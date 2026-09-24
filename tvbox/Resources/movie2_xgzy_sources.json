@@ -1,0 +1,579 @@
+{
+  "sites": [
+    {
+      "key": "xgzy",
+      "name": "西瓜",
+      "type": 1,
+      "api": "https://caiji.xgzyapi.com/api.php/provide/vod/from/xiguam3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 20,
+      "icon": "https://xgzy.tv/template/xiguav1/assets/images/favicon.png"
+    },
+    {
+      "key": "360zy",
+      "name": "360",
+      "type": 1,
+      "api": "https://360zyzz.com/api.php/provide/vod",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://360zy.com/favicon.ico"
+    },
+    {
+      "key": "iqiyi",
+      "name": "爱奇艺",
+      "type": 1,
+      "api": "https://iqiyizyapi.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://iqiyizy.com/favicon.ico"
+    },
+    {
+      "key": "uuzy",
+      "name": "UU",
+      "type": 1,
+      "api": "https://suoniapi.com/api.php/provide/vod/from/snm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://uuzy.me/favicon.ico"
+    },
+    {
+      "key": "wujin",
+      "name": "无尽",
+      "type": 1,
+      "api": "https://api.wujinapi.me/api.php/provide/vod/from/wjm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://wujinzy.com/favicon.ico"
+    },
+    {
+      "key": "wsyzy",
+      "name": "无水印",
+      "type": 1,
+      "api": "http://api.wsyzy.net/api.php/provide/vod/from/wsym3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://www.wsyzy.cc/favicon.ico"
+    },
+    {
+      "key": "haohua",
+      "name": "豪华",
+      "type": 1,
+      "api": "https://hhzyapi.com/api.php/provide/vod/from/hhm3u8/at/json/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://haohuazy.com/favicon.ico"
+    },
+    {
+      "key": "ryzy",
+      "name": "如意",
+      "type": 1,
+      "api": "https://cj.rycjapi.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://ryzy.tv/favicon.ico",
+      "backupApi": [
+        "https://cj.rytvapi.com/api.php/provide/vod/",
+        "https://bycj.rytvapi.com/api.php/provide/vod/",
+        "https://cj.rycjapi.com/api.php/provide/vod/from/ruyi/at/xml/",
+        "https://cj.rycjapi.com/api.php/provide/vod/from/rym3u8/at/xml/"
+      ],
+      "backupDomain": [
+        "https://ryzy.tv/"
+      ]
+    },
+    {
+      "key": "niuniu",
+      "name": "牛牛",
+      "type": 1,
+      "api": "https://api.niuniuzy.me/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://niuniuzy.cc/images/favicon.png"
+    },
+    {
+      "key": "kuaiche",
+      "name": "快车",
+      "type": 1,
+      "api": "https://caiji.kuaichezy.org/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://kuaichezy.com/favicon.ico"
+    },
+    {
+      "key": "bfzy",
+      "name": "暴风",
+      "type": 1,
+      "api": "https://bfzyapi.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://bfzy2.tv/favicon.ico"
+    },
+    {
+      "key": "lzi",
+      "name": "量子",
+      "type": 1,
+      "api": "https://cj.lziapi.com/api.php/provide/vod/from/lzm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://lzizy.net/favicon.ico",
+      "backupDomain": [
+        "https://lzizy1.com/",
+        "https://lzizy2.com/",
+        "https://lzizy3.com/",
+        "https://lzizy4.com/",
+        "https://lzizy5.com/",
+        "https://lzizy6.com/",
+        "https://lzizy7.com/",
+        "https://lzizy8.com/"
+      ]
+    },
+    {
+      "key": "suboziyuan",
+      "name": "速播",
+      "type": 1,
+      "api": "https://subocj.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://www.suboziyuan.net/favicon.ico"
+    },
+    {
+      "key": "tyzy",
+      "name": "天涯",
+      "type": 1,
+      "api": "https://tyyszyapi.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://tyyszy.com/favicon.ico"
+    },
+    {
+      "key": "sony",
+      "name": "索尼",
+      "type": 1,
+      "api": "https://suoniapi.com/api.php/provide/vod/from/snm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://suonizy.net/favicon.ico"
+    },
+    {
+      "key": "yaya",
+      "name": "鸭鸭",
+      "type": 1,
+      "api": "https://cj.yayazy.net/api.php/provide/vod/from/yym3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://yayazy.com/favicon.ico"
+    },
+    {
+      "key": "jinying",
+      "name": "金鹰",
+      "type": 1,
+      "api": "https://jyzyapi.com/provide/vod/from/jinyingm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://jinyingzy.com/favicon.ico"
+    },
+    {
+      "key": "guangsu",
+      "name": "光速",
+      "type": 1,
+      "api": "https://api.guangsuapi.com/api.php/provide/vod/from/gsm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://www.guangsuzy.com/template/guangsu/image/favicon.ico"
+    },
+    {
+      "key": "dyttzy",
+      "name": "电影天堂",
+      "type": 1,
+      "api": "https://caiji.dyttzyapi.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://dyttzy.tv/favicon.ico"
+    },
+    {
+      "key": "jisu",
+      "name": "极速",
+      "type": 1,
+      "api": "https://jszyapi.com/api.php/provide/vod/from/jsm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://jisuzy1.com/favicon.ico"
+    },
+    {
+      "key": "huya",
+      "name": "虎牙",
+      "type": 1,
+      "api": "https://www.huyaapi.com/api.php/provide/vod/from/hym3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://huyazy.com/favicon.ico"
+    },
+    {
+      "key": "xinlang",
+      "name": "新浪",
+      "type": 1,
+      "api": "https://api.xinlangapi.com/xinlangapi.php/provide/vod/from/xlm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://xinlangzy.com/favicon.ico",
+      "home": "https://xinlangzy.com/",
+      "help": "https://xinlangzy.com/index.php/help/index.html",
+      "backupDomain": [
+        "https://xinlangziyuan.com/",
+        "https://xinlangziyuan.net/",
+        "https://xinlangzy.net/"
+      ]
+    },
+    {
+      "key": "shandian",
+      "name": "闪电",
+      "type": 1,
+      "api": "https://sdzyapi.com/api.php/provide/vod/from/sdm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://shandianzy.com/favicon.ico",
+      "backupApi": [
+        "https://xsd.sdzyapi.com/api.php/provide/vod/from/sdm3u8/"
+      ]
+    },
+    {
+      "key": "maoyan",
+      "name": "猫眼",
+      "type": 1,
+      "api": "https://api.maoyanapi.top/api.php/provide/vod/from/mym3u8/at/json/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://www.maoyanzy.com/favicon.ico"
+    },
+    {
+      "key": "okzy",
+      "name": "OK",
+      "type": 1,
+      "api": "https://api.okzyw.net/api.php/provide/vod/from/okm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://www.zzzypro.com/favicon.ico"
+    },
+    {
+      "key": "ffzy",
+      "name": "非凡",
+      "type": 1,
+      "api": "https://api.ffzyapi.com/api.php/provide/vod/from/ffm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://ffzy5.tv/favicon.ico"
+    },
+    {
+      "key": "douban",
+      "name": "豆瓣",
+      "type": 1,
+      "api": "https://caiji.dbzy5.com/api.php/provide/vod/from/dbm3u8/at/josn/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://dbzy.tv/favicon.ico",
+      "backupDomain": [
+        "https://dbzy1.com/",
+        "https://dbzy.tv/",
+        "https://doubanzy.net/",
+        "https://doubanzy.cc/",
+        "https://doubanziyuan.net/",
+        "https://doubanziyuan.com/"
+      ]
+    },
+    {
+      "key": "yzzy",
+      "name": "优质",
+      "type": 1,
+      "api": "https://api.yzzy-api.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://yzzy.tv/favicon.ico"
+    },
+    {
+      "key": "dzzy",
+      "name": "大众",
+      "type": 1,
+      "api": "https://cdn.dzzyapi.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://dzzy.com/favicon.ico"
+    },
+    {
+      "key": "juliang",
+      "name": "巨量",
+      "type": 1,
+      "api": "https://api.juliang.live/api/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://juliang.app/favicon.ico"
+    },
+    {
+      "key": "bdzy",
+      "name": "百度",
+      "type": 1,
+      "api": "https://api.apibdzy.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://bdzy.tv/favicon.ico"
+    },
+    {
+      "key": "yhzy",
+      "name": "樱花",
+      "type": 1,
+      "api": "https://m3u8.apiyhzy.com/api.php/provide/vod/at/json/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://yhzy.cc/favicon.ico"
+    },
+    {
+      "key": "ukuzy",
+      "name": "U酷",
+      "type": 1,
+      "api": "https://api.ukuapi88.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://ukuzy.com/favicon.ico"
+    },
+    {
+      "key": "zuida",
+      "name": "最大",
+      "type": 1,
+      "api": "https://zuidazy.co/api.php/provide/vod/from/zuidam3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://zuidazy.co/favicon.ico"
+    },
+    {
+      "key": "hongniu",
+      "name": "红牛",
+      "type": 1,
+      "api": "https://www.hongniuzy2.com/api.php/provide/vod/from/hnm3u8/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://hongniuzy.com/favicon.ico"
+    },
+    {
+      "key": "modu",
+      "name": "魔都",
+      "type": 1,
+      "api": "https://www.mdzyapi.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://moduzy.com/favicon.ico"
+    },
+    {
+      "key": "yparse",
+      "name": "云解析",
+      "type": 1,
+      "api": "https://api.yparse.com/api/json",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://yparse.com/favicon.ico",
+      "home": "https://yparse.com/",
+      "help": "https://yparse.com/help",
+      "backupApi": [
+        "https://api.yparse.com/api/m3u8/json"
+      ],
+      "backupDomain": [
+        "https://api.yparse.com/"
+      ]
+    },
+    {
+      "key": "mtzy0",
+      "name": "茅台",
+      "type": 1,
+      "api": "https://caiji.maotai999.vip/api.php/provide/vod/at/josn/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://mtzy0.com/template/default/images/logo.png",
+      "home": "https://mtzy0.com/",
+      "help": "https://mtzy0.com/help/index.html",
+      "backupApi": [
+        "https://caiji.maotai999.vip/api.php/provide/vod/from/mtm3u8/at/josn/"
+      ],
+      "backupDomain": [
+        "https://mtzy.me/",
+        "https://maotaiziyuan.cc/"
+      ]
+    },
+    {
+      "key": "ikunzy",
+      "name": "ikun",
+      "type": 1,
+      "api": "https://ikunzyapi.com/api.php/provide/vod",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 1,
+      "timeout": 25,
+      "icon": "https://ikunzy.com/favicon.ico",
+      "home": "https://ikunzy.com/",
+      "help": "https://www.ikunzy.com/ikun/help.html",
+      "backupApi": [
+        "https://ikunzyapi.com/api.php/provide/vod/from/ikm3u8/at/json"
+      ],
+      "backupDomain": [
+        "https://ikunzy.net/",
+        "https://ikunzy.org/",
+        "https://ikunzy.vip/",
+        "https://ikzy1.com/"
+      ]
+    },
+    {
+      "key": "yutu",
+      "name": "玉兔",
+      "type": 1,
+      "api": "https://apiyutu.com/api.php/provide/vod/",
+      "searchable": 0,
+      "quickSearch": 0,
+      "changeable": 0,
+      "filterable": 0,
+      "disabled": true,
+      "hidden": true,
+      "timeout": 25,
+      "icon": "https://yutuzy.com/favicon.ico",
+      "home": "https://yutuzy.com/",
+      "help": "https://helpyutu.com/",
+      "backupApi": [
+        "https://apiyutu.com/api.php/Seacms/vod/"
+      ],
+      "backupDomain": [
+        "https://yutuzy1.com/"
+      ]
+    },
+    {
+      "key": "m766",
+      "name": "黄道长",
+      "type": 1,
+      "api": "https://m766.com/api.php/provide/vod/at/json",
+      "searchable": 0,
+      "quickSearch": 0,
+      "changeable": 0,
+      "filterable": 0,
+      "timeout": 25,
+      "icon": "https://m766.com/upload/site/20250729-1/deca59291b2f4f2f45a1d93fcc208489.jpg",
+      "home": "https://m766.com/",
+      "help": "https://help.m766.com/",
+      "backupApi": [
+        "https://m766.com/api.php/provide/vod/at/xml"
+      ],
+      "backupDomain": [],
+      "hidden": true,
+      "disabled": true
+    }
+  ]
+}

@@ -58,6 +58,7 @@ class NetworkManager {
     func getString(
         from urlString: String,
         headers: [String: String]? = nil,
+        timeout: Int? = nil,
         maxRetries: Int = NetworkManager.defaultMaxRetries
     ) async throws -> String {
         guard let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)) else {
@@ -66,6 +67,9 @@ class NetworkManager {
         
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        if let timeout, timeout > 0 {
+            request.timeoutInterval = TimeInterval(timeout)
+        }
         headers?.forEach { request.setValue($1, forHTTPHeaderField: $0) }
         
         let (data, httpResponse) = try await performRequest(request, maxRetries: maxRetries)
@@ -82,9 +86,10 @@ class NetworkManager {
         from urlString: String,
         type: T.Type,
         headers: [String: String]? = nil,
+        timeout: Int? = nil,
         maxRetries: Int = NetworkManager.defaultMaxRetries
     ) async throws -> T {
-        let str = try await getString(from: urlString, headers: headers, maxRetries: maxRetries)
+        let str = try await getString(from: urlString, headers: headers, timeout: timeout, maxRetries: maxRetries)
         guard let data = str.data(using: .utf8) else {
             throw NetworkError.decodingError("字符串转 Data 失败")
         }

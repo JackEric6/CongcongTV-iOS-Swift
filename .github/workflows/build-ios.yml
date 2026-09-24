@@ -43,9 +43,18 @@ jobs:
           import plistlib
           from pathlib import Path
 
-          expected_default_url = "https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/xgzy-config-20260922/movie2_xgzy"
+          expected_default_url = "https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/xgzy-config-20260922/movie2_xgzy_all"
           app_source = Path("tvbox/tvboxApp.swift").read_text(encoding="utf-8")
           assert expected_default_url in app_source
+
+          source_config = Path("tvbox/Resources/movie2_xgzy_sources.json")
+          import json
+          sources = json.loads(source_config.read_text(encoding="utf-8"))["sites"]
+          assert len(sources) == 41
+          assert len({item["key"] for item in sources}) == 41
+          assert sources[0]["key"] == "xgzy"
+          assert all(item["type"] == 1 for item in sources)
+          assert all("127.0.0.1" not in item["api"] and "localhost" not in item["api"] for item in sources)
 
           app = Path("build/Build/Products/Release-iphoneos/CongcongTV.app")
           with (app / "Info.plist").open("rb") as stream:

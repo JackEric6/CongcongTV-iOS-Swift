@@ -60,7 +60,7 @@ struct HomeView: View {
             HStack(spacing: 12) {
                 // 左侧保留源切换入口，继续显示当前源和可选源列表。
                 Menu {
-                    ForEach(ApiConfig.shared.sourceBeanList.filter { $0.isSupportedInSwift }) { source in
+                    ForEach(ApiConfig.shared.sourceBeanList.filter { $0.isSelectable }) { source in
                         Button {
                             ApiConfig.shared.setHomeSource(source)
                             Task { await viewModel.refresh() }

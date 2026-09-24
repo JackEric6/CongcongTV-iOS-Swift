@@ -31,7 +31,7 @@ class SourceService {
         let rawJSON: String
         if sourceBean.type == 0 {
             // XML 接口
-            rawJSON = try await network.getString(from: api)
+            rawJSON = try await getString(from: api, sourceBean: sourceBean)
         } else if sourceBean.type == 4 {
             // Type 4: 远程接口，需要 extend 和 filter 参数
             var queryItems: [URLQueryItem] = [
@@ -45,14 +45,14 @@ class SourceService {
                 }
             }
             let url = try buildURL(base: api, queryItems: queryItems)
-            rawJSON = try await network.getString(from: url)
+            rawJSON = try await getString(from: url, sourceBean: sourceBean)
         } else {
             // JSON 接口 (type=1)
             let url = try buildURL(
                 base: api,
                 queryItems: [URLQueryItem(name: "ac", value: "class")]
             )
-            rawJSON = try await network.getString(from: url)
+            rawJSON = try await getString(from: url, sourceBean: sourceBean)
         }
         
         let jsonStr = normalizedResponse(rawJSON, sourceBean: sourceBean)
@@ -87,7 +87,7 @@ class SourceService {
                     ]
                 )
             }
-            if let listStr = try? await network.getString(from: listUrl) {
+            if let listStr = try? await getString(from: listUrl, sourceBean: sourceBean) {
                 let normalizedList = normalizedResponse(listStr, sourceBean: sourceBean)
                 let fallback = (try? parseVideoList(normalizedList, sourceKey: sourceBean.key, type: sourceBean.type)) ?? []
                 if !fallback.isEmpty {
@@ -191,7 +191,7 @@ class SourceService {
                 }
 
                 guard let childURL = try? buildURL(base: api, queryItems: queryItems),
-                      let childJSON = try? await network.getString(from: childURL) else {
+                      let childJSON = try? await getString(from: childURL, sourceBean: sourceBean) else {
                     continue
                 }
 
@@ -267,7 +267,7 @@ class SourceService {
             url = try buildURL(base: api, queryItems: queryItems)
         }
         
-        let jsonStr = try await network.getString(from: url)
+        let jsonStr = try await getString(from: url, sourceBean: sourceBean)
         return try parseVideoList(
             normalizedResponse(jsonStr, sourceBean: sourceBean),
             sourceKey: sourceBean.key,
@@ -365,7 +365,7 @@ class SourceService {
             )
         }
         
-        let jsonStr = try await network.getString(from: url)
+        let jsonStr = try await getString(from: url, sourceBean: sourceBean)
         return try parseDetail(
             normalizedResponse(jsonStr, sourceBean: sourceBean),
             sourceKey: sourceBean.key,
@@ -451,7 +451,7 @@ class SourceService {
             )
         }
         
-        let jsonStr = try await network.getString(from: url)
+        let jsonStr = try await getString(from: url, sourceBean: sourceBean)
         let videos = try parseVideoList(
             normalizedResponse(jsonStr, sourceBean: sourceBean),
             sourceKey: sourceBean.key,
@@ -469,7 +469,7 @@ class SourceService {
             return normalized
         }
 
-        guard let body = try? await network.getString(from: normalized) else {
+        guard let body = try? await getString(from: normalized, sourceBean: sourceBean) else {
             return normalized
         }
         return KktvsResponseNormalizer.extractMediaURL(from: body, baseURL: normalized) ?? normalized
@@ -566,6 +566,14 @@ class SourceService {
     private func normalizedResponse(_ response: String, sourceBean: SourceBean) -> String {
         guard isKktvsSource(sourceBean) else { return response }
         return KktvsResponseNormalizer.normalize(response)
+    }
+
+    private func getString(from url: String, sourceBean: SourceBean) async throws -> String {
+        try await network.getString(
+            from: url,
+            headers: sourceBean.headers,
+            timeout: sourceBean.timeout
+        )
     }
 
     private func isKktvsSource(_ sourceBean: SourceBean) -> Bool {

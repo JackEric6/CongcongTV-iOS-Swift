@@ -8,7 +8,8 @@ import UIKit
 enum CongcongBrand {
     static let appName = "丛丛影视"
     static let credit = "Made By 丛丛"
-    static let defaultConfigURL = "https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/xgzy-config-20260922/movie2_xgzy"
+    /// 安卓丛丛影视的 41 源 CMS 清单；首个源仍是西瓜，主页默认使用西瓜。
+    static let defaultConfigURL = "https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/xgzy-config-20260922/movie2_xgzy_all"
 }
 
 /// 应用入口。

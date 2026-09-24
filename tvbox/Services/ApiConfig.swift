@@ -60,42 +60,93 @@ class ApiConfig: ObservableObject {
         self.configUrl = trimmedVod
         self.liveConfigUrl = resolvedLive
         
-        if trimmedVod == resolvedLive {
-            let configResult = try await fetchConfig(from: trimmedVod)
+        do {
+            if trimmedVod == resolvedLive {
+                let configResult = try await fetchConfig(from: trimmedVod)
+                guard activeLoadToken == loadToken else { return }
+                await parseConfig(
+                    configResult.config,
+                    apiUrl: configResult.loadedFrom,
+                    includeSources: true,
+                    includeLive: false,
+                    loadToken: loadToken
+                )
+                scheduleLiveParsing(
+                    config: configResult.config,
+                    apiUrl: configResult.loadedFrom,
+                    loadToken: loadToken
+                )
+            } else {
+                async let vodConfigTask = fetchConfig(from: trimmedVod)
+                async let liveConfigTask = fetchConfig(from: resolvedLive)
+                let (vodConfig, liveConfig) = try await (vodConfigTask, liveConfigTask)
+                guard activeLoadToken == loadToken else { return }
+                await parseConfig(
+                    vodConfig.config,
+                    apiUrl: vodConfig.loadedFrom,
+                    includeSources: true,
+                    includeLive: false,
+                    loadToken: loadToken
+                )
+                scheduleLiveParsing(
+                    config: liveConfig.config,
+                    apiUrl: liveConfig.loadedFrom,
+                    loadToken: loadToken
+                )
+            }
+        } catch {
+            // 默认西瓜入口保留远程 movie2_xgzy；网络不可用时使用打包的 41 源清单。
+            guard Self.isDefaultXgzyConfig(trimmedVod),
+                  let bundledConfig = Self.loadBundledConfig(named: "movie2_xgzy_sources") else {
+                throw error
+            }
             guard activeLoadToken == loadToken else { return }
             await parseConfig(
-                configResult.config,
-                apiUrl: configResult.loadedFrom,
+                bundledConfig,
+                apiUrl: trimmedVod,
                 includeSources: true,
                 includeLive: false,
-                loadToken: loadToken
-            )
-            scheduleLiveParsing(
-                config: configResult.config,
-                apiUrl: configResult.loadedFrom,
-                loadToken: loadToken
-            )
-        } else {
-            async let vodConfigTask = fetchConfig(from: trimmedVod)
-            async let liveConfigTask = fetchConfig(from: resolvedLive)
-            let (vodConfig, liveConfig) = try await (vodConfigTask, liveConfigTask)
-            guard activeLoadToken == loadToken else { return }
-            await parseConfig(
-                vodConfig.config,
-                apiUrl: vodConfig.loadedFrom,
-                includeSources: true,
-                includeLive: false,
-                loadToken: loadToken
-            )
-            scheduleLiveParsing(
-                config: liveConfig.config,
-                apiUrl: liveConfig.loadedFrom,
                 loadToken: loadToken
             )
         }
         guard activeLoadToken == loadToken else { return }
         
         self.isLoaded = true
+    }
+
+    /// 从应用资源加载点播配置，供默认西瓜入口离线兜底及静态资源审计使用。
+    func loadBundledSources(named resourceName: String = "movie2_xgzy_sources") throws {
+        guard let config = Self.loadBundledConfig(named: resourceName) else {
+            throw ConfigError.parseError("找不到打包源配置: \(resourceName).json")
+        }
+        let token = UUID()
+        activeLoadToken = token
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.parseConfig(
+                config,
+                apiUrl: self.configUrl,
+                includeSources: true,
+                includeLive: false,
+                loadToken: token
+            )
+            self.isLoaded = true
+        }
+    }
+
+    private static func isDefaultXgzyConfig(_ url: String) -> Bool {
+        let normalized = url.lowercased()
+        return normalized.contains("movie2_xgzy") || normalized.contains("xgzy-config")
+    }
+
+    private static func loadBundledConfig(named resourceName: String) -> AppConfigData? {
+        guard let url = Bundle.main.url(forResource: resourceName, withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let config = try? JSONDecoder().decode(AppConfigData.self, from: data),
+              config.hasUsableContent else {
+            return nil
+        }
+        return config
     }
 
     /// 直播分组改为后台解析，避免阻塞首页首屏进入。
@@ -593,7 +644,15 @@ class ApiConfig: ObservableObject {
                         quickSearch: site.quickSearch?.value ?? 0,
                         playerType: site.playerType?.value ?? 0,
                         type: site.type?.value ?? 1,
-                        ext: site.ext?.stringValue
+                        ext: site.ext?.stringValue,
+                        timeout: site.timeout?.value,
+                        headers: site.headers?.compactMapValues(\.stringValue),
+                        icon: site.icon,
+                        changeable: site.changeable?.value ?? 1,
+                        hidden: site.hidden ?? false,
+                        disabled: site.disabled ?? false,
+                        backupApi: site.backupApi ?? [],
+                        backupDomain: site.backupDomain ?? []
                     )
                     sources.append(bean)
                 }
@@ -602,11 +661,13 @@ class ApiConfig: ObservableObject {
             
             // 设置默认主页源：优先选择 Swift 支持的源
             if let saved = UserDefaults.standard.string(forKey: HawkConfig.HOME_API),
-               let found = sources.first(where: { $0.key == saved }) {
+               let found = sources.first(where: { $0.key == saved && $0.isSelectable }) {
                 self.homeSourceBean = found
             } else {
-                // 优先选择支持的源（type 0/1/4），跳过 type=3 (JAR)
-                self.homeSourceBean = sources.first(where: { $0.isSupportedInSwift }) ?? sources.first
+                // 默认保持西瓜入口；隐藏/停用源只保留在配置列表中，不作为可切换主页源。
+                self.homeSourceBean = sources.first(where: { $0.key == "xgzy" && $0.isSelectable })
+                    ?? sources.first(where: { $0.isSelectable })
+                    ?? sources.first
             }
             
             // 解析解析器列表
@@ -929,7 +990,7 @@ class ApiConfig: ObservableObject {
     
     /// 获取可搜索的源列表
     func getSearchableSources() -> [SourceBean] {
-        sourceBeanList.filter { $0.isSearchable }
+        sourceBeanList.filter { $0.isSearchable && $0.isSelectable }
     }
     
     /// 设置主页源

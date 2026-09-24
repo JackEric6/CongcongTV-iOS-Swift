@@ -362,7 +362,7 @@ struct SettingsView: View {
     // MARK: - 源选择
     
     private var filteredSources: [SourceBean] {
-        let sources = apiConfig.sourceBeanList
+        let sources = apiConfig.sourceBeanList.filter { $0.isSelectable }
         if sourceSearchText.isEmpty {
             return sources
         } else {
