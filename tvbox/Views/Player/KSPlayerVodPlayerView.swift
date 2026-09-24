@@ -176,6 +176,8 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
             deviceStatusTimer?.invalidate()
             deviceStatusTimer = nil
         }
+        applyTransparentSurfaces()
+        syncInteractivePopGesture()
     }
 
     private func installDeviceStatusViewIfNeeded() {
@@ -294,12 +296,6 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
             toolBar.playbackRateButton.setImage(UIImage(systemName: "speedometer"), for: .normal)
             toolBar.playbackRateButton.accessibilityLabel = "倍速"
         }
-    }
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        applyTransparentSurfaces()
-        syncInteractivePopGesture()
     }
 
     override func didMoveToSuperview() {
