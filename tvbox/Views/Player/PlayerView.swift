@@ -25,12 +25,22 @@ struct AirPlayRoutePickerView: UIViewRepresentable {
 /// 跨平台播放器：macOS 使用 AVPlayerView，避免 SwiftUI.VideoPlayer 在 macOS 的崩溃问题
 struct PlatformVideoPlayer: View {
     let player: AVPlayer
+    var sessionController: SystemPlayerSessionController? = nil
+    #if os(iOS)
+    var onWillBeginFullScreen: (() -> Void)? = nil
+    var onDidEndFullScreen: (() -> Void)? = nil
+    #endif
     
     var body: some View {
         #if os(macOS)
         MacOSPlayerView(player: player)
         #else
-        AVKitPlayerView(player: player)
+        AVKitPlayerView(
+            player: player,
+            sessionController: sessionController,
+            onWillBeginFullScreen: onWillBeginFullScreen,
+            onDidEndFullScreen: onDidEndFullScreen
+        )
         #endif
     }
 }
@@ -65,6 +75,14 @@ private struct MacOSPlayerView: NSViewRepresentable {
 final class SystemPlayerSessionController: ObservableObject {
     fileprivate var player: AVPlayer?
     fileprivate var mediaURLString: String?
+
+    #if os(iOS)
+    @Published fileprivate private(set) var isFullScreen = false
+
+    func setFullScreenState(_ value: Bool) {
+        isFullScreen = value
+    }
+    #endif
     
     func setPlayer(_ newPlayer: AVPlayer, urlString: String) {
         if player !== newPlayer {
@@ -76,6 +94,9 @@ final class SystemPlayerSessionController: ObservableObject {
     }
     
     func stop() {
+        #if os(iOS)
+        isFullScreen = false
+        #endif
         let stoppingPlayer = player
         player?.pause()
         player = nil
@@ -108,6 +129,7 @@ struct PlayerView: View {
     var danmakuEpisode: String = ""
     #if os(iOS)
     var onDrawableReady: ((UIView) -> Void)? = nil
+    var onFullScreenChanged: ((Bool) -> Void)? = nil
     #endif
     var systemController: SystemPlayerSessionController? = nil
     var vlcController: VLCPlayerController? = nil
@@ -153,7 +175,8 @@ struct PlayerView: View {
                 onSelectEpisode: onSelectEpisode,
                 title: danmakuTitle,
                 episode: danmakuEpisode,
-                sharedController: systemController
+                sharedController: systemController,
+                onFullScreenChanged: onFullScreenChanged
             )
             #else
             switch selectedEngine {
@@ -220,6 +243,10 @@ struct AVPlayerContentView: View {
     var title: String = ""
     var episode: String = ""
     var sharedController: SystemPlayerSessionController? = nil
+    #if os(iOS)
+    var onFullScreenChanged: ((Bool) -> Void)? = nil
+    @State private var isFullScreen = false
+    #endif
     @AppStorage(HawkConfig.PLAY_SPEED) private var savedPlaybackRate = 1.0
     @State private var player: AVPlayer?
     @State private var playbackEndObserver: NSObjectProtocol?
@@ -248,7 +275,22 @@ struct AVPlayerContentView: View {
         ZStack {
             Group {
                 if let player = player {
-                    PlatformVideoPlayer(player: player)
+                    PlatformVideoPlayer(
+                        player: player,
+                        sessionController: sharedController,
+                        #if os(iOS)
+                        onWillBeginFullScreen: {
+                            isFullScreen = true
+                            onFullScreenChanged?(true)
+                            OrientationLock.landscape()
+                        },
+                        onDidEndFullScreen: {
+                            isFullScreen = false
+                            onFullScreenChanged?(false)
+                            OrientationLock.portrait()
+                        }
+                        #endif
+                    )
                         #if os(iOS)
                         .scaleEffect(videoZoomScale)
                         #endif
@@ -315,22 +357,8 @@ struct AVPlayerContentView: View {
                 .allowsHitTesting(false)
             }
         }
-        .overlay {
-            PlayerGestureLayer(
-                onSeek: { offset in seek(by: offset) },
-                onTogglePlayPause: { togglePlayPauseWithOSD() },
-                onToggleControls: { wakeUpControls() },
-                onZoomChanged: { scale in
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        videoZoomScale = scale
-                    }
-                },
-                currentTime: currentTime,
-                duration: duration
-            )
-        }
         .overlay(alignment: .topLeading) {
-            if showControls {
+            if !isFullScreen, showControls {
                 HStack(spacing: 10) {
                     if let onBack {
                         Button(action: onBack) {
@@ -368,6 +396,7 @@ struct AVPlayerContentView: View {
             }
         }
         #endif
+        #if os(macOS)
         .overlay(alignment: .bottom) {
             GeometryReader { proxy in
                 if player != nil {
@@ -378,6 +407,7 @@ struct AVPlayerContentView: View {
                 }
             }
         }
+        #endif
         .overlay {
             SystemPlayerKeyboardCaptureView(
                 onLeft: { seek(by: -seekStep) },

@@ -109,40 +109,6 @@ struct DetailView: View {
                 }
             )
         }
-        #if os(iOS)
-        .fullScreenCover(isPresented: $showFullScreen, onDismiss: {
-            OrientationLock.portrait()
-        }) {
-            if let url = viewModel.playUrl {
-                SystemFullscreenPlayerContainer(
-                    urlString: url,
-                    startPosition: viewModel.currentPlaybackSeconds(),
-                    title: viewModel.vodInfo?.name ?? video.name,
-                    episode: currentDanmakuEpisode,
-                    canPlayPrevious: viewModel.selectedEpisodeIndex > 0,
-                    onPlayPrevious: playPreviousEpisode,
-                    canPlayNext: canPlayNextEpisode,
-                    onPlayNext: playNextEpisodeIfNeeded,
-                    episodes: viewModel.currentEpisodes,
-                    selectedEpisodeIndex: viewModel.selectedEpisodeIndex,
-                    onSelectEpisode: { index in
-                        withAnimation {
-                            viewModel.selectEpisode(index: index)
-                        }
-                        saveHistoryForCurrentEpisode()
-                    },
-                    onProgressChanged: handlePlaybackProgress,
-                    onPlaybackEnded: playNextEpisodeIfNeeded,
-                    onClose: { showFullScreen = false },
-                    sharedController: sharedSystemController
-                )
-                .ignoresSafeArea()
-                .onAppear {
-                    OrientationLock.landscape()
-                }
-            }
-        }
-        #endif
         .task(id: "\(video.sourceKey)-\(video.id)") {
             await viewModel.loadDetail(video: video)
             restorePlaybackFromHistory()
@@ -206,11 +172,22 @@ struct DetailView: View {
     }
 
     private var shouldShowInlinePlayer: Bool {
+        #if os(macOS)
         return !showFullScreen
+        #else
+        // iOS 的 AVPlayerViewController 自己负责进入/退出全屏；
+        // 详情页始终保留唯一的播放器实例，避免重建第二个控制器。
+        return true
+        #endif
     }
 
     private var inlineFullScreenHandler: (() -> Void)? {
+        #if os(macOS)
         return { openFullScreenPlayer() }
+        #else
+        // iOS 使用 AVPlayerViewController 自带的全屏按钮和退出手势。
+        return nil
+        #endif
     }
 
     private func handlePlayerEpisodeSelection() {
@@ -667,12 +644,7 @@ struct DetailView: View {
         }
     }
     
-    #if os(iOS)
-    private func openFullScreenPlayer() {
-        guard viewModel.playUrl != nil else { return }
-        showFullScreen = true
-    }
-    #elseif os(macOS)
+    #if os(macOS)
     private func openFullScreenPlayer() {
         guard viewModel.playUrl != nil else { return }
         appState.enterPlayerFullScreen()
@@ -710,71 +682,6 @@ struct DetailView: View {
     }
     #endif
 }
-
-#if os(iOS)
-/// iOS 全屏播放器容器。复用系统 AVPlayer 会话，不搬运或重绑定 VLC drawable。
-private struct SystemFullscreenPlayerContainer: View {
-    let urlString: String
-    let startPosition: Double
-    let title: String
-    let episode: String
-    let canPlayPrevious: Bool
-    let onPlayPrevious: () -> Void
-    let canPlayNext: Bool
-    let onPlayNext: () -> Void
-    let episodes: [VodInfo.Episode]
-    let selectedEpisodeIndex: Int
-    let onSelectEpisode: (Int) -> Void
-    let onProgressChanged: ((Double, Double?) -> Void)?
-    let onPlaybackEnded: (() -> Void)?
-    let onClose: () -> Void
-    let sharedController: SystemPlayerSessionController
-    @State private var showEpisodePicker = false
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            PlayerView(
-                urlString: urlString,
-                startPosition: startPosition,
-                onProgressChanged: onProgressChanged,
-                onPlaybackEnded: onPlaybackEnded,
-                onToggleFullScreen: onClose,
-                onBack: onClose,
-                canPlayPrevious: canPlayPrevious,
-                onPlayPrevious: onPlayPrevious,
-                canPlayNext: canPlayNext,
-                onPlayNext: onPlayNext,
-                canSelectEpisode: episodes.count > 1,
-                onSelectEpisode: { showEpisodePicker = true },
-                danmakuTitle: title,
-                danmakuEpisode: episode,
-                systemController: sharedController
-            )
-            .ignoresSafeArea()
-            if showEpisodePicker {
-                FullscreenEpisodePickerView(
-                    episodes: episodes,
-                    selectedIndex: selectedEpisodeIndex,
-                    onDismiss: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showEpisodePicker = false
-                        }
-                    },
-                    onSelect: { index in
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showEpisodePicker = false
-                        }
-                        onSelectEpisode(index)
-                    }
-                )
-                .transition(.opacity)
-                .zIndex(10)
-            }
-        }
-    }
-}
-#endif
 
 private struct EpisodePickerSheet: View {
     let episodes: [VodInfo.Episode]

@@ -3,11 +3,14 @@ import AVFoundation
 import SwiftUI
 
 #if os(iOS)
+import UIKit
+
 /// SwiftUI bridge for AVPlayerViewController.
 /// The AVPlayer is owned by the playback session and is never moved between views.
 struct AVKitPlayerView: UIViewControllerRepresentable {
     let player: AVPlayer
-    var showsPlaybackControls: Bool = false
+    var sessionController: SystemPlayerSessionController? = nil
+    var showsPlaybackControls: Bool = true
     var allowsPictureInPicturePlayback: Bool = false
     var onWillBeginFullScreen: (() -> Void)? = nil
     var onDidEndFullScreen: (() -> Void)? = nil
@@ -19,12 +22,14 @@ struct AVKitPlayerView: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
+        context.coordinator.sessionController = sessionController
         configure(controller, coordinator: context.coordinator)
         return controller
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.sessionController = sessionController
         configure(controller, coordinator: context.coordinator)
     }
 
@@ -35,6 +40,8 @@ struct AVKitPlayerView: UIViewControllerRepresentable {
 
     private func configure(_ controller: AVPlayerViewController, coordinator: Coordinator) {
         controller.player = player
+        // 使用 AVKit 自带控制条。它拥有系统维护的全屏按钮和退出手势，
+        // 避免 SwiftUI 自定义按钮与播放器全屏转场互相竞争。
         controller.showsPlaybackControls = showsPlaybackControls
         controller.allowsPictureInPicturePlayback = allowsPictureInPicturePlayback
         controller.canStartPictureInPictureAutomaticallyFromInline = false
@@ -46,16 +53,25 @@ struct AVKitPlayerView: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate {
         var parent: AVKitPlayerView
+        weak var sessionController: SystemPlayerSessionController?
 
         init(_ parent: AVKitPlayerView) {
             self.parent = parent
         }
 
-        func playerViewControllerWillBeginFullScreenPresentation(_ playerViewController: AVPlayerViewController) {
+        func playerViewController(
+            _ playerViewController: AVPlayerViewController,
+            willBeginFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator
+        ) {
+            sessionController?.setFullScreenState(true)
             parent.onWillBeginFullScreen?()
         }
 
-        func playerViewControllerDidEndFullScreenPresentation(_ playerViewController: AVPlayerViewController) {
+        func playerViewController(
+            _ playerViewController: AVPlayerViewController,
+            willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator
+        ) {
+            sessionController?.setFullScreenState(false)
             parent.onDidEndFullScreen?()
         }
 
@@ -63,11 +79,12 @@ struct AVKitPlayerView: UIViewControllerRepresentable {
             _ playerViewController: AVPlayerViewController,
             restoreUserInterfaceForFullScreenExitWithCompletionHandler completionHandler: @escaping (Bool) -> Void
         ) {
-            guard let restore = parent.onRestoreUserInterfaceForFullScreenExit else {
+            if let restore = parent.onRestoreUserInterfaceForFullScreenExit {
+                restore { completionHandler(true) }
+            } else {
+                // 没有第二套 SwiftUI 全屏容器需要恢复，AVKit 自己即可完成退出。
                 completionHandler(true)
-                return
             }
-            restore { completionHandler(true) }
         }
     }
 }
