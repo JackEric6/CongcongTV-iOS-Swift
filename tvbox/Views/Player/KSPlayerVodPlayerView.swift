@@ -71,6 +71,12 @@ struct KSPlayerVodPlayerView: View {
 
 private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     private weak var interactivePopGestureRecognizer: UIGestureRecognizer?
+    private weak var inlineSuperview: UIView?
+    private var inlineFrameConstraints: [NSLayoutConstraint] = []
+    private var inlineFrame = CGRect.zero
+    private var inlineTranslatesAutoresizingMaskIntoConstraints = false
+    private var restoreTask: DispatchWorkItem?
+    private var transitionAnimationTask: DispatchWorkItem?
     private var routeButtonLayoutInstalled = false
     var customControlsLayout: ((Bool) -> Void)?
 
@@ -81,6 +87,27 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     }
 
     override func updateUI(isFullScreen: Bool) {
+        if isFullScreen {
+            transitionAnimationTask?.cancel()
+            transitionAnimationTask = nil
+            restoreTask?.cancel()
+            restoreTask = nil
+            captureInlineLayout()
+            // Keep the native KSPlayer presentation animation, but avoid a
+            // hard jump when the same view is reparented into the landscape
+            // controller.
+            alpha = 0
+            transform = CGAffineTransform(scaleX: 0.985, y: 0.985)
+        } else if landscapeButton.isSelected {
+            // Hide before KSPlayer dismisses its full-screen controller. Its
+            // own completion reattaches the view, and keeping it hidden here
+            // prevents one frame of the stale window/top-left layout.
+            transitionAnimationTask?.cancel()
+            transitionAnimationTask = nil
+            alpha = 0
+            transform = CGAffineTransform(scaleX: 0.985, y: 0.985)
+        }
+
         // KSPlayer 的原生全屏控制器会在呈现完成后写入同一个全局掩码。
         // 这里提前写入，确保 UIKit 在 present 的那一帧就允许横屏，避免
         // 被应用默认的 portrait 掩码卡住。
@@ -106,6 +133,25 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         DispatchQueue.main.async {
             self.syncInteractivePopGesture()
             self.landscapeButton.isHidden = false
+            guard isFullScreen else { return }
+            self.transitionAnimationTask?.cancel()
+            let task = DispatchWorkItem { [weak self] in
+                guard let self, self.landscapeButton.isSelected else { return }
+                UIView.animate(
+                    withDuration: 0.24,
+                    delay: 0,
+                    options: [.beginFromCurrentState, .curveEaseOut]
+                ) {
+                    self.alpha = 1
+                    self.transform = .identity
+                }
+            }
+            self.transitionAnimationTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: task)
+        }
+
+        if !isFullScreen {
+            scheduleInlineRestoration()
         }
     }
 
@@ -192,6 +238,94 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         super.didMoveToSuperview()
         applyTransparentSurfaces()
         syncInteractivePopGesture()
+    }
+
+    private func captureInlineLayout() {
+        guard let container = superview else { return }
+        if inlineSuperview === container, !inlineFrameConstraints.isEmpty {
+            return
+        }
+        inlineSuperview = container
+        inlineFrameConstraints = inlineLayoutConstraints(in: container)
+        inlineFrame = frame
+        inlineTranslatesAutoresizingMaskIntoConstraints = translatesAutoresizingMaskIntoConstraints
+    }
+
+    private func inlineLayoutConstraints(in container: UIView) -> [NSLayoutConstraint] {
+        var result = container.constraints.filter { constraint in
+            constraint.firstItem === self || constraint.secondItem === self
+        }
+        result.append(contentsOf: constraints.filter { constraint in
+            guard constraint.firstItem === self || constraint.secondItem === self else {
+                return false
+            }
+            return constraint.firstAttribute == .width
+                || constraint.firstAttribute == .height
+                || constraint.secondAttribute == .width
+                || constraint.secondAttribute == .height
+        })
+        return result
+    }
+
+    private func scheduleInlineRestoration() {
+        restoreTask?.cancel()
+        transitionAnimationTask?.cancel()
+        let task = DispatchWorkItem { [weak self] in
+            self?.restoreInlineLayout()
+        }
+        restoreTask = task
+
+        // Wait for KSPlayer's PlayerTransitionAnimator to finish before
+        // restoring the inline constraints. Reattaching during the animation
+        // is what causes the view to briefly jump to the window's top-left.
+        if let coordinator = owningViewController?.transitionCoordinator {
+            coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+                self?.restoreInlineLayout()
+            }
+        }
+        // Covers rotation and dismissals without a transition coordinator.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: task)
+    }
+
+    private func restoreInlineLayout() {
+        guard !landscapeButton.isSelected, let container = inlineSuperview else { return }
+        restoreTask?.cancel()
+        restoreTask = nil
+
+        if superview !== container {
+            container.addSubview(self)
+        }
+        translatesAutoresizingMaskIntoConstraints = inlineTranslatesAutoresizingMaskIntoConstraints
+        if inlineFrameConstraints.isEmpty {
+            translatesAutoresizingMaskIntoConstraints = true
+            frame = inlineFrame
+        } else {
+            NSLayoutConstraint.activate(inlineFrameConstraints)
+        }
+        applyTransparentSurfaces()
+        container.setNeedsLayout()
+        container.layoutIfNeeded()
+        updateUI(isLandscape: false)
+
+        // The native controller has finished dismissing. Reattach the view
+        // invisibly, lay out its 16:9 constraints first, then reveal it with
+        // a short fade/scale so the transient window top-left frame is never
+        // shown to the user.
+        alpha = 0
+        transform = CGAffineTransform(scaleX: 0.985, y: 0.985)
+        let task = DispatchWorkItem { [weak self] in
+            guard let self, !self.landscapeButton.isSelected else { return }
+            UIView.animate(
+                withDuration: 0.24,
+                delay: 0,
+                options: [.beginFromCurrentState, .curveEaseInOut]
+            ) {
+                self.alpha = 1
+                self.transform = .identity
+            }
+        }
+        transitionAnimationTask = task
+        DispatchQueue.main.async(execute: task)
     }
 
     /// Stop and release the current media item before installing another URL.
