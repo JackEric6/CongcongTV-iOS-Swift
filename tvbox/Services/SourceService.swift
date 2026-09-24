@@ -427,7 +427,7 @@ class SourceService {
             
             // 加载 extend
             if let ext = sourceBean.ext, !ext.isEmpty {
-                let extend = await resolveExtend(ext)
+                let extend = await resolveExtend(ext, timeout: 3, maxRetries: 0)
                 if !extend.isEmpty {
                     queryItems.append(URLQueryItem(name: "extend", value: extend))
                 }
@@ -444,14 +444,20 @@ class SourceService {
                 ]
             )
         } else {
-            // JSON 接口 (type=1)
+            // 按安卓版 SourceViewModel 的 CMS 约定，标准 JSON 搜索使用
+            // ac=list；西瓜等特殊源在上面的分支继续使用 ac=detail。
             url = try buildURL(
                 base: api,
-                queryItems: [URLQueryItem(name: "wd", value: keyword)]
+                queryItems: [
+                    URLQueryItem(name: "ac", value: "list"),
+                    URLQueryItem(name: "wd", value: keyword)
+                ]
             )
         }
         
-        let jsonStr = try await getString(from: url, sourceBean: sourceBean)
+        // 搜索是聚合请求的一部分，不能沿用首页请求的长超时和重试策略。
+        // 单个站点失败应尽快让位给其他站点，避免搜索页长期停留在“搜索中”。
+        let jsonStr = try await getSearchString(from: url, sourceBean: sourceBean)
         let videos = try parseVideoList(
             normalizedResponse(jsonStr, sourceBean: sourceBean),
             sourceKey: sourceBean.key,
@@ -475,27 +481,69 @@ class SourceService {
         return KktvsResponseNormalizer.extractMediaURL(from: body, baseURL: normalized) ?? normalized
     }
     
-    /// 多源并发搜索
+    /// 多源并发搜索。
+    ///
+    /// 站点数量较多时采用有限并发：同时请求过多会触发系统连接排队，
+    /// 而完全串行又会被失效站点拖慢。每个站点都有独立的短超时，
+    /// 一个站点失败不会影响其他站点，也不会阻塞最终收敛。
     func searchAll(keyword: String) async -> [Movie.Video] {
         let sources = await ApiConfig.shared.getSearchableSources()
-        
-        return await withTaskGroup(of: [Movie.Video].self) { group in
-            for source in sources {
-                // 跳过不支持的源类型
-                guard source.isSupportedInSwift && source.isHttpApi else { continue }
-                
+
+        let searchableSources = sources.filter {
+            $0.isSearchable && $0.isSelectable && $0.isSupportedInSwift && $0.isHttpApi
+        }
+        guard !searchableSources.isEmpty else { return [] }
+
+        // 多数站点使用不同域名，适当提高并发可以显著降低首屏等待；
+        // URLSession 仍会按 host 自己限流，不会把同一站点打爆。
+        let concurrency = min(12, searchableSources.count)
+        return await withTaskGroup(of: (Int, [Movie.Video]).self) { group in
+            var nextIndex = 0
+            for _ in 0..<concurrency {
+                let index = nextIndex
+                nextIndex += 1
                 group.addTask { [self] in
                     do {
-                        return try await self.search(sourceBean: source, keyword: keyword)
+                        return (index, try await self.search(sourceBean: searchableSources[index], keyword: keyword))
+                    } catch is CancellationError {
+                        return (index, [])
                     } catch {
-                        return []
+                        return (index, [])
                     }
                 }
             }
-            
+
+            var completed: [(Int, [Movie.Video])] = []
+            for await result in group {
+                completed.append(result)
+                guard nextIndex < searchableSources.count else { continue }
+                let index = nextIndex
+                nextIndex += 1
+                group.addTask { [self] in
+                    do {
+                        return (index, try await self.search(sourceBean: searchableSources[index], keyword: keyword))
+                    } catch is CancellationError {
+                        return (index, [])
+                    } catch {
+                        return (index, [])
+                    }
+                }
+            }
+
+            // 按配置源顺序合并，结果稳定；同一源相同 id/name 只保留一次。
+            var seen = Set<String>()
             var allResults: [Movie.Video] = []
-            for await results in group {
-                allResults.append(contentsOf: results)
+            for (_, videos) in completed.sorted(by: { $0.0 < $1.0 }) {
+                for video in videos {
+                    let identity: String
+                    if !video.id.isEmpty {
+                        identity = "\(video.sourceKey)|id:\(video.id)"
+                    } else {
+                        identity = "\(video.sourceKey)|name:\(normalizeSearchText(video.name))"
+                    }
+                    guard seen.insert(identity).inserted else { continue }
+                    allResults.append(video)
+                }
             }
             return allResults
         }
@@ -543,7 +591,11 @@ class SourceService {
     /// 解析 extend 参数（对应 Android 端 getFixUrl）
     /// 如果 extend 是 HTTP URL，则下载其内容作为 extend 值
     /// 如果 extend 是普通字符串，则直接返回
-    private func resolveExtend(_ extend: String) async -> String {
+    private func resolveExtend(
+        _ extend: String,
+        timeout: Int? = nil,
+        maxRetries: Int = NetworkManager.defaultMaxRetries
+    ) async -> String {
         guard !extend.isEmpty else { return "" }
         
         // 非 HTTP URL 直接返回
@@ -553,7 +605,7 @@ class SourceService {
         
         // 从 HTTP URL 加载 extend 内容
         do {
-            let content = try await network.getString(from: extend)
+            let content = try await network.getString(from: extend, timeout: timeout, maxRetries: maxRetries)
             let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
             // 如果内容过长（>2500），回退到使用原始 URL
             if trimmed.count > 2500 { return extend }
@@ -573,6 +625,18 @@ class SourceService {
             from: url,
             headers: sourceBean.headers,
             timeout: sourceBean.timeout
+        )
+    }
+
+    /// 搜索专用请求策略：不重试，并将站点自报超时限制在合理范围内。
+    private func getSearchString(from url: String, sourceBean: SourceBean) async throws -> String {
+        let configuredTimeout = sourceBean.timeout ?? 6
+        let timeout = min(max(configuredTimeout, 3), 6)
+        return try await network.getString(
+            from: url,
+            headers: sourceBean.headers,
+            timeout: timeout,
+            maxRetries: 0
         )
     }
 

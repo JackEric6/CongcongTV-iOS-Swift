@@ -197,16 +197,11 @@ class HomeViewModel: ObservableObject {
         errorMessage = nil
         await loadSorts()
         
-        guard let sort = selectedSort else { return }
-        if sort.id == "home" { return }
-        
-        if let matchedSort = sorts.first(where: { $0.id == sort.id }) {
-            selectedSort = matchedSort
-            await loadCategoryVideos(page: 1, sort: matchedSort)
-        } else if let firstCategory = sorts.first {
-            selectedSort = firstCategory
-            await loadCategoryVideos(page: 1, sort: firstCategory)
-        }
+        // 切换资源源后始终回到排序后的第一个子分类（国产剧优先），
+        // 避免沿用上一个源的分类 id 导致空列表或停留在错误标签。
+        guard let firstCategory = sorts.first else { return }
+        selectedSort = firstCategory
+        await loadCategoryVideos(page: 1, sort: firstCategory)
     }
 
     /// 过滤明显的父分类并按安卓版规则稳定排序。

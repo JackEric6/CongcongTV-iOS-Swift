@@ -35,6 +35,13 @@ class SearchViewModel: ObservableObject {
         isSearching = true
         errorMessage = nil
         results = []
+
+        // 无论搜索正常完成、被新搜索淘汰还是任务取消，都要回收加载状态。
+        defer {
+            if requestId == latestSearchRequestId {
+                isSearching = false
+            }
+        }
         
         // 搜索一旦触发就先落历史，保持行为与移动端常见搜索体验一致。
         addToHistory(trimmed)
@@ -48,7 +55,6 @@ class SearchViewModel: ObservableObject {
             errorMessage = "未找到相关内容"
         }
         
-        isSearching = false
     }
     
     /// 在指定源搜索
@@ -61,6 +67,12 @@ class SearchViewModel: ObservableObject {
         
         isSearching = true
         errorMessage = nil
+
+        defer {
+            if requestId == latestSearchRequestId {
+                isSearching = false
+            }
+        }
         
         do {
             let videos = try await sourceService.search(sourceBean: source, keyword: trimmed)
@@ -71,7 +83,6 @@ class SearchViewModel: ObservableObject {
             errorMessage = error.localizedDescription
         }
         
-        isSearching = false
     }
     
     // MARK: - 搜索历史

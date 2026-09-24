@@ -78,6 +78,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     private var restoreTask: DispatchWorkItem?
     private var transitionAnimationTask: DispatchWorkItem?
     private var routeButtonLayoutInstalled = false
+    private let deviceStatusView = UIView()
+    private let deviceTimeLabel = UILabel()
+    private let deviceBatteryLabel = UILabel()
+    private var deviceStatusTimer: Timer?
     var customControlsLayout: ((Bool) -> Void)?
 
     override var isMaskShow: Bool {
@@ -161,8 +165,72 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         landscapeButton.isHidden = false
         landscapeButton.isEnabled = true
         styleControlLayers(isLandscape: isLandscape)
+        updateDeviceStatus(isLandscape: isLandscape)
         customControlsLayout?(isLandscape)
         owningViewController?.setNeedsStatusBarAppearanceUpdate()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            deviceStatusTimer?.invalidate()
+            deviceStatusTimer = nil
+        }
+    }
+
+    private func installDeviceStatusViewIfNeeded() {
+        guard deviceStatusView.superview == nil else { return }
+        deviceStatusView.translatesAutoresizingMaskIntoConstraints = false
+        deviceStatusView.backgroundColor = .clear
+        deviceStatusView.isOpaque = false
+        deviceStatusView.layer.zPosition = 150
+        deviceTimeLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        deviceBatteryLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        [deviceTimeLabel, deviceBatteryLabel].forEach {
+            $0.textColor = .white
+            $0.shadowColor = UIColor.black.withAlphaComponent(0.85)
+            $0.shadowOffset = CGSize(width: 0, height: 1)
+        }
+        let stack = UIStackView(arrangedSubviews: [deviceTimeLabel, deviceBatteryLabel])
+        stack.axis = .horizontal
+        stack.spacing = 8
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        deviceStatusView.addSubview(stack)
+        controllerView.addSubview(deviceStatusView)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: deviceStatusView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: deviceStatusView.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: deviceStatusView.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: deviceStatusView.bottomAnchor),
+            deviceStatusView.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -14),
+            deviceStatusView.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 8),
+            deviceStatusView.heightAnchor.constraint(equalToConstant: 22)
+        ])
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        deviceStatusTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.refreshDeviceStatus()
+        }
+        refreshDeviceStatus()
+    }
+
+    private func refreshDeviceStatus() {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        deviceTimeLabel.text = formatter.string(from: Date())
+        let level = UIDevice.current.batteryLevel
+        if level >= 0 {
+            deviceBatteryLabel.text = "\(Int((level * 100).rounded()))%"
+        } else {
+            deviceBatteryLabel.text = ""
+        }
+    }
+
+    private func updateDeviceStatus(isLandscape: Bool) {
+        installDeviceStatusViewIfNeeded()
+        deviceStatusView.isHidden = !isLandscape
+        if isLandscape { refreshDeviceStatus() }
     }
 
     fileprivate func installRouteButtonLayout() {
