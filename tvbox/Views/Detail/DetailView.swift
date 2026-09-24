@@ -49,9 +49,9 @@ struct DetailView: View {
                             onSelectEpisode: handlePlayerEpisodeSelection,
                             danmakuTitle: viewModel.vodInfo?.name ?? video.name,
                             danmakuEpisode: currentDanmakuEpisode,
+                            onFullScreenChanged: { showFullScreen = $0 },
                             systemController: sharedSystemController,
-                            vlcController: sharedVLCController,
-                            onFullScreenChanged: { showFullScreen = $0 }
+                            vlcController: sharedVLCController
                         )
                         .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
