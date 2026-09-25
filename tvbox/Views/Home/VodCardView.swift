@@ -21,6 +21,11 @@ struct VodCardView: View {
     let sourceLabel: String? = nil
     /// 悬停状态（主要用于 macOS 悬停放大动效）。
     @State private var isHovered = false
+
+    init(video: Movie.Video, sourceLabel: String? = nil) {
+        self.video = video
+        self.sourceLabel = sourceLabel
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
