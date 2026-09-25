@@ -14,6 +14,8 @@ class SearchViewModel: ObservableObject {
     @Published var searchHistory: [String] = []
     /// 搜索失败或空结果提示。
     @Published var errorMessage: String?
+    /// 当前展示筛选源；空字符串表示显示全部来源。
+    @Published var selectedSourceKey: String = ""
     
     /// 源数据服务（负责多源并发搜索）。
     private let sourceService = SourceService.shared
@@ -21,9 +23,27 @@ class SearchViewModel: ObservableObject {
     private var latestSearchRequestId: UUID = UUID()
     /// 当前搜索任务；重新搜索时取消，避免旧请求继续占用网络和回写结果。
     private var activeSearchTask: Task<Void, Never>?
+    /// 避免快速连续点击在同一瞬间创建多个聚合请求。
+    private static let searchDebounceNanoseconds: UInt64 = 160_000_000
     /// 暂存所有源返回的数据。`results` 只暴露带有效海报的可展示结果。
     private var pendingResults: [Movie.Video] = []
     private var pendingResultKeys: Set<String> = []
+
+    /// 按首次返回顺序列出当前搜索结果实际包含的来源。
+    var availableSourceKeys: [String] {
+        var seen = Set<String>()
+        return results.compactMap { video in
+            let key = video.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, seen.insert(key).inserted else { return nil }
+            return key
+        }
+    }
+
+    /// 站点筛选只改变本地展示，不改变原始视频的 sourceKey、id 或播放配置。
+    var filteredResults: [Movie.Video] {
+        guard !selectedSourceKey.isEmpty else { return results }
+        return results.filter { $0.sourceKey == selectedSourceKey }
+    }
     
     /// 初始化时同步加载本地历史记录，确保搜索页首次渲染即可展示。
     init() {
@@ -42,26 +62,36 @@ class SearchViewModel: ObservableObject {
         isSearching = true
         errorMessage = nil
         results = []
+        selectedSourceKey = ""
         pendingResults = []
         pendingResultKeys = []
 
-        // 无论搜索正常完成、被新搜索淘汰还是任务取消，都要回收加载状态。
         defer {
             if requestId == latestSearchRequestId {
                 isSearching = false
+                activeSearchTask = nil
             }
         }
-        
+
         // 搜索一旦触发就先落历史，保持行为与移动端常见搜索体验一致。
         addToHistory(trimmed)
         
         // 每个源完成后立即追加一批结果；旧关键词的回调会被请求序号丢弃。
         let task = Task { [weak self] in
             guard let self else { return }
+            do {
+                try await Task.sleep(nanoseconds: Self.searchDebounceNanoseconds)
+                try Task.checkCancellation()
+            } catch {
+                return
+            }
             await self.sourceService.searchAllStreaming(keyword: trimmed) { [weak self] videos in
                 guard let self, requestId == self.latestSearchRequestId else { return }
                 self.appendCandidates(videos)
-                self.results = await PosterCache.shared.enrich(self.pendingResults)
+                let enriched = await PosterCache.shared.enrich(self.pendingResults)
+                // enrich 跨 actor 等待期间可能已经开始了新搜索，禁止旧批次回写。
+                guard requestId == self.latestSearchRequestId else { return }
+                self.results = enriched
             }
         }
         activeSearchTask = task
@@ -93,14 +123,17 @@ class SearchViewModel: ObservableObject {
                 isSearching = false
             }
         }
-        
+
         do {
             let videos = try await sourceService.search(sourceBean: source, keyword: trimmed)
             guard requestId == latestSearchRequestId else { return }
             pendingResults = []
             pendingResultKeys = []
+            selectedSourceKey = ""
             appendCandidates(videos)
-            results = await PosterCache.shared.enrich(pendingResults)
+            let enriched = await PosterCache.shared.enrich(pendingResults)
+            guard requestId == latestSearchRequestId else { return }
+            results = enriched
         } catch {
             guard requestId == latestSearchRequestId else { return }
             errorMessage = error.localizedDescription

@@ -516,6 +516,13 @@ class SourceService {
             guard await searchHealth.isAvailable(source.key) else { continue }
             searchableSources.append(source)
         }
+        // 健康缓存只用于避开近期明确失败的站点；不能让一次搜索失败
+        // 把后续搜索变成“没有任何源可用”。健康筛选为空时立即恢复全量源。
+        if searchableSources.isEmpty {
+            searchableSources = sources.filter {
+                $0.isSearchable && $0.isSelectable && $0.isSupportedInSwift && $0.isHttpApi
+            }
+        }
         guard !searchableSources.isEmpty else { return }
 
         // 多数站点使用不同域名，适当提高并发可以显著降低首屏等待；
@@ -529,9 +536,7 @@ class SourceService {
                 group.addTask { [self] in
                     do {
                         let videos = try await self.search(sourceBean: searchableSources[index], keyword: keyword)
-                        if videos.isEmpty {
-                            await self.searchHealth.markFailure(searchableSources[index].key, duration: 180)
-                        } else {
+                        if !videos.isEmpty {
                             await self.searchHealth.markSuccess(searchableSources[index].key)
                         }
                         return (index, videos)
@@ -579,9 +584,7 @@ class SourceService {
                 group.addTask { [self] in
                     do {
                         let videos = try await self.search(sourceBean: searchableSources[index], keyword: keyword)
-                        if videos.isEmpty {
-                            await self.searchHealth.markFailure(searchableSources[index].key, duration: 180)
-                        } else {
+                        if !videos.isEmpty {
                             await self.searchHealth.markSuccess(searchableSources[index].key)
                         }
                         return (index, videos)
@@ -630,9 +633,9 @@ class SourceService {
 
     private static func searchFailureDuration(for error: Error) -> TimeInterval {
         if case NetworkError.httpError(let status) = error, status == 403 {
-            return 900
+            return 120
         }
-        return 300
+        return 45
     }
     
     private func normalizeSearchText(_ text: String) -> String {

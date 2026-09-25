@@ -12,6 +12,7 @@ struct DetailView: View {
     @StateObject private var viewModel = DetailViewModel()
     @StateObject private var sharedSystemController = SystemPlayerSessionController()
     @StateObject private var sharedVLCController = VLCPlayerController()
+    @ObservedObject private var apiConfig = ApiConfig.shared
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -110,6 +111,7 @@ struct DetailView: View {
                 selectedIndex: viewModel.selectedEpisodeIndex,
                 onSelect: { index in
                     showEpisodePicker = false
+                    flushPlaybackHistoryBeforeSwitch()
                     beginPlaybackSession()
                     withAnimation {
                         viewModel.selectEpisode(index: index)
@@ -250,6 +252,7 @@ struct DetailView: View {
             },
             onSelect: { [weak presenter] index in
                 presenter?.dismiss(animated: true) {
+                    flushPlaybackHistoryBeforeSwitch()
                     beginPlaybackSession()
                     withAnimation {
                         viewModel.selectEpisode(index: index)
@@ -327,6 +330,15 @@ struct DetailView: View {
                 .foregroundColor(.white)
                 .lineLimit(2)
 
+            if !sourceName.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "server.rack")
+                    Text("来自：\(sourceName)")
+                }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.72))
+            }
+
             if !displayRating.isEmpty {
                 HStack(spacing: 5) {
                     Image(systemName: "star.fill")
@@ -361,6 +373,15 @@ struct DetailView: View {
     private var displayName: String {
         let enrichedName = viewModel.vodInfo?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return enrichedName.isEmpty ? video.name : enrichedName
+    }
+
+    private var sourceName: String {
+        let sourceKey = video.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sourceKey.isEmpty,
+              let source = apiConfig.getSource(key: sourceKey) else {
+            return ""
+        }
+        return source.name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var displayPoster: String {
@@ -473,6 +494,7 @@ struct DetailView: View {
     @ViewBuilder
     private func flagButton(_ flag: String) -> some View {
         Button {
+            flushPlaybackHistoryBeforeSwitch()
             beginPlaybackSession()
             withAnimation {
                 viewModel.selectFlag(flag)
@@ -524,6 +546,7 @@ struct DetailView: View {
     @ViewBuilder
     private func qualityButton(_ option: PlaybackQualityOption) -> some View {
         Button {
+            flushPlaybackHistoryBeforeSwitch()
             beginPlaybackSession()
             withAnimation {
                 viewModel.selectQuality(option)
@@ -564,6 +587,7 @@ struct DetailView: View {
                 episodes: viewModel.currentEpisodes,
                 selectedIndex: viewModel.selectedEpisodeIndex,
                 onSelect: { index in
+                    flushPlaybackHistoryBeforeSwitch()
                     beginPlaybackSession()
                     withAnimation {
                         viewModel.selectEpisode(index: index)
@@ -669,11 +693,15 @@ struct DetailView: View {
             return
         }
         viewModel.updatePlaybackProgress(seconds: seconds)
-        persistHistoryIfNeeded(force: false, currentProgress: seconds)
+        // 使用 ViewModel 接受后的进度保存。播放器启动续播时可能先回调 0，
+        // 此时 ViewModel 会暂时保留已恢复位置，不能把原记录覆盖成 0。
+        persistHistoryIfNeeded(force: false, currentProgress: viewModel.currentPlaybackSeconds())
     }
-    
+
     private func persistHistoryIfNeeded(force: Bool, currentProgress: Double? = nil) {
-        guard viewModel.isPlaying else { return }
+        // 页面消失或进入后台时，播放器的播放态可能已被系统暂停，
+        // 但仍有有效的详情/播放会话需要保存，不能仅依赖 isPlaying。
+        guard viewModel.vodInfo != nil, viewModel.playUrl != nil else { return }
         let progress = max(currentProgress ?? viewModel.currentPlaybackSeconds(), 0)
         guard progress.isFinite else { return }
         
@@ -689,6 +717,12 @@ struct DetailView: View {
     private func beginPlaybackSession() {
         playbackSessionToken = UUID()
         lastPersistedProgress = 0
+    }
+
+    /// 在切换线路或剧集前，先把旧播放器会话的最新位置落盘，避免短会话丢失进度。
+    private func flushPlaybackHistoryBeforeSwitch() {
+        viewModel.commitPlaybackProgressSnapshot()
+        persistHistoryIfNeeded(force: true)
     }
     
     private func restorePlaybackFromHistory() {
@@ -724,6 +758,7 @@ struct DetailView: View {
     }
     
     private func playNextEpisodeIfNeeded() {
+        flushPlaybackHistoryBeforeSwitch()
         var moved = false
         withAnimation {
             moved = viewModel.playNext()
@@ -736,6 +771,7 @@ struct DetailView: View {
     }
 
     private func playPreviousEpisode() {
+        flushPlaybackHistoryBeforeSwitch()
         var moved = false
         withAnimation {
             moved = viewModel.playPrevious()

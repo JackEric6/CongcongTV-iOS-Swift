@@ -215,7 +215,9 @@ actor CacheStore {
             guard let record = try fetchRecords(vodId: vodId, sourceKey: sourceKey, context: context).first else {
                 return nil
             }
+            // 兼容早期只保存 playNote、尚未写入 dataJson 的历史记录。
             return Self.decodePlaybackState(record.dataJson)
+                ?? Self.decodeLegacyPlaybackState(record.playNote)
         } catch {
             print("读取续播状态失败: \(error)")
             return nil
@@ -286,5 +288,50 @@ actor CacheStore {
     private nonisolated static func decodePlaybackState(_ json: String) -> VodPlaybackState? {
         guard let data = json.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(VodPlaybackState.self, from: data)
+    }
+
+    /// 从旧版本的“第 N 集 08:45”文本记录恢复基础续播状态。
+    /// 旧记录没有线路字段，使用空 flag 让详情页回退到当前源的默认线路。
+    private nonisolated static func decodeLegacyPlaybackState(_ note: String) -> VodPlaybackState? {
+        let text = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+
+        let episodeIndex: Int = {
+            let pattern = #"第\s*(\d+)\s*集"#
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(
+                      in: text,
+                      range: NSRange(text.startIndex..., in: text)
+                  ),
+                  let range = Range(match.range(at: 1), in: text),
+                  let number = Int(text[range]), number > 0 else {
+                return 0
+            }
+            return number - 1
+        }()
+
+        let timePattern = #"(?:(\d+):)?(\d{1,2}):(\d{2})\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: timePattern),
+              let match = regex.firstMatch(
+                  in: text,
+                  range: NSRange(text.startIndex..., in: text)
+              ) else {
+            return VodPlaybackState(flag: "", episodeIndex: episodeIndex, progressSeconds: 0)
+        }
+
+        func capture(_ index: Int) -> Int {
+            guard let range = Range(match.range(at: index), in: text) else { return 0 }
+            return Int(text[range]) ?? 0
+        }
+
+        let hours = capture(1)
+        let minutes = capture(2)
+        let seconds = capture(3)
+        let progress = Double(hours * 3600 + minutes * 60 + seconds)
+        return VodPlaybackState(
+            flag: "",
+            episodeIndex: episodeIndex,
+            progressSeconds: progress
+        )
     }
 }

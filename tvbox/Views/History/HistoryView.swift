@@ -12,7 +12,7 @@ struct HistoryView: View {
     #if os(iOS)
     /// iOS 网格配置。
     private let columns = [
-        GridItem(.adaptive(minimum: 120, maximum: 160), spacing: 12)
+        GridItem(.adaptive(minimum: 100, maximum: 132), spacing: 10)
     ]
     #else
     /// macOS 网格配置。
@@ -34,7 +34,7 @@ struct HistoryView: View {
                 emptyState
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 16) {
+                    LazyVGrid(columns: columns, spacing: 12) {
                         // 记录卡片支持跳转详情与右键删除。
                         ForEach(records) { item in
                             NavigationLink(destination: DetailView(video: movieVideo(from: item))) {
@@ -55,7 +55,7 @@ struct HistoryView: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                 }
             }

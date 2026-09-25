@@ -4,6 +4,7 @@ import SwiftUI
 struct SearchView: View {
     /// 搜索状态与结果管理。
     @StateObject private var viewModel = SearchViewModel()
+    @ObservedObject private var apiConfig = ApiConfig.shared
     /// 豆瓣当前热门条目，作为搜索页空态热搜榜。
     @State private var trendingItems: [DoubanTrendingItem] = []
     @State private var isLoadingTrending = false
@@ -12,7 +13,7 @@ struct SearchView: View {
     #if os(iOS)
     /// iOS 卡片网格参数。
     private let columns = [
-        GridItem(.adaptive(minimum: 120, maximum: 160), spacing: 12)
+        GridItem(.adaptive(minimum: 100, maximum: 132), spacing: 10)
     ]
     #else
     /// macOS 卡片网格参数。
@@ -151,10 +152,10 @@ struct SearchView: View {
     /// 搜索结果网格。
     private var searchResults: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(viewModel.results) { video in
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(viewModel.filteredResults) { video in
                     NavigationLink(destination: DetailView(video: video)) {
-                        VodCardView(video: video)
+                        VodCardView(video: video, sourceLabel: sourceName(for: video.sourceKey))
                     }
                     #if os(iOS)
                     .buttonStyle(VodCardPressStyle())
@@ -163,11 +164,55 @@ struct SearchView: View {
                     #endif
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 16)
+            .padding(.top, viewModel.availableSourceKeys.isEmpty ? 12 : 52)
+            .padding(.bottom, 12)
+            .overlay(alignment: .top) {
+                if !viewModel.availableSourceKeys.isEmpty {
+                    sourceFilter
+                }
+            }
         }
     }
-    
+
+    /// 搜索结果来源筛选，仅过滤已返回的结果，不会再次请求网络。
+    private var sourceFilter: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                sourceChip(title: "全部", key: "")
+                ForEach(viewModel.availableSourceKeys, id: \.self) { key in
+                    sourceChip(title: sourceName(for: key), key: key)
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+        .frame(maxWidth: .infinity)
+        .background(Color(red: 0.08, green: 0.08, blue: 0.1).opacity(0.96))
+    }
+
+    private func sourceChip(title: String, key: String) -> some View {
+        Button {
+            viewModel.selectedSourceKey = key
+        } label: {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(viewModel.selectedSourceKey == key ? .white : .secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(viewModel.selectedSourceKey == key ? Color.orange : Color.white.opacity(0.08))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func sourceName(for key: String) -> String {
+        if let name = apiConfig.sourceBeanList.first(where: { $0.key == key })?.name,
+           !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return name
+        }
+        return key
+    }
+
     // MARK: - 搜索历史
     
     /// 搜索历史区域，支持复用历史关键词与一键清空。

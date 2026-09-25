@@ -47,6 +47,9 @@ class DetailViewModel: ObservableObject {
     private var realtimeProgressSeconds: Double = 0
     /// 当前播放器会话是否已经回传真实进度，避免旧的续播位置覆盖拖动结果。
     private var hasRealtimeProgressSnapshot = false
+    /// 播放器加载续播位置时，部分内核会先回调一次 0 秒，再回调真实位置。
+    /// 在短窗口内保护已恢复的位置，避免启动回调把续播状态覆盖成 0。
+    private var pendingResumeProtection: (position: Double, deadline: Date)?
     
     /// 数据服务与网络服务。
     private let sourceService = SourceService.shared
@@ -92,6 +95,7 @@ class DetailViewModel: ObservableObject {
                 self.resumeSeconds = 0
                 self.realtimeProgressSeconds = 0
                 self.hasRealtimeProgressSnapshot = false
+                self.pendingResumeProtection = nil
                 if let episode = info.currentEpisode {
                     updateQualityOptions(
                         for: KktvsResponseNormalizer.normalizeMediaURL(episode.url),
@@ -307,6 +311,7 @@ class DetailViewModel: ObservableObject {
         resumeSeconds = 0
         realtimeProgressSeconds = 0
         hasRealtimeProgressSnapshot = false
+        pendingResumeProtection = nil
         
         let episodes = vodInfo?.playUrlMap[flag] ?? []
         guard !episodes.isEmpty else {
@@ -338,6 +343,7 @@ class DetailViewModel: ObservableObject {
         resumeSeconds = 0
         realtimeProgressSeconds = 0
         hasRealtimeProgressSnapshot = false
+        pendingResumeProtection = nil
         
         if let episode = vodInfo?.currentEpisode {
             let normalizedURL = KktvsResponseNormalizer.normalizeMediaURL(episode.url)
@@ -371,6 +377,9 @@ class DetailViewModel: ObservableObject {
         resumeSeconds = progress
         realtimeProgressSeconds = progress
         hasRealtimeProgressSnapshot = false
+        pendingResumeProtection = progress > 0
+            ? (position: progress, deadline: Date().addingTimeInterval(4))
+            : nil
         let episodeURL = KktvsResponseNormalizer.normalizeMediaURL(episodes[targetIndex].url)
         updateQualityOptions(for: episodeURL, resetSelection: true)
         playUrl = selectedPlayableURL(fallback: episodeURL)
@@ -397,6 +406,12 @@ class DetailViewModel: ObservableObject {
     /// 播放器时间回调
     func updatePlaybackProgress(seconds: Double) {
         guard seconds.isFinite else { return }
+        if let pending = pendingResumeProtection {
+            if Date() < pending.deadline, seconds + 1 < pending.position {
+                return
+            }
+            pendingResumeProtection = nil
+        }
         realtimeProgressSeconds = max(seconds, 0)
         hasRealtimeProgressSnapshot = true
     }
