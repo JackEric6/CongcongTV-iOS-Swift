@@ -18,7 +18,7 @@ struct VodCardView: View {
     /// 卡片对应的视频数据。
     let video: Movie.Video
     /// 可选来源角标；默认不显示，保证首页、历史和收藏调用兼容。
-    let sourceLabel: String? = nil
+    let sourceLabel: String?
     /// 悬停状态（主要用于 macOS 悬停放大动效）。
     @State private var isHovered = false
 
