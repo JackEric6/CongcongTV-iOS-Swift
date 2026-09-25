@@ -21,6 +21,9 @@ class SearchViewModel: ObservableObject {
     private var latestSearchRequestId: UUID = UUID()
     /// 当前搜索任务；重新搜索时取消，避免旧请求继续占用网络和回写结果。
     private var activeSearchTask: Task<Void, Never>?
+    /// 暂存所有源返回的数据。`results` 只暴露带有效海报的可展示结果。
+    private var pendingResults: [Movie.Video] = []
+    private var pendingResultKeys: Set<String> = []
     
     /// 初始化时同步加载本地历史记录，确保搜索页首次渲染即可展示。
     init() {
@@ -39,6 +42,8 @@ class SearchViewModel: ObservableObject {
         isSearching = true
         errorMessage = nil
         results = []
+        pendingResults = []
+        pendingResultKeys = []
 
         // 无论搜索正常完成、被新搜索淘汰还是任务取消，都要回收加载状态。
         defer {
@@ -55,7 +60,8 @@ class SearchViewModel: ObservableObject {
             guard let self else { return }
             await self.sourceService.searchAllStreaming(keyword: trimmed) { [weak self] videos in
                 guard let self, requestId == self.latestSearchRequestId else { return }
-                self.results.append(contentsOf: videos)
+                self.appendCandidates(videos)
+                self.results = await PosterCache.shared.enrich(self.pendingResults)
             }
         }
         activeSearchTask = task
@@ -91,12 +97,28 @@ class SearchViewModel: ObservableObject {
         do {
             let videos = try await sourceService.search(sourceBean: source, keyword: trimmed)
             guard requestId == latestSearchRequestId else { return }
-            self.results = videos
+            pendingResults = []
+            pendingResultKeys = []
+            appendCandidates(videos)
+            results = await PosterCache.shared.enrich(pendingResults)
         } catch {
             guard requestId == latestSearchRequestId else { return }
             errorMessage = error.localizedDescription
         }
         
+    }
+
+    /// 合并同一源的重复结果，同时保留不同源的播放入口。
+    private func appendCandidates(_ videos: [Movie.Video]) {
+        for video in videos {
+            let normalizedName = video.name
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+                .lowercased()
+            let identity = "\(video.sourceKey)|\(video.id)|\(normalizedName)"
+            guard pendingResultKeys.insert(identity).inserted else { continue }
+            pendingResults.append(video)
+        }
     }
 
     /// 取消当前搜索并结束加载状态。

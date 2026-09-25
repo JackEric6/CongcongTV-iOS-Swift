@@ -22,6 +22,8 @@ struct VodInfo: Codable, Identifiable {
     var actor: String = ""
     /// 简介。
     var des: String = ""
+    /// 豆瓣评分；跨源详情补全时仅填充当前详情缺失的评分。
+    var doubanRating: String = ""
     /// 来源站点 key。
     var sourceKey: String = ""
     
@@ -61,6 +63,7 @@ struct VodInfo: Codable, Identifiable {
         info.director = video.director
         info.actor = video.actor
         info.des = video.des.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        info.doubanRating = video.doubanRating
         info.sourceKey = video.sourceKey
         
         // 解析播放列表：

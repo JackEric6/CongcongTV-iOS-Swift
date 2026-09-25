@@ -6,6 +6,8 @@ class SourceService {
     static let shared = SourceService()
     
     private let network = NetworkManager.shared
+    /// 短期记录失效源，避免每次搜索都重复等待 403、空结果或超时站点。
+    private let searchHealth = SearchSourceHealthCache()
     
     private init() {}
     
@@ -502,12 +504,17 @@ class SourceService {
     /// 或取消的源不会阻塞其他源。
     func searchAllStreaming(
         keyword: String,
-        onResults: @escaping @MainActor ([Movie.Video]) -> Void
+        onResults: @escaping @MainActor ([Movie.Video]) async -> Void
     ) async {
         let sources = await ApiConfig.shared.getSearchableSources()
 
-        let searchableSources = sources.filter {
-            $0.isSearchable && $0.isSelectable && $0.isSupportedInSwift && $0.isHttpApi
+        var searchableSources: [SourceBean] = []
+        for source in sources where source.isSearchable
+            && source.isSelectable
+            && source.isSupportedInSwift
+            && source.isHttpApi {
+            guard await searchHealth.isAvailable(source.key) else { continue }
+            searchableSources.append(source)
         }
         guard !searchableSources.isEmpty else { return }
 
@@ -521,10 +528,20 @@ class SourceService {
                 nextIndex += 1
                 group.addTask { [self] in
                     do {
-                        return (index, try await self.search(sourceBean: searchableSources[index], keyword: keyword))
+                        let videos = try await self.search(sourceBean: searchableSources[index], keyword: keyword)
+                        if videos.isEmpty {
+                            await self.searchHealth.markFailure(searchableSources[index].key, duration: 180)
+                        } else {
+                            await self.searchHealth.markSuccess(searchableSources[index].key)
+                        }
+                        return (index, videos)
                     } catch is CancellationError {
                         return (index, [])
                     } catch {
+                        await self.searchHealth.markFailure(
+                            searchableSources[index].key,
+                            duration: Self.searchFailureDuration(for: error)
+                        )
                         return (index, [])
                     }
                 }
@@ -561,10 +578,20 @@ class SourceService {
                 nextIndex += 1
                 group.addTask { [self] in
                     do {
-                        return (index, try await self.search(sourceBean: searchableSources[index], keyword: keyword))
+                        let videos = try await self.search(sourceBean: searchableSources[index], keyword: keyword)
+                        if videos.isEmpty {
+                            await self.searchHealth.markFailure(searchableSources[index].key, duration: 180)
+                        } else {
+                            await self.searchHealth.markSuccess(searchableSources[index].key)
+                        }
+                        return (index, videos)
                     } catch is CancellationError {
                         return (index, [])
                     } catch {
+                        await self.searchHealth.markFailure(
+                            searchableSources[index].key,
+                            duration: Self.searchFailureDuration(for: error)
+                        )
                         return (index, [])
                     }
                 }
@@ -584,6 +611,9 @@ class SourceService {
         guard !tokens.isEmpty else { return videos }
         
         return videos.filter { video in
+            guard !video.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return false
+            }
             let searchableText = normalizeSearchText([
                 video.name,
                 video.note,
@@ -596,6 +626,13 @@ class SourceService {
             guard !searchableText.isEmpty else { return false }
             return tokens.allSatisfy { searchableText.contains($0) }
         }
+    }
+
+    private static func searchFailureDuration(for error: Error) -> TimeInterval {
+        if case NetworkError.httpError(let status) = error, status == 403 {
+            return 900
+        }
+        return 300
     }
     
     private func normalizeSearchText(_ text: String) -> String {
@@ -825,5 +862,29 @@ enum SourceError: LocalizedError {
         case .unsupportedType(let type): return "暂不支持 \(type) 类型的数据源，请切换其他源"
         case .invalidApiUrl(let url): return "无效的接口地址: \(url)"
         }
+    }
+}
+
+/// 搜索源健康短缓存。只影响搜索请求，不修改源配置，也不影响播放。
+private actor SearchSourceHealthCache {
+    private var unavailableUntil: [String: Date] = [:]
+
+    func isAvailable(_ sourceKey: String) -> Bool {
+        guard let until = unavailableUntil[sourceKey] else { return true }
+        if until <= Date() {
+            unavailableUntil.removeValue(forKey: sourceKey)
+            return true
+        }
+        return false
+    }
+
+    func markFailure(_ sourceKey: String, duration: TimeInterval) {
+        guard !sourceKey.isEmpty else { return }
+        let expiry = Date().addingTimeInterval(max(30, duration))
+        unavailableUntil[sourceKey] = expiry
+    }
+
+    func markSuccess(_ sourceKey: String) {
+        unavailableUntil.removeValue(forKey: sourceKey)
     }
 }

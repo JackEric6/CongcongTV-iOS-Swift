@@ -63,12 +63,19 @@ class DetailViewModel: ObservableObject {
     private var playableResolveTask: Task<Void, Never>?
     private var playableResolveToken = UUID()
     private var currentSource: SourceBean?
+    /// 跨资源站元数据补全任务。播放源详情先落地，补全任务只允许填写空元数据字段。
+    private var metadataEnrichmentTask: Task<Void, Never>?
+    private var metadataEnrichmentToken = UUID()
     
     /// 加载视频详情
     func loadDetail(video: Movie.Video) async {
         guard let source = ApiConfig.shared.getSource(key: video.sourceKey)
                 ?? ApiConfig.shared.homeSourceBean else { return }
         currentSource = source
+        metadataEnrichmentTask?.cancel()
+        metadataEnrichmentTask = nil
+        let metadataToken = UUID()
+        metadataEnrichmentToken = metadataToken
         playableResolveTask?.cancel()
         playableResolveTask = nil
         playableResolveToken = UUID()
@@ -78,7 +85,8 @@ class DetailViewModel: ObservableObject {
         
         do {
             if let info = try await sourceService.getDetail(sourceBean: source, vodId: video.id) {
-                self.vodInfo = info
+                let displayInfo = Self.mergeMissingMetadata(info, from: video)
+                self.vodInfo = displayInfo
                 self.selectedFlag = info.playFlag
                 self.selectedEpisodeIndex = info.playIndex
                 self.resumeSeconds = 0
@@ -92,12 +100,201 @@ class DetailViewModel: ObservableObject {
                 } else {
                     resetQualityState()
                 }
+                startMetadataEnrichment(
+                    originalVideo: video,
+                    playbackInfo: displayInfo,
+                    playbackSource: source,
+                    token: metadataToken
+                )
             }
         } catch {
             errorMessage = error.localizedDescription
         }
         
         isLoading = false
+    }
+
+    /// 在实际播放源详情成功后，异步从其他可搜索源补全缺失元数据。
+    /// 跨源结果绝不参与播放线路、集数或地址构建。
+    private func startMetadataEnrichment(
+        originalVideo: Movie.Video,
+        playbackInfo: VodInfo,
+        playbackSource: SourceBean,
+        token: UUID
+    ) {
+        let title = originalVideo.name.isEmpty ? playbackInfo.name : originalVideo.name
+        let normalizedTitle = Self.normalizeMetadataTitle(title)
+        guard !normalizedTitle.isEmpty else { return }
+        guard Self.needsMetadataEnrichment(playbackInfo) else { return }
+
+        let sources = ApiConfig.shared.getSearchableSources().filter {
+            $0.key != playbackSource.key
+                && $0.isSupportedInSwift
+                && $0.isHttpApi
+        }
+        guard !sources.isEmpty else { return }
+
+        let sourceService = self.sourceService
+        metadataEnrichmentTask = Task { [weak self, sourceService, sources, title, normalizedTitle, playbackSource, playbackInfo, token] in
+            let candidates = await Self.fetchMetadataCandidates(
+                searchKeyword: title,
+                normalizedTitle: normalizedTitle,
+                sources: sources,
+                sourceService: sourceService
+            )
+            guard !Task.isCancelled, let self else { return }
+            for candidate in candidates {
+                guard !Task.isCancelled else { return }
+                self.mergeMetadata(
+                    from: candidate,
+                    playbackSource: playbackSource,
+                    playbackInfo: playbackInfo,
+                    token: token
+                )
+            }
+        }
+    }
+
+    private static func fetchMetadataCandidates(
+        searchKeyword: String,
+        normalizedTitle: String,
+        sources: [SourceBean],
+        sourceService: SourceService
+    ) async -> [VodInfo] {
+        let maxConcurrent = min(8, sources.count)
+        return await withTaskGroup(of: VodInfo?.self, returning: [VodInfo].self) { group in
+            var nextIndex = 0
+            var candidates: [VodInfo] = []
+            for _ in 0..<maxConcurrent {
+                let source = sources[nextIndex]
+                nextIndex += 1
+                group.addTask {
+                    await Self.fetchMetadata(
+                        source: source,
+                        searchKeyword: searchKeyword,
+                        normalizedTitle: normalizedTitle,
+                        sourceService: sourceService
+                    )
+                }
+            }
+
+            while let candidate = await group.next() {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return []
+                }
+                if let candidate { candidates.append(candidate) }
+
+                guard !Task.isCancelled, nextIndex < sources.count else { continue }
+                let source = sources[nextIndex]
+                nextIndex += 1
+                group.addTask {
+                    await Self.fetchMetadata(
+                        source: source,
+                        searchKeyword: searchKeyword,
+                        normalizedTitle: normalizedTitle,
+                        sourceService: sourceService
+                    )
+                }
+            }
+            group.cancelAll()
+            return candidates
+        }
+    }
+
+    /// 先用搜索结果锁定同名条目，再获取该源详情；失败时回退到搜索条目本身。
+    private static func fetchMetadata(
+        source: SourceBean,
+        searchKeyword: String,
+        normalizedTitle: String,
+        sourceService: SourceService
+    ) async -> VodInfo? {
+        guard !Task.isCancelled else { return nil }
+        guard let videos = try? await sourceService.search(sourceBean: source, keyword: searchKeyword),
+              let match = videos.first(where: {
+                  normalizeMetadataTitle($0.name) == normalizedTitle
+              }),
+              !match.id.isEmpty else { return nil }
+        guard !Task.isCancelled else { return nil }
+
+        if let detail = try? await sourceService.getDetail(sourceBean: source, vodId: match.id) {
+            return detail
+        }
+
+        return VodInfo.from(video: match, playFrom: "", playUrl: "")
+    }
+
+    private static func mergeMissingMetadata(_ info: VodInfo, from video: Movie.Video) -> VodInfo {
+        var merged = info
+        if isBlank(merged.name), !isBlank(video.name) { merged.name = video.name }
+        if isBlank(merged.pic), !isBlank(video.pic) { merged.pic = video.pic }
+        if isBlank(merged.note), !isBlank(video.note) { merged.note = video.note }
+        if isBlank(merged.year), !isBlank(video.year) { merged.year = video.year }
+        if isBlank(merged.area), !isBlank(video.area) { merged.area = video.area }
+        if isBlank(merged.typeName), !isBlank(video.type) { merged.typeName = video.type }
+        if isBlank(merged.director), !isBlank(video.director) { merged.director = video.director }
+        if isBlank(merged.actor), !isBlank(video.actor) { merged.actor = video.actor }
+        if isBlank(merged.des), !isBlank(video.des) { merged.des = video.des }
+        if isBlank(merged.doubanRating), !isBlank(video.doubanRating) {
+            merged.doubanRating = video.doubanRating
+        }
+        return merged
+    }
+
+    /// 只覆盖空的展示元数据，明确不触碰任何播放字段。
+    private func mergeMetadata(
+        from candidate: VodInfo,
+        playbackSource: SourceBean,
+        playbackInfo: VodInfo,
+        token: UUID
+    ) {
+        guard metadataEnrichmentToken == token,
+              currentSource?.key == playbackSource.key,
+              let current = vodInfo,
+              current.sourceKey == playbackInfo.sourceKey,
+              current.id == playbackInfo.id else { return }
+
+        var merged = current
+        if Self.isBlank(merged.pic), !Self.isBlank(candidate.pic) { merged.pic = candidate.pic }
+        if Self.isBlank(merged.note), !Self.isBlank(candidate.note) { merged.note = candidate.note }
+        if Self.isBlank(merged.year), !Self.isBlank(candidate.year) { merged.year = candidate.year }
+        if Self.isBlank(merged.area), !Self.isBlank(candidate.area) { merged.area = candidate.area }
+        if Self.isBlank(merged.typeName), !Self.isBlank(candidate.typeName) { merged.typeName = candidate.typeName }
+        if Self.isBlank(merged.director), !Self.isBlank(candidate.director) { merged.director = candidate.director }
+        if Self.isBlank(merged.actor), !Self.isBlank(candidate.actor) { merged.actor = candidate.actor }
+        if Self.isBlank(merged.des), !Self.isBlank(candidate.des) { merged.des = candidate.des }
+        if Self.isBlank(merged.doubanRating), !Self.isBlank(candidate.doubanRating) {
+            merged.doubanRating = candidate.doubanRating
+        }
+
+        // 只发布元数据字段的合并结果；play*、sourceKey、id 完全保留当前播放源值。
+        vodInfo = merged
+    }
+
+    private static func needsMetadataEnrichment(_ info: VodInfo) -> Bool {
+        isBlank(info.pic) || isBlank(info.note) || isBlank(info.year) || isBlank(info.area)
+            || isBlank(info.typeName) || isBlank(info.director) || isBlank(info.actor)
+            || isBlank(info.des) || isBlank(info.doubanRating)
+    }
+
+    private static func isBlank(_ value: String) -> Bool {
+        value
+            .replacingOccurrences(of: "&nbsp;", with: " ", options: .caseInsensitive)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+    }
+
+    private static func normalizeMetadataTitle(_ title: String) -> String {
+        let decoded = title
+            .replacingOccurrences(of: "&nbsp;", with: " ", options: .caseInsensitive)
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+        let scalars = decoded.unicodeScalars.filter { scalar in
+            !CharacterSet.whitespacesAndNewlines.contains(scalar)
+                && !CharacterSet.punctuationCharacters.contains(scalar)
+                && !CharacterSet.symbols.contains(scalar)
+        }
+        return String(String.UnicodeScalarView(scalars)).lowercased()
     }
     
     /// 选择线路

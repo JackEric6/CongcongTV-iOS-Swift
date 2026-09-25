@@ -53,62 +53,28 @@ struct HomeView: View {
         }
     }
     
-    // MARK: - 顶部栏（源选择器）
+    // MARK: - 顶部栏
     
     private var headerBar: some View {
-        ZStack {
-            HStack(spacing: 12) {
-                // 左侧保留源切换入口，继续显示当前源和可选源列表。
-                Menu {
-                    ForEach(ApiConfig.shared.sourceBeanList.filter { $0.isSelectable }) { source in
-                        Button {
-                            ApiConfig.shared.setHomeSource(source)
-                            Task { await viewModel.refresh() }
-                        } label: {
-                            HStack {
-                                Text(source.name)
-                                if source.key == ApiConfig.shared.homeSourceBean?.key {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "play.tv.fill")
-                            .font(.system(size: 14))
-                            .foregroundColor(.orange)
-                        Text(ApiConfig.shared.homeSourceBean?.name ?? CongcongBrand.appName)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.5))
-                    }
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-
-                Spacer()
-
-                NavigationLink {
-                    SearchView()
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 36, height: 36)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("搜索")
-            }
-
+        HStack(spacing: 12) {
             Text(CongcongBrand.appName)
                 .font(.system(size: 18, weight: .bold))
                 .foregroundColor(.white)
                 .lineLimit(1)
+
+            Spacer()
+
+            NavigationLink {
+                SearchView()
+            } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("搜索")
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
@@ -230,13 +196,6 @@ struct HomeView: View {
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 40)
-                    
-                    // 如果是不支持的源类型，显示类型信息
-                    if let source = ApiConfig.shared.homeSourceBean, !source.isSupportedInSwift {
-                        Text("当前源类型: \(source.typeDescription)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
                     
                     Button("重试") {
                         Task { await viewModel.refresh() }

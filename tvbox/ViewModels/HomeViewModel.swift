@@ -35,7 +35,10 @@ class HomeViewModel: ObservableObject {
     
     /// 加载分类列表
     func loadSorts() async {
-        guard let source = ApiConfig.shared.homeSourceBean else { return }
+        guard let source = xiguaSource else {
+            errorMessage = "未找到西瓜资源站配置"
+            return
+        }
         isLoading = true
         errorMessage = nil
         
@@ -94,9 +97,10 @@ class HomeViewModel: ObservableObject {
             return results
         }
 
-        return indexedResults
+        let recommendations = indexedResults
             .sorted { $0.0 < $1.0 }
             .compactMap(\.1)
+        return await PosterCache.shared.fill(recommendations)
     }
 
     private func isXiguaSource(_ source: SourceBean) -> Bool {
@@ -144,7 +148,7 @@ class HomeViewModel: ObservableObject {
     /// 加载分类视频列表
     private func loadCategoryVideos(page: Int, sort: MovieSort.SortData) async {
         guard sort.id != "home" else { return }
-        guard let source = ApiConfig.shared.homeSourceBean else { return }
+        guard let source = xiguaSource else { return }
         // 防重复并发加载，避免分页错序。
         guard !isLoading else { return }
         
@@ -153,18 +157,19 @@ class HomeViewModel: ObservableObject {
         
         do {
             let videos = try await sourceService.getList(sourceBean: source, sortData: sort, page: page)
+            let enrichedVideos = await PosterCache.shared.fill(videos)
             
             // 分类切换过程中，丢弃旧请求结果
             guard selectedSort?.id == sort.id else { return }
             
             if page == 1 {
-                categoryVideos = videos
+                categoryVideos = enrichedVideos
             } else {
-                categoryVideos.append(contentsOf: videos)
+                categoryVideos.append(contentsOf: enrichedVideos)
             }
             // 以"返回非空"作为是否继续分页的轻量判断。
             currentPage = page
-            hasMore = !videos.isEmpty
+            hasMore = !enrichedVideos.isEmpty
         } catch {
             guard selectedSort?.id == sort.id else { return }
             errorMessage = error.localizedDescription
@@ -227,6 +232,11 @@ class HomeViewModel: ObservableObject {
                 return leftRank == rightRank ? $0.offset < $1.offset : leftRank < rightRank
             }
             .map(\.element)
+    }
+
+    /// 首页固定使用西瓜源；设置页仍可独立切换用户的默认源。
+    private var xiguaSource: SourceBean? {
+        ApiConfig.shared.sourceBeanList.first(where: isXiguaSource)
     }
 
     private var obviousParentCategoryNames: Set<String> {

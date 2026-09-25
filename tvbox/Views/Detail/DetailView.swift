@@ -305,7 +305,7 @@ struct DetailView: View {
 
     @ViewBuilder
     private var videoPoster: some View {
-        CachedAsyncImage(url: URL.posterURL(from: video.pic)) { image in
+        CachedAsyncImage(url: URL.posterURL(from: displayPoster)) { image in
             image.resizable().aspectRatio(2/3, contentMode: .fill)
         } placeholder: {
             ZStack {
@@ -322,16 +322,16 @@ struct DetailView: View {
     @ViewBuilder
     private var videoDetails: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(video.name)
+            Text(displayName)
                 .font(.system(size: 20, weight: .bold))
                 .foregroundColor(.white)
                 .lineLimit(2)
 
-            if !video.formattedDoubanRating.isEmpty {
+            if !displayRating.isEmpty {
                 HStack(spacing: 5) {
                     Image(systemName: "star.fill")
                         .foregroundColor(.yellow)
-                    Text(video.formattedDoubanRating)
+                    Text(displayRating)
                         .foregroundColor(.yellow)
                 }
                 .font(.system(size: 14, weight: .semibold))
@@ -356,6 +356,22 @@ struct DetailView: View {
             }
             #endif
         }
+    }
+
+    private var displayName: String {
+        let enrichedName = viewModel.vodInfo?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return enrichedName.isEmpty ? video.name : enrichedName
+    }
+
+    private var displayPoster: String {
+        let enrichedPoster = viewModel.vodInfo?.pic.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return enrichedPoster.isEmpty ? video.pic : enrichedPoster
+    }
+
+    private var displayRating: String {
+        let enrichedRating = viewModel.vodInfo?.doubanRating ?? ""
+        let formattedEnrichedRating = Movie.Video.formatDoubanRating(enrichedRating)
+        return formattedEnrichedRating.isEmpty ? video.formattedDoubanRating : formattedEnrichedRating
     }
 
     @ViewBuilder
