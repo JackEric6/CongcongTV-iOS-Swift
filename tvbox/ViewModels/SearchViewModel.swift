@@ -19,6 +19,8 @@ class SearchViewModel: ObservableObject {
     private let sourceService = SourceService.shared
     /// 搜索请求序号（用于丢弃过期异步结果）。
     private var latestSearchRequestId: UUID = UUID()
+    /// 当前搜索任务；重新搜索时取消，避免旧请求继续占用网络和回写结果。
+    private var activeSearchTask: Task<Void, Never>?
     
     /// 初始化时同步加载本地历史记录，确保搜索页首次渲染即可展示。
     init() {
@@ -29,6 +31,8 @@ class SearchViewModel: ObservableObject {
     func search() async {
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
+        activeSearchTask?.cancel()
         let requestId = UUID()
         latestSearchRequestId = requestId
         
@@ -46,14 +50,22 @@ class SearchViewModel: ObservableObject {
         // 搜索一旦触发就先落历史，保持行为与移动端常见搜索体验一致。
         addToHistory(trimmed)
         
-        // 走多源并发搜索，返回聚合后的影片列表。
-        let videos = await sourceService.searchAll(keyword: trimmed)
+        // 每个源完成后立即追加一批结果；旧关键词的回调会被请求序号丢弃。
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.sourceService.searchAllStreaming(keyword: trimmed) { [weak self] videos in
+                guard let self, requestId == self.latestSearchRequestId else { return }
+                self.results.append(contentsOf: videos)
+            }
+        }
+        activeSearchTask = task
+        await task.value
+
         guard requestId == latestSearchRequestId else { return }
-        self.results = videos
-        
-        if videos.isEmpty {
+        if results.isEmpty {
             errorMessage = "未找到相关内容"
         }
+        activeSearchTask = nil
         
     }
     
@@ -61,6 +73,8 @@ class SearchViewModel: ObservableObject {
     func searchInSource(_ source: SourceBean) async {
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        activeSearchTask?.cancel()
+        activeSearchTask = nil
         let requestId = UUID()
         latestSearchRequestId = requestId
         addToHistory(trimmed)
@@ -83,6 +97,14 @@ class SearchViewModel: ObservableObject {
             errorMessage = error.localizedDescription
         }
         
+    }
+
+    /// 取消当前搜索并结束加载状态。
+    func cancelSearch() {
+        activeSearchTask?.cancel()
+        activeSearchTask = nil
+        latestSearchRequestId = UUID()
+        isSearching = false
     }
     
     // MARK: - 搜索历史

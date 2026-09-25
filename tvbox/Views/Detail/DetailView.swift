@@ -15,11 +15,13 @@ struct DetailView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showFullScreen = false
     #if os(macOS)
     @State private var pendingMacWindowFullScreen = false
     #endif
     @State private var lastPersistedProgress: Double = 0
+    @State private var playbackSessionToken = UUID()
     @State private var isCollected = false
     @State private var showEpisodePicker = false
     #if os(iOS)
@@ -37,7 +39,9 @@ struct DetailView: View {
                         PlayerView(
                             urlString: url,
                             startPosition: viewModel.currentPlaybackSeconds(),
-                            onProgressChanged: handlePlaybackProgress,
+                            onProgressChanged: { [playbackSessionToken] seconds, _ in
+                                handlePlaybackProgress(seconds, sessionToken: playbackSessionToken)
+                            },
                             onPlaybackEnded: playNextEpisodeIfNeeded,
                             onToggleFullScreen: inlineFullScreenHandler,
                             onBack: { dismiss() },
@@ -106,6 +110,7 @@ struct DetailView: View {
                 selectedIndex: viewModel.selectedEpisodeIndex,
                 onSelect: { index in
                     showEpisodePicker = false
+                    beginPlaybackSession()
                     withAnimation {
                         viewModel.selectEpisode(index: index)
                     }
@@ -119,6 +124,7 @@ struct DetailView: View {
             // 海报点击后默认直接进入播放：先按历史续播，无历史则自动选中第一集播放，
             // 用户无需再额外点击“立即播放”。
             if !viewModel.isPlaying {
+                beginPlaybackSession()
                 viewModel.selectEpisode(index: 0)
                 saveHistoryForCurrentEpisode()
             }
@@ -139,13 +145,20 @@ struct DetailView: View {
             appState.exitPlayerFullScreen()
             #endif
         }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .active else { return }
+            viewModel.commitPlaybackProgressSnapshot()
+            persistHistoryIfNeeded(force: true)
+        }
         #if os(macOS)
         .overlay {
             if showFullScreen, let url = viewModel.playUrl {
                 FullScreenPlayerView(
                     urlString: url,
                     startPosition: viewModel.currentPlaybackSeconds(),
-                    onProgressChanged: handlePlaybackProgress,
+                    onProgressChanged: { [playbackSessionToken] seconds, _ in
+                        handlePlaybackProgress(seconds, sessionToken: playbackSessionToken)
+                    },
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     canPlayNext: canPlayNextEpisode,
                     onPlayNext: playNextEpisodeIfNeeded,
@@ -237,6 +250,7 @@ struct DetailView: View {
             },
             onSelect: { [weak presenter] index in
                 presenter?.dismiss(animated: true) {
+                    beginPlaybackSession()
                     withAnimation {
                         viewModel.selectEpisode(index: index)
                     }
@@ -348,6 +362,7 @@ struct DetailView: View {
     private var playButton: some View {
         if !viewModel.isPlaying && viewModel.vodInfo != nil {
             Button {
+                beginPlaybackSession()
                 viewModel.selectEpisode(index: 0)
                 saveHistoryForCurrentEpisode()
             } label: {
@@ -442,6 +457,7 @@ struct DetailView: View {
     @ViewBuilder
     private func flagButton(_ flag: String) -> some View {
         Button {
+            beginPlaybackSession()
             withAnimation {
                 viewModel.selectFlag(flag)
             }
@@ -492,6 +508,7 @@ struct DetailView: View {
     @ViewBuilder
     private func qualityButton(_ option: PlaybackQualityOption) -> some View {
         Button {
+            beginPlaybackSession()
             withAnimation {
                 viewModel.selectQuality(option)
             }
@@ -531,6 +548,7 @@ struct DetailView: View {
                 episodes: viewModel.currentEpisodes,
                 selectedIndex: viewModel.selectedEpisodeIndex,
                 onSelect: { index in
+                    beginPlaybackSession()
                     withAnimation {
                         viewModel.selectEpisode(index: index)
                     }
@@ -621,17 +639,19 @@ struct DetailView: View {
             progressSeconds: progress
         )
         
-        Task { @MainActor in
-            CacheStore.shared.addRecord(
-                video,
-                playNote: playNote,
-                playbackState: playbackState,
-                context: modelContext
-            )
-        }
+        // CacheStore 的写入方法本身运行在 MainActor，同步写入可避免异步任务乱序覆盖最新进度。
+        CacheStore.shared.addRecord(
+            video,
+            playNote: playNote,
+            playbackState: playbackState,
+            context: modelContext
+        )
     }
     
-    private func handlePlaybackProgress(_ seconds: Double, _: Double?) {
+    private func handlePlaybackProgress(_ seconds: Double, sessionToken: UUID? = nil) {
+        if let sessionToken, sessionToken != playbackSessionToken {
+            return
+        }
         viewModel.updatePlaybackProgress(seconds: seconds)
         persistHistoryIfNeeded(force: false, currentProgress: seconds)
     }
@@ -647,6 +667,12 @@ struct DetailView: View {
         
         lastPersistedProgress = progress
         saveHistoryForCurrentEpisode(progressOverride: progress)
+    }
+
+    /// 开始新的线路/剧集播放会话，令旧播放器回调失效，并重新计算本集的持久化阈值。
+    private func beginPlaybackSession() {
+        playbackSessionToken = UUID()
+        lastPersistedProgress = 0
     }
     
     private func restorePlaybackFromHistory() {
@@ -688,6 +714,7 @@ struct DetailView: View {
         }
         
         if moved {
+            beginPlaybackSession()
             saveHistoryForCurrentEpisode()
         }
     }
@@ -698,6 +725,7 @@ struct DetailView: View {
             moved = viewModel.playPrevious()
         }
         if moved {
+            beginPlaybackSession()
             saveHistoryForCurrentEpisode()
         }
     }

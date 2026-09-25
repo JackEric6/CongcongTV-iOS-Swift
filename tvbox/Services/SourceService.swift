@@ -486,18 +486,35 @@ class SourceService {
     /// 站点数量较多时采用有限并发：同时请求过多会触发系统连接排队，
     /// 而完全串行又会被失效站点拖慢。每个站点都有独立的短超时，
     /// 一个站点失败不会影响其他站点，也不会阻塞最终收敛。
+    @MainActor
     func searchAll(keyword: String) async -> [Movie.Video] {
+        var allResults: [Movie.Video] = []
+        await searchAllStreaming(keyword: keyword) { videos in
+            allResults.append(contentsOf: videos)
+        }
+        return allResults
+    }
+
+    /// 多源并发搜索，并在每个源完成后立即返回该源的结果。
+    ///
+    /// 结果按源完成顺序回调，而不是按配置顺序等待汇总；这样搜索页可以
+    /// 像 Android 端一样逐源显示。每个源只在自己的结果集合内去重，失败
+    /// 或取消的源不会阻塞其他源。
+    func searchAllStreaming(
+        keyword: String,
+        onResults: @escaping @MainActor ([Movie.Video]) -> Void
+    ) async {
         let sources = await ApiConfig.shared.getSearchableSources()
 
         let searchableSources = sources.filter {
             $0.isSearchable && $0.isSelectable && $0.isSupportedInSwift && $0.isHttpApi
         }
-        guard !searchableSources.isEmpty else { return [] }
+        guard !searchableSources.isEmpty else { return }
 
         // 多数站点使用不同域名，适当提高并发可以显著降低首屏等待；
         // URLSession 仍会按 host 自己限流，不会把同一站点打爆。
         let concurrency = min(12, searchableSources.count)
-        return await withTaskGroup(of: (Int, [Movie.Video]).self) { group in
+        await withTaskGroup(of: (Int, [Movie.Video]).self) { group in
             var nextIndex = 0
             for _ in 0..<concurrency {
                 let index = nextIndex
@@ -513,10 +530,33 @@ class SourceService {
                 }
             }
 
-            var completed: [(Int, [Movie.Video])] = []
-            for await result in group {
-                completed.append(result)
-                guard nextIndex < searchableSources.count else { continue }
+            var seen = Set<String>()
+            while let result = await group.next() {
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
+
+                let (_, videos) = result
+                var batch: [Movie.Video] = []
+                for video in videos {
+                    let identity: String
+                    if !video.id.isEmpty {
+                        identity = "\(video.sourceKey)|id:\(video.id)"
+                    } else {
+                        identity = "\(video.sourceKey)|name:\(normalizeSearchText(video.name))"
+                    }
+                    guard seen.insert(identity).inserted else { continue }
+                    batch.append(video)
+                }
+                if !batch.isEmpty {
+                    await onResults(batch)
+                }
+
+                guard !Task.isCancelled, nextIndex < searchableSources.count else {
+                    if Task.isCancelled { group.cancelAll() }
+                    continue
+                }
                 let index = nextIndex
                 nextIndex += 1
                 group.addTask { [self] in
@@ -530,22 +570,7 @@ class SourceService {
                 }
             }
 
-            // 按配置源顺序合并，结果稳定；同一源相同 id/name 只保留一次。
-            var seen = Set<String>()
-            var allResults: [Movie.Video] = []
-            for (_, videos) in completed.sorted(by: { $0.0 < $1.0 }) {
-                for video in videos {
-                    let identity: String
-                    if !video.id.isEmpty {
-                        identity = "\(video.sourceKey)|id:\(video.id)"
-                    } else {
-                        identity = "\(video.sourceKey)|name:\(normalizeSearchText(video.name))"
-                    }
-                    guard seen.insert(identity).inserted else { continue }
-                    allResults.append(video)
-                }
-            }
-            return allResults
+            group.cancelAll()
         }
     }
     

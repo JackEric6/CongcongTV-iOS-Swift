@@ -45,6 +45,8 @@ class DetailViewModel: ObservableObject {
     @Published var selectedQualityId: String = PlaybackQualityOption.autoIdentifier
     /// 播放器高频回调进度，不直接绑定 UI，避免高频刷新引发性能问题。
     private var realtimeProgressSeconds: Double = 0
+    /// 当前播放器会话是否已经回传真实进度，避免旧的续播位置覆盖拖动结果。
+    private var hasRealtimeProgressSnapshot = false
     
     /// 数据服务与网络服务。
     private let sourceService = SourceService.shared
@@ -81,6 +83,7 @@ class DetailViewModel: ObservableObject {
                 self.selectedEpisodeIndex = info.playIndex
                 self.resumeSeconds = 0
                 self.realtimeProgressSeconds = 0
+                self.hasRealtimeProgressSnapshot = false
                 if let episode = info.currentEpisode {
                     updateQualityOptions(
                         for: KktvsResponseNormalizer.normalizeMediaURL(episode.url),
@@ -106,6 +109,7 @@ class DetailViewModel: ObservableObject {
         vodInfo?.playFlag = flag
         resumeSeconds = 0
         realtimeProgressSeconds = 0
+        hasRealtimeProgressSnapshot = false
         
         let episodes = vodInfo?.playUrlMap[flag] ?? []
         guard !episodes.isEmpty else {
@@ -136,6 +140,7 @@ class DetailViewModel: ObservableObject {
         vodInfo?.playIndex = index
         resumeSeconds = 0
         realtimeProgressSeconds = 0
+        hasRealtimeProgressSnapshot = false
         
         if let episode = vodInfo?.currentEpisode {
             let normalizedURL = KktvsResponseNormalizer.normalizeMediaURL(episode.url)
@@ -168,6 +173,7 @@ class DetailViewModel: ObservableObject {
         let progress = max(0, state.progressSeconds)
         resumeSeconds = progress
         realtimeProgressSeconds = progress
+        hasRealtimeProgressSnapshot = false
         let episodeURL = KktvsResponseNormalizer.normalizeMediaURL(episodes[targetIndex].url)
         updateQualityOptions(for: episodeURL, resetSelection: true)
         playUrl = selectedPlayableURL(fallback: episodeURL)
@@ -195,16 +201,17 @@ class DetailViewModel: ObservableObject {
     func updatePlaybackProgress(seconds: Double) {
         guard seconds.isFinite else { return }
         realtimeProgressSeconds = max(seconds, 0)
+        hasRealtimeProgressSnapshot = true
     }
     
     /// 当前实时进度（不触发 UI 高频刷新）
     func currentPlaybackSeconds() -> Double {
-        max(realtimeProgressSeconds, resumeSeconds)
+        hasRealtimeProgressSnapshot ? realtimeProgressSeconds : max(realtimeProgressSeconds, resumeSeconds)
     }
     
     /// 仅在必要时同步快照到可观察状态
     func commitPlaybackProgressSnapshot() {
-        let snapshot = max(realtimeProgressSeconds, 0)
+        let snapshot = max(currentPlaybackSeconds(), 0)
         if abs(snapshot - resumeSeconds) >= 1 {
             resumeSeconds = snapshot
         }

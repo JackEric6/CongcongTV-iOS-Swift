@@ -28,10 +28,19 @@ struct SearchView: View {
 
             // 内容
             if viewModel.isSearching {
-                Spacer()
-                ProgressView("搜索中...")
-                    .tint(.orange)
-                Spacer()
+                if viewModel.results.isEmpty {
+                    Spacer()
+                    ProgressView("搜索中...")
+                        .tint(.orange)
+                    Spacer()
+                } else {
+                    searchResults
+                        .overlay(alignment: .top) {
+                            ProgressView()
+                                .tint(.orange)
+                                .padding(.top, 6)
+                        }
+                }
             } else if !viewModel.results.isEmpty {
                 searchResults
             } else if viewModel.keyword.isEmpty {
@@ -97,11 +106,12 @@ struct SearchView: View {
                     #endif
                 
                 if !viewModel.keyword.isEmpty {
-                    Button {
-                        withAnimation {
-                            viewModel.keyword = ""
-                            viewModel.results = []
-                        }
+                        Button {
+                            withAnimation {
+                                viewModel.cancelSearch()
+                                viewModel.keyword = ""
+                                viewModel.results = []
+                            }
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.white.opacity(0.4))

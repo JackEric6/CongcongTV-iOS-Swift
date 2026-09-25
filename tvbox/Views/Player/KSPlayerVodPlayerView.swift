@@ -80,12 +80,16 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     private var routeButtonLayoutInstalled = false
     private let deviceStatusView = UIView()
     private let deviceTimeLabel = UILabel()
+    private let deviceBatteryIconView = UIImageView()
     private let deviceBatteryLabel = UILabel()
     private var deviceStatusTimer: Timer?
     var customControlsLayout: ((Bool) -> Void)?
+    private var isSliderDragging = false
+    private var sliderSeekCommitted = false
 
     override var isMaskShow: Bool {
         didSet {
+            updateDeviceStatus(isLandscape: landscapeButton.isSelected)
             owningViewController?.setNeedsStatusBarAppearanceUpdate()
         }
     }
@@ -170,6 +174,52 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         owningViewController?.setNeedsStatusBarAppearanceUpdate()
     }
 
+    override func slider(value: Double, event: ControlEvents) {
+        switch event {
+        case .touchDown:
+            isSliderDragging = true
+            sliderSeekCommitted = false
+            // The base implementation only updates the preview value here;
+            // it does not seek until the release event.
+            super.slider(value: value, event: event)
+        case .valueChanged:
+            // KSPlayer's independent pan recognizer can emit valueChanged
+            // without a preceding UIControl touchDown.
+            if !isSliderDragging {
+                isSliderDragging = true
+                sliderSeekCommitted = false
+            }
+            super.slider(value: value, event: event)
+        case .touchUpInside, .touchCancel:
+            guard !sliderSeekCommitted else { return }
+            sliderSeekCommitted = true
+            isSliderDragging = false
+            // KSSlider's base path only seeks for touchUpInside. Treat a
+            // cancelled touch as the final position too, and let the base
+            // implementation perform the single seek.
+            super.slider(value: value, event: .touchUpInside)
+        default:
+            super.slider(value: value, event: event)
+        }
+    }
+
+    override func player(
+        layer: KSPlayerLayer,
+        currentTime: TimeInterval,
+        totalTime: TimeInterval
+    ) {
+        // IOSVideoPlayerView normally guards this internally, but its private
+        // drag flag does not cover every KSSlider tracking path. Keep the
+        // user's preview thumb from being overwritten by playback callbacks.
+        if isSliderDragging || toolBar.timeSlider.isTracking {
+            if abs(toolBar.totalTime - totalTime) > 0.1 {
+                toolBar.totalTime = totalTime
+            }
+            return
+        }
+        super.player(layer: layer, currentTime: currentTime, totalTime: totalTime)
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil {
@@ -180,6 +230,11 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         syncInteractivePopGesture()
     }
 
+    deinit {
+        deviceStatusTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+    }
+
     private func installDeviceStatusViewIfNeeded() {
         guard deviceStatusView.superview == nil else { return }
         deviceStatusView.translatesAutoresizingMaskIntoConstraints = false
@@ -187,13 +242,22 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         deviceStatusView.isOpaque = false
         deviceStatusView.layer.zPosition = 150
         deviceTimeLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        deviceBatteryIconView.image = UIImage(systemName: "battery.100")
+        deviceBatteryIconView.tintColor = .white
+        deviceBatteryIconView.contentMode = .scaleAspectFit
+        deviceBatteryIconView.setContentHuggingPriority(.required, for: .horizontal)
+        deviceBatteryIconView.setContentCompressionResistancePriority(.required, for: .horizontal)
         deviceBatteryLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
         [deviceTimeLabel, deviceBatteryLabel].forEach {
             $0.textColor = .white
             $0.shadowColor = UIColor.black.withAlphaComponent(0.85)
             $0.shadowOffset = CGSize(width: 0, height: 1)
         }
-        let stack = UIStackView(arrangedSubviews: [deviceTimeLabel, deviceBatteryLabel])
+        let batteryStack = UIStackView(arrangedSubviews: [deviceBatteryIconView, deviceBatteryLabel])
+        batteryStack.axis = .horizontal
+        batteryStack.spacing = 3
+        batteryStack.alignment = .center
+        let stack = UIStackView(arrangedSubviews: [deviceTimeLabel, batteryStack])
         stack.axis = .horizontal
         stack.spacing = 8
         stack.alignment = .center
@@ -205,14 +269,26 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
             stack.trailingAnchor.constraint(equalTo: deviceStatusView.trailingAnchor),
             stack.topAnchor.constraint(equalTo: deviceStatusView.topAnchor),
             stack.bottomAnchor.constraint(equalTo: deviceStatusView.bottomAnchor),
+            deviceBatteryIconView.widthAnchor.constraint(equalToConstant: 22),
+            deviceBatteryIconView.heightAnchor.constraint(equalToConstant: 14),
             deviceStatusView.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -14),
             deviceStatusView.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 8),
             deviceStatusView.heightAnchor.constraint(equalToConstant: 22)
         ])
         UIDevice.current.isBatteryMonitoringEnabled = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(deviceBatteryLevelDidChange),
+            name: UIDevice.batteryLevelDidChangeNotification,
+            object: UIDevice.current
+        )
         deviceStatusTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             self?.refreshDeviceStatus()
         }
+        refreshDeviceStatus()
+    }
+
+    @objc private func deviceBatteryLevelDidChange() {
         refreshDeviceStatus()
     }
 
@@ -223,6 +299,8 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         deviceTimeLabel.text = formatter.string(from: Date())
         let level = UIDevice.current.batteryLevel
         if level >= 0 {
+            // UIDevice reports the system value as a 0...1 fraction. Do not
+            // quantize it to the old five-percent steps.
             deviceBatteryLabel.text = "\(Int((level * 100).rounded()))%"
         } else {
             deviceBatteryLabel.text = ""
@@ -231,7 +309,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
 
     private func updateDeviceStatus(isLandscape: Bool) {
         installDeviceStatusViewIfNeeded()
-        deviceStatusView.isHidden = !isLandscape
+        deviceStatusView.isHidden = !isLandscape || !isMaskShow
         if isLandscape { refreshDeviceStatus() }
     }
 
