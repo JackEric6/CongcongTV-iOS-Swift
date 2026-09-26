@@ -360,17 +360,16 @@ class SourceService {
         let jsonStr = try await getString(from: url, sourceBean: sourceBean, expectation: .catalog)
         guard let detail = try parseDetail(
             normalizedResponse(jsonStr, sourceBean: sourceBean),
-            sourceKey: sourceBean.key,
-            type: sourceBean.type
+            sourceBean: sourceBean
         ) else {
             throw SourceError.invalidResponse("详情响应没有匹配的视频")
         }
         return detail
     }
 
-    private func parseDetail(_ jsonStr: String, sourceKey: String, type: Int) throws -> VodInfo? {
-        if type == 0 {
-            guard let detail = parseXMLDetail(jsonStr, sourceKey: sourceKey) else {
+    private func parseDetail(_ jsonStr: String, sourceBean: SourceBean) throws -> VodInfo? {
+        if sourceBean.type == 0 {
+            guard let detail = parseXMLDetail(jsonStr, sourceKey: sourceBean.key) else {
                 throw SourceError.invalidResponse("XML 详情缺少有效视频结构")
             }
             return detail
@@ -395,11 +394,16 @@ class SourceService {
               var video = try? decoder.decode(Movie.Video.self, from: itemData) else {
             throw SourceError.invalidResponse("详情视频结构无效")
         }
-        video.sourceKey = sourceKey
+        video.sourceKey = sourceBean.key
 
         let playFrom = first["vod_play_from"] as? String ?? ""
         let playUrl = first["vod_play_url"] as? String ?? ""
-        return VodInfo.from(video: video, playFrom: playFrom, playUrl: playUrl)
+        let playback = filteredPlaybackLines(
+            playFrom: playFrom,
+            playUrl: playUrl,
+            sourceBean: sourceBean
+        )
+        return VodInfo.from(video: video, playFrom: playback.playFrom, playUrl: playback.playUrl)
     }
 
     // MARK: - 搜索
@@ -788,6 +792,31 @@ class SourceService {
             || key.contains("xigua")
             || api.contains("xgzyapi.com")
             || api.contains("xiguam3u8")
+    }
+
+    private func isDyttSource(_ sourceBean: SourceBean) -> Bool {
+        let identity = "\(sourceBean.key) \(sourceBean.name) \(sourceBean.api)".lowercased()
+        return identity.contains("dytt") || identity.contains("电影天堂")
+    }
+
+    /// 电影天堂存在可解析页和 m3u8 两条线路，点播端只保留稳定的 dyttm3u8。
+    private func filteredPlaybackLines(
+        playFrom: String,
+        playUrl: String,
+        sourceBean: SourceBean
+    ) -> (playFrom: String, playUrl: String) {
+        guard isDyttSource(sourceBean) else {
+            return (playFrom, playUrl)
+        }
+
+        let flags = playFrom.components(separatedBy: "$$$")
+        let urls = playUrl.components(separatedBy: "$$$")
+        guard let index = flags.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "dyttm3u8"
+        }), urls.indices.contains(index) else {
+            return ("", "")
+        }
+        return ("dyttm3u8", urls[index])
     }
 
     private func parseXMLDetail(_ xml: String, sourceKey: String) -> VodInfo? {

@@ -579,6 +579,8 @@ struct DetailView: View {
         }
         if downloadManager.item(identifier: currentDownloadIdentifier)?.status == .paused {
             downloadManager.resume(identifier: currentDownloadIdentifier)
+            downloadAlertMessage = "已加入下载队列"
+            showDownloadAlert = true
             return
         }
         if viewModel.currentEpisodes.count > 1 {
@@ -638,6 +640,8 @@ struct DetailView: View {
 
             do {
                 _ = try downloadManager.start(request)
+                downloadAlertMessage = "已加入下载队列"
+                showDownloadAlert = true
             } catch {
                 downloadAlertMessage = error.localizedDescription
                 showDownloadAlert = true
@@ -1047,6 +1051,7 @@ private struct DownloadEpisodePickerSheet: View {
     let onConfirm: (Set<Int>) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selectedIndices: Set<Int>
+    private let gridColumns = [GridItem(.adaptive(minimum: 60, maximum: 96), spacing: 10)]
 
     init(
         episodes: [VodInfo.Episode],
@@ -1061,8 +1066,8 @@ private struct DownloadEpisodePickerSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
+            ScrollView {
+                VStack(spacing: 16) {
                     HStack {
                         Button(selectedIndices.count == episodes.count ? "取消全选" : "全选") {
                             if selectedIndices.count == episodes.count {
@@ -1080,10 +1085,9 @@ private struct DownloadEpisodePickerSheet: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
-                }
 
-                Section {
-                    ForEach(Array(episodes.enumerated()), id: \.offset) { index, episode in
+                    LazyVGrid(columns: gridColumns, spacing: 10) {
+                        ForEach(Array(episodes.enumerated()), id: \.offset) { index, _ in
                         Button {
                             if selectedIndices.contains(index) {
                                 selectedIndices.remove(index)
@@ -1091,19 +1095,29 @@ private struct DownloadEpisodePickerSheet: View {
                                 selectedIndices.insert(index)
                             }
                         } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: selectedIndices.contains(index) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundColor(selectedIndices.contains(index) ? .accentColor : .secondary)
-                                Text(episode.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                     ? "第\(index + 1)集"
-                                     : episode.name)
-                                    .foregroundColor(.primary)
-                                Spacer()
+                            ZStack(alignment: .topTrailing) {
+                                Text(romanNumeral(for: index + 1))
+                                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                    .foregroundColor(selectedIndices.contains(index) ? .white : .primary)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                                if selectedIndices.contains(index) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(.white.opacity(0.9))
+                                        .padding(5)
+                                }
                             }
+                            .frame(height: 44)
+                            .background(selectedIndices.contains(index) ? Color.accentColor : Color.secondary.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .padding(.bottom, 24)
             }
             .navigationTitle("选择下载剧集")
             #if os(iOS)
@@ -1122,6 +1136,24 @@ private struct DownloadEpisodePickerSheet: View {
                 }
             }
         }
+    }
+
+    private func romanNumeral(for value: Int) -> String {
+        guard value > 0 else { return "" }
+        let numerals: [(Int, String)] = [
+            (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+            (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+            (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")
+        ]
+        var remaining = value
+        var result = ""
+        for (number, symbol) in numerals {
+            while remaining >= number {
+                result += symbol
+                remaining -= number
+            }
+        }
+        return result
     }
 }
 
