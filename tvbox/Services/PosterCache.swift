@@ -9,6 +9,15 @@ actor PosterCache {
 
     private var posters: [String: String] = [:]
 
+    private static let persistedKey = "congcong.poster-cache.v2"
+
+    init() {
+        if let data = UserDefaults.standard.data(forKey: Self.persistedKey),
+           let saved = try? JSONDecoder().decode([String: String].self, from: data) {
+            posters = saved
+        }
+    }
+
     /// 用于同名影视合并海报，不包含标点、空白和大小写差异。
     nonisolated static func key(for title: String) -> String {
         let folded = title.folding(
@@ -38,23 +47,59 @@ actor PosterCache {
         return URL.posterURL(from: candidate)?.absoluteString ?? candidate
     }
 
+    /// 这些地址经常能通过 URL 校验，但实际请求会长期超时或返回防盗链页面。
+    /// 若同名影视存在其他来源的图片，应优先使用其他来源，避免暴风源坏图卡住整个卡片。
+    nonisolated static func isLikelyBroken(_ raw: String, sourceKey: String = "") -> Bool {
+        let value = raw.lowercased()
+        let source = sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return source == "bfzy"
+            || source.contains("baofeng")
+            || value.contains("img.picbf.com")
+            || value.contains("picbf.com")
+    }
+
+    /// 供历史/收藏等同步视图读取最近一次成功复用的海报。
+    /// 该方法只读 UserDefaults，不会改变视频的 sourceKey、id 或播放配置。
+    nonisolated static func cachedPoster(for title: String) -> String? {
+        guard let data = UserDefaults.standard.data(forKey: Self.persistedKey),
+              let saved = try? JSONDecoder().decode([String: String].self, from: data),
+              let value = saved[key(for: title)],
+              normalizedURL(value) != nil,
+              !isLikelyBroken(value) else { return nil }
+        return value
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(posters) else { return }
+        UserDefaults.standard.set(data, forKey: Self.persistedKey)
+    }
+
     /// 记录一个源返回的海报。已有有效海报不会被空值或新值覆盖。
-    func remember(title: String, poster: String) -> String? {
+    func remember(title: String, poster: String, sourceKey: String = "") -> String? {
         let titleKey = Self.key(for: title)
         guard !titleKey.isEmpty, let normalized = Self.normalizedURL(poster) else {
             return posters[titleKey]
         }
         if let existing = posters[titleKey], Self.normalizedURL(existing) != nil {
+            // 坏的暴风图不能锁死同名影片；后续返回的正常海报应覆盖它。
+            if Self.isLikelyBroken(existing), !Self.isLikelyBroken(poster, sourceKey: sourceKey) {
+                posters[titleKey] = normalized
+                persist()
+                return normalized
+            }
             return existing
         }
         posters[titleKey] = normalized
+        persist()
         return normalized
     }
 
     /// 取同名影视已经缓存的海报。
     func poster(for title: String) -> String? {
         let value = posters[Self.key(for: title)]
-        guard let value, Self.normalizedURL(value) != nil else { return nil }
+        guard let value,
+              Self.normalizedURL(value) != nil,
+              !Self.isLikelyBroken(value) else { return nil }
         return value
     }
 
@@ -63,7 +108,7 @@ actor PosterCache {
     func fill(_ videos: [Movie.Video]) -> [Movie.Video] {
         for video in videos {
             if Self.normalizedURL(video.pic) != nil {
-                _ = remember(title: video.name, poster: video.pic)
+                _ = remember(title: video.name, poster: video.pic, sourceKey: video.sourceKey)
             }
         }
 
@@ -82,14 +127,25 @@ actor PosterCache {
     func enrich(_ videos: [Movie.Video]) -> [Movie.Video] {
         for video in videos {
             if Self.normalizedURL(video.pic) != nil {
-                _ = remember(title: video.name, poster: video.pic)
+                _ = remember(title: video.name, poster: video.pic, sourceKey: video.sourceKey)
             }
         }
 
         return videos.compactMap { video in
             var enriched = video
-            let poster = Self.normalizedURL(video.pic) ?? posters[Self.key(for: video.name)]
+            let ownPoster = Self.normalizedURL(video.pic)
+            let cached = posters[Self.key(for: video.name)]
+            let canUseCached = cached != nil
+                && Self.normalizedURL(cached ?? "") != nil
+                && !Self.isLikelyBroken(cached ?? "")
+                && (ownPoster == nil || Self.isLikelyBroken(video.pic, sourceKey: video.sourceKey))
+            let poster = canUseCached ? cached : (ownPoster ?? cached)
             guard let poster, Self.normalizedURL(poster) != nil else { return nil }
+            // 没有可复用的正常海报时，隐藏已知会卡住的暴风图片。
+            let selectedPosterIsBroken = canUseCached
+                ? Self.isLikelyBroken(poster)
+                : Self.isLikelyBroken(video.pic, sourceKey: video.sourceKey)
+            guard !selectedPosterIsBroken else { return nil }
             enriched.pic = poster
             return enriched
         }

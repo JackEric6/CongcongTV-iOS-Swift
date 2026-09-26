@@ -97,7 +97,7 @@ struct HistoryView: View {
     private func recordCard(_ item: VodRecord) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
-                CachedAsyncImage(url: URL.posterURL(from: item.vodPic)) { image in
+                CachedAsyncImage(url: URL.posterURL(from: displayPoster(for: item))) { image in
                     image.resizable().aspectRatio(2/3, contentMode: .fill)
                 } placeholder: {
                     Rectangle().fill(Color.gray.opacity(0.3))
@@ -132,6 +132,17 @@ struct HistoryView: View {
     
     /// 将历史记录转换为详情页的入参模型。
     private func movieVideo(from item: VodRecord) -> Movie.Video {
-        Movie.Video(id: item.vodId, name: item.vodName, pic: item.vodPic, sourceKey: item.sourceKey)
+        Movie.Video(id: item.vodId, name: item.vodName, pic: displayPoster(for: item), sourceKey: item.sourceKey)
+    }
+
+    /// 历史记录可能保存了某个资源站的失效海报；同名搜索结果已有正常海报时优先复用。
+    private func displayPoster(for item: VodRecord) -> String {
+        if let cached = PosterCache.cachedPoster(for: item.vodName) {
+            return cached
+        }
+        if PosterCache.isLikelyBroken(item.vodPic, sourceKey: item.sourceKey) {
+            return ""
+        }
+        return item.vodPic
     }
 }

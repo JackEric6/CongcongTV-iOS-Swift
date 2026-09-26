@@ -78,6 +78,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     private var restoreTask: DispatchWorkItem?
     private var transitionAnimationTask: DispatchWorkItem?
     private var routeButtonLayoutInstalled = false
+    /// KSPlayer 的 AVPlayer 后端不会消费 KSOptions.startPlayTime，
+    /// 因此在 readyToPlay 后由宿主显式 seek 一次。
+    fileprivate var pendingStartPosition: TimeInterval = 0
+    fileprivate var didApplyStartPosition = false
     private let deviceStatusView = UIView()
     private let deviceTimeLabel = UILabel()
     private let deviceBatteryIconView = UIImageView()
@@ -353,6 +357,19 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
         super.player(layer: layer, state: state)
         guard state == .readyToPlay else { return }
 
+        if !didApplyStartPosition,
+           pendingStartPosition > 0,
+           pendingStartPosition.isFinite {
+            didApplyStartPosition = true
+            let target = pendingStartPosition
+            playerLayer?.seek(time: target, autoPlay: true) { [weak self] success in
+                if !success {
+                    // 某些流在第一次 ready 回调时仍不可 seek，允许下一次 ready 重试。
+                    self?.didApplyStartPosition = false
+                }
+            }
+        }
+
         // KSPlayer 2.3.4 每次 readyToPlay 都会重建一次默认倍速菜单，默认只到 2x。
         // 在它完成初始化后覆盖菜单，避免切集或重连时选项又被恢复。
         if #available(iOS 14.0, *) {
@@ -473,10 +490,21 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     /// Stop and release the current media item before installing another URL.
     /// Pausing alone leaves the old AVPlayerItem and audio pipeline alive.
     func stopCurrentPlayback() {
+        // SwiftUI dismantleUIView 可能先于 DetailView.onDisappear 触发；
+        // 先把播放器最后的有效位置回传，避免页面退出时丢掉尾部进度。
+        if let player = playerLayer?.player {
+            let current = player.currentPlaybackTime
+            let duration = player.duration
+            if current.isFinite, current > 0 {
+                playTimeDidChange?(current, duration.isFinite && duration > 0 ? duration : 0)
+            }
+        }
         playerLayer?.delegate = nil
         playerLayer?.stop()
         playerLayer = nil
         playTimeDidChange = nil
+        pendingStartPosition = 0
+        didApplyStartPosition = false
     }
 
     private func applyTransparentSurfaces() {
@@ -605,6 +633,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             view.stopCurrentPlayback()
         }
         coordinator.url = url
+        view.pendingStartPosition = max(0, startPosition)
+        view.didApplyStartPosition = false
         // KSPlayer's AV player configures the audio session too, but doing it here
         // keeps background audio available across view reattachment.
         KSOptions.setAudioSession()

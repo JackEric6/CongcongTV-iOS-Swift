@@ -81,7 +81,7 @@ struct FavoritesView: View {
     /// 只展示海报与标题，保持网格信息密度一致。
     private func favoriteCard(_ item: VodCollect) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            CachedAsyncImage(url: URL.posterURL(from: item.vodPic)) { image in
+            CachedAsyncImage(url: URL.posterURL(from: displayPoster(for: item))) { image in
                 image.resizable().aspectRatio(2/3, contentMode: .fill)
             } placeholder: {
                 Rectangle().fill(Color.gray.opacity(0.3))
@@ -99,6 +99,17 @@ struct FavoritesView: View {
     
     /// 将收藏记录映射成详情页可识别的视频对象。
     private func movieVideo(from item: VodCollect) -> Movie.Video {
-        Movie.Video(id: item.vodId, name: item.vodName, pic: item.vodPic, sourceKey: item.sourceKey)
+        Movie.Video(id: item.vodId, name: item.vodName, pic: displayPoster(for: item), sourceKey: item.sourceKey)
+    }
+
+    /// 收藏记录可能保存了某个资源站的失效海报；同名搜索结果已有正常海报时优先复用。
+    private func displayPoster(for item: VodCollect) -> String {
+        if let cached = PosterCache.cachedPoster(for: item.vodName) {
+            return cached
+        }
+        if PosterCache.isLikelyBroken(item.vodPic, sourceKey: item.sourceKey) {
+            return ""
+        }
+        return item.vodPic
     }
 }

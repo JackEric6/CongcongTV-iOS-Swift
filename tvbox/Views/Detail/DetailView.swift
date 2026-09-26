@@ -385,6 +385,13 @@ struct DetailView: View {
     }
 
     private var displayPoster: String {
+        // 优先使用跨源海报缓存，避免当前播放源（尤其暴风源）的失效 vod_pic
+        // 覆盖搜索阶段已经确认可用的同名海报。仅替换展示图片，不改变播放源或影片 ID。
+        for title in [displayName, video.name] {
+            if let cached = PosterCache.cachedPoster(for: title) {
+                return cached
+            }
+        }
         let enrichedPoster = viewModel.vodInfo?.pic.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return enrichedPoster.isEmpty ? video.pic : enrichedPoster
     }
