@@ -845,7 +845,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         /// dismantle/re-make cycle during KSPlayer full-screen transitions.
         /// The view's delegate and callbacks are weak, so this does not form
         /// a retain cycle with the coordinator.
-        private var retainedPlayerView: CongcongKSVideoPlayerView?
+        fileprivate var retainedPlayerView: CongcongKSVideoPlayerView?
         private var playerView: IOSVideoPlayerView?
         private var canPlayPrevious = false
         private var canPlayNext = false
