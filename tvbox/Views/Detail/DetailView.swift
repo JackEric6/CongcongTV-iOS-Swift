@@ -26,6 +26,8 @@ struct DetailView: View {
     @State private var playbackSessionToken = UUID()
     @State private var isCollected = false
     @State private var showEpisodePicker = false
+    @State private var showDownloadEpisodePicker = false
+    @State private var selectedDownloadEpisodes: Set<Int> = []
     @State private var showDownloadAlert = false
     @State private var downloadAlertMessage = ""
     #if os(iOS)
@@ -125,6 +127,18 @@ struct DetailView: View {
                         viewModel.selectEpisode(index: index)
                     }
                     saveHistoryForCurrentEpisode()
+                }
+            )
+        }
+        .sheet(isPresented: $showDownloadEpisodePicker) {
+            DownloadEpisodePickerSheet(
+                episodes: viewModel.currentEpisodes,
+                initialSelection: selectedDownloadEpisodes,
+                onConfirm: { indexes in
+                    showDownloadEpisodePicker = false
+                    for index in indexes.sorted() {
+                        startDownload(episodeIndex: index)
+                    }
                 }
             )
         }
@@ -477,7 +491,7 @@ struct DetailView: View {
     private var downloadButton: some View {
         let item = downloadManager.item(identifier: currentDownloadIdentifier)
         Button {
-            startDownloadCurrentEpisode()
+            requestDownload()
         } label: {
             Image(systemName: downloadIcon(for: item?.status))
                 .font(.system(size: 15, weight: .semibold))
@@ -488,7 +502,7 @@ struct DetailView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(downloadAccessibilityLabel(for: item?.status))
-        .disabled(item?.status == .downloading || viewModel.playUrl == nil)
+        .disabled(item?.status == .downloading || viewModel.currentEpisodes.isEmpty)
     }
 
     private func downloadIcon(for status: DownloadStatus?) -> String {
@@ -509,34 +523,73 @@ struct DetailView: View {
         }
     }
 
-    private func startDownloadCurrentEpisode() {
-        guard let rawURL = viewModel.playUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
-              let url = URL(string: rawURL),
-              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-            downloadAlertMessage = "当前集没有可下载的播放地址"
+    private func requestDownload() {
+        guard !viewModel.currentEpisodes.isEmpty else {
+            downloadAlertMessage = "当前线路没有可下载的剧集"
+            showDownloadAlert = true
+            return
+        }
+        if viewModel.currentEpisodes.count > 1 {
+            selectedDownloadEpisodes = [viewModel.selectedEpisodeIndex]
+            showDownloadEpisodePicker = true
+        } else {
+            startDownload(episodeIndex: viewModel.selectedEpisodeIndex)
+        }
+    }
+
+    private func startDownload(episodeIndex: Int) {
+        guard viewModel.currentEpisodes.indices.contains(episodeIndex) else {
+            downloadAlertMessage = "选择的剧集不存在"
             showDownloadAlert = true
             return
         }
 
-        let episodeName = viewModel.vodInfo?.currentEpisode?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let title = displayName.isEmpty ? video.name : displayName
+        let episodeName = viewModel.currentEpisodes[episodeIndex].name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceKey = video.sourceKey
         let sourceHeaders = apiConfig.getSource(key: video.sourceKey)?.headers ?? [:]
-        let request = DownloadRequest(
-            identifier: currentDownloadIdentifier,
-            title: title,
-            sourceKey: video.sourceKey,
-            videoID: video.id,
-            episodeIndex: viewModel.selectedEpisodeIndex,
-            episodeName: episodeName,
-            url: url,
-            headers: sourceHeaders
-        )
+        let videoID = video.id
+        let currentIndex = viewModel.selectedEpisodeIndex
+        let currentURL = episodeIndex == currentIndex ? viewModel.playUrl : nil
 
-        do {
-            _ = try downloadManager.start(request)
-        } catch {
-            downloadAlertMessage = error.localizedDescription
-            showDownloadAlert = true
+        Task { @MainActor in
+            let rawURL: String?
+            if let currentURL {
+                rawURL = currentURL
+            } else {
+                rawURL = await viewModel.resolvedPlayableURL(for: episodeIndex)
+            }
+            guard let rawURL,
+                  let url = URL(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                downloadAlertMessage = "该集没有解析到可下载地址，请先切换到可播放线路后重试"
+                showDownloadAlert = true
+                return
+            }
+
+            let identifier = DownloadRequest.identifier(
+                sourceKey: sourceKey,
+                videoID: videoID,
+                episodeIndex: episodeIndex
+            )
+            let request = DownloadRequest(
+                identifier: identifier,
+                title: title,
+                sourceKey: sourceKey,
+                videoID: videoID,
+                episodeIndex: episodeIndex,
+                episodeName: episodeName,
+                url: url,
+                headers: sourceHeaders
+            )
+
+            do {
+                _ = try downloadManager.start(request)
+            } catch {
+                downloadAlertMessage = error.localizedDescription
+                showDownloadAlert = true
+            }
         }
     }
     
@@ -932,6 +985,90 @@ private struct EpisodePickerSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .presentationDetents([.medium, .large])
             #endif
+        }
+    }
+}
+
+private struct DownloadEpisodePickerSheet: View {
+    let episodes: [VodInfo.Episode]
+    let initialSelection: Set<Int>
+    let onConfirm: (Set<Int>) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedIndices: Set<Int>
+
+    init(
+        episodes: [VodInfo.Episode],
+        initialSelection: Set<Int>,
+        onConfirm: @escaping (Set<Int>) -> Void
+    ) {
+        self.episodes = episodes
+        self.initialSelection = initialSelection
+        self.onConfirm = onConfirm
+        _selectedIndices = State(initialValue: Set(initialSelection.filter { episodes.indices.contains($0) }))
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack {
+                        Button(selectedIndices.count == episodes.count ? "取消全选" : "全选") {
+                            if selectedIndices.count == episodes.count {
+                                selectedIndices.removeAll()
+                            } else {
+                                selectedIndices = Set(episodes.indices)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.accentColor)
+
+                        Spacer()
+
+                        Text("已选 \(selectedIndices.count) 集")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Section {
+                    ForEach(Array(episodes.enumerated()), id: \.offset) { index, episode in
+                        Button {
+                            if selectedIndices.contains(index) {
+                                selectedIndices.remove(index)
+                            } else {
+                                selectedIndices.insert(index)
+                            }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: selectedIndices.contains(index) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundColor(selectedIndices.contains(index) ? .accentColor : .secondary)
+                                Text(episode.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                     ? "第\(index + 1)集"
+                                     : episode.name)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .navigationTitle("选择下载剧集")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            .presentationDetents([.medium, .large])
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("开始下载") {
+                        onConfirm(selectedIndices)
+                    }
+                    .disabled(selectedIndices.isEmpty)
+                }
+            }
         }
     }
 }

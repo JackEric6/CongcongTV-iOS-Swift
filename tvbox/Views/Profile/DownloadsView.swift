@@ -67,6 +67,13 @@ struct DownloadsView: View {
                 if item.status == .downloading {
                     ProgressView(value: item.progress)
                         .tint(.blue)
+                    HStack(spacing: 6) {
+                        Text(downloadProgressLabel(item))
+                        Spacer(minLength: 0)
+                        Text(downloadSpeedLabel(item))
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .foregroundColor(.white.opacity(0.62))
                 } else if case .failed(let message) = item.status {
                     Text(message)
                         .font(.caption2)
@@ -111,6 +118,36 @@ struct DownloadsView: View {
         case .failed: return .red
         case .cancelled: return .gray
         }
+    }
+
+    private func downloadProgressLabel(_ item: DownloadItem) -> String {
+        let percent = "\(Int((item.progress * 100).rounded()))%"
+        if item.totalBytes > 0 {
+            return "\(percent) · \(formatBytes(item.bytesWritten))/\(formatBytes(item.totalBytes))"
+        }
+        if item.bytesWritten > 0 {
+            return "\(percent) · 已下载 \(formatBytes(item.bytesWritten))"
+        }
+        return percent
+    }
+
+    private func downloadSpeedLabel(_ item: DownloadItem) -> String {
+        guard item.speedBytesPerSecond > 0 else { return "准备中" }
+        return "\(formatBytes(Int64(item.speedBytesPerSecond)))/秒"
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        let value = Double(max(0, bytes))
+        if value >= 1024 * 1024 * 1024 {
+            return String(format: "%.1f GB", value / (1024 * 1024 * 1024))
+        }
+        if value >= 1024 * 1024 {
+            return String(format: "%.1f MB", value / (1024 * 1024))
+        }
+        if value >= 1024 {
+            return String(format: "%.0f KB", value / 1024)
+        }
+        return "\(Int(value)) B"
     }
 }
 

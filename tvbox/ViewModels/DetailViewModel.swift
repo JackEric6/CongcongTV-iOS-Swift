@@ -521,6 +521,21 @@ class DetailViewModel: ObservableObject {
             self.playUrl = finalURL
         }
     }
+
+    /// 返回指定剧集的实际播放地址，供下载任务使用。
+    /// 不改变当前播放集、线路或播放器状态；无法解析时返回原始地址，
+    /// 由下载器继续根据响应类型给出明确错误。
+    func resolvedPlayableURL(for index: Int) async -> String? {
+        guard currentEpisodes.indices.contains(index) else { return nil }
+        let normalized = KktvsResponseNormalizer.normalizeMediaURL(currentEpisodes[index].url)
+        guard let source = currentSource else { return normalized }
+        guard KktvsResponseNormalizer.directMediaURL(normalized) == nil else {
+            return normalized
+        }
+        let resolved = await sourceService.resolvePlayableURL(sourceBean: source, url: normalized)
+        let finalURL = KktvsResponseNormalizer.normalizeMediaURL(resolved)
+        return finalURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? normalized : finalURL
+    }
     
     /// 重置清晰度解析与选择状态。
     private func resetQualityState() {

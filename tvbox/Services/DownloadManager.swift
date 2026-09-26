@@ -83,6 +83,7 @@ struct DownloadItem: Identifiable, Equatable, Sendable {
     var progress: Double
     var bytesWritten: Int64
     var totalBytes: Int64
+    var speedBytesPerSecond: Double
     var localURL: URL?
 }
 
@@ -120,6 +121,15 @@ final class DownloadManager: NSObject, ObservableObject {
     private var assetSession: AVAssetDownloadURLSession!
     private var taskIDs: [Int: String] = [:]
     private var activeTasks: [Int: URLSessionTask] = [:]
+    private var progressSamples: [Int: ProgressSample] = [:]
+    private var fallbackTasks: [String: Task<Void, Never>] = [:]
+    private var hlsAssetFallbackAttempted = Set<String>()
+
+    private struct ProgressSample {
+        let timestamp: TimeInterval
+        let bytes: Int64
+        let speedBytesPerSecond: Double
+    }
 
     private override init() {
         let applicationSupport = FileManager.default.urls(
@@ -165,7 +175,8 @@ final class DownloadManager: NSObject, ObservableObject {
         guard request.url.scheme?.lowercased() == "http" || request.url.scheme?.lowercased() == "https" else {
             throw DownloadError.invalidURL
         }
-        guard taskIDs.values.contains(request.identifier) == false else {
+        guard taskIDs.values.contains(request.identifier) == false,
+              fallbackTasks[request.identifier] == nil else {
             throw DownloadError.alreadyDownloading
         }
 
@@ -191,46 +202,43 @@ final class DownloadManager: NSObject, ObservableObject {
             progress: 0,
             bytesWritten: 0,
             totalBytes: 0,
+            speedBytesPerSecond: 0,
             localURL: nil
         )
         items[request.identifier] = item
 
-        let task: URLSessionTask
+        let headers = Self.normalizedHeaders(request.headers)
+
         if mediaKind == .hls {
-            // The symbolic AVURLAssetHTTPHeaderFieldsKey is absent from the
-            // current SDK overlay; its documented raw key remains accepted.
-            let assetOptions: [String: Any]? = request.headers.isEmpty
-                ? nil
-                : ["AVURLAssetHTTPHeaderFieldsKey": request.headers]
-            let asset = AVURLAsset(url: request.url, options: assetOptions)
-            guard let assetTask = assetSession.makeAssetDownloadTask(
-                asset: asset,
-                assetTitle: request.title,
-                assetArtworkData: nil,
-                options: nil
-            ) else {
-                items.removeValue(forKey: request.identifier)
-                throw DownloadError.downloadFailed("系统无法创建 HLS 离线缓存任务")
-            }
-            task = assetTask
+            startHLSDownload(identifier: request.identifier, item: item, url: request.url)
+            updateStatus(for: request.identifier, status: .downloading)
+            return items[request.identifier] ?? item
         } else {
             var urlRequest = URLRequest(url: request.url)
-            request.headers.forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
-            task = session.downloadTask(with: urlRequest)
+            headers.forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
+            let task = session.downloadTask(with: urlRequest)
+            taskIDs[task.taskIdentifier] = request.identifier
+            activeTasks[task.taskIdentifier] = task
+            progressSamples.removeValue(forKey: task.taskIdentifier)
+            task.resume()
         }
-        taskIDs[task.taskIdentifier] = request.identifier
-        activeTasks[task.taskIdentifier] = task
-        task.resume()
         updateStatus(for: request.identifier, status: .downloading)
         return items[request.identifier] ?? item
     }
 
     func cancel(identifier: String) {
+        if let fallbackTask = fallbackTasks.removeValue(forKey: identifier) {
+            fallbackTask.cancel()
+            hlsAssetFallbackAttempted.remove(identifier)
+            updateStatus(for: identifier, status: .cancelled)
+            return
+        }
         guard let taskID = taskIDs.first(where: { $0.value == identifier })?.key,
               let task = activeTasks[taskID] else { return }
         task.cancel()
         taskIDs.removeValue(forKey: taskID)
         activeTasks.removeValue(forKey: taskID)
+        hlsAssetFallbackAttempted.remove(identifier)
         updateStatus(for: identifier, status: .cancelled)
     }
 
@@ -241,6 +249,8 @@ final class DownloadManager: NSObject, ObservableObject {
             try fileManager.removeItem(at: localURL)
         }
         items.removeValue(forKey: identifier)
+        fallbackTasks.removeValue(forKey: identifier)?.cancel()
+        hlsAssetFallbackAttempted.remove(identifier)
         saveManifest()
     }
 
@@ -292,13 +302,20 @@ final class DownloadManager: NSObject, ObservableObject {
     private func updateProgress(
         for identifier: String,
         bytesWritten: Int64,
-        totalBytes: Int64
+        totalBytes: Int64,
+        speedBytesPerSecond: Double? = nil
     ) {
         guard var item = items[identifier] else { return }
+        let normalizedTotal = max(0, totalBytes)
         item.status = .downloading
         item.bytesWritten = bytesWritten
-        item.totalBytes = totalBytes
-        item.progress = totalBytes > 0 ? min(1, max(0, Double(bytesWritten) / Double(totalBytes))) : 0
+        item.totalBytes = normalizedTotal
+        item.progress = normalizedTotal > 0
+            ? min(1, max(0, Double(bytesWritten) / Double(normalizedTotal)))
+            : 0
+        if let speedBytesPerSecond, speedBytesPerSecond.isFinite {
+            item.speedBytesPerSecond = max(0, speedBytesPerSecond)
+        }
         items[identifier] = item
     }
 
@@ -309,10 +326,118 @@ final class DownloadManager: NSObject, ObservableObject {
         items[identifier] = item
     }
 
+    private func speedSample(taskIdentifier: Int, bytes: Int64) -> Double {
+        let now = Date().timeIntervalSinceReferenceDate
+        let previous = progressSamples[taskIdentifier]
+        let elapsed = now - (previous?.timestamp ?? now)
+        let delta = bytes - (previous?.bytes ?? bytes)
+        guard elapsed > 0.05, delta >= 0 else {
+            return previous?.speedBytesPerSecond ?? 0
+        }
+
+        let instantaneous = Double(delta) / elapsed
+        let previousSpeed = previous?.speedBytesPerSecond ?? 0
+        let smoothed = previousSpeed > 0
+            ? previousSpeed * 0.65 + instantaneous * 0.35
+            : instantaneous
+        progressSamples[taskIdentifier] = ProgressSample(
+            timestamp: now,
+            bytes: bytes,
+            speedBytesPerSecond: smoothed
+        )
+        return smoothed
+    }
+
+    private func normalizedHeaders(_ headers: [String: String]) -> [String: String] {
+        var result = headers
+        if result.keys.contains(where: { $0.caseInsensitiveCompare("User-Agent") == .orderedSame }) == false {
+            result["User-Agent"] = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148"
+        }
+        if result.keys.contains(where: { $0.caseInsensitiveCompare("Accept") == .orderedSame }) == false {
+            result["Accept"] = "*/*"
+        }
+        return result
+    }
+
+    private func descriptiveError(_ error: Error, task: URLSessionTask) -> String {
+        let nsError = error as NSError
+        let code = nsError.code
+        let message = nsError.localizedFailureReason ?? nsError.localizedDescription
+        let endpoint = task.currentRequest?.url?.host.map { "（\($0)）" } ?? ""
+        switch code {
+        case NSURLErrorCancelled:
+            return "下载已取消"
+        case NSURLErrorNotConnectedToInternet:
+            return "当前没有网络连接，请检查网络后重试"
+        case NSURLErrorTimedOut:
+            return "下载请求超时，请稍后重试"
+        case NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost:
+            return "无法连接资源站\(endpoint)"
+        case NSURLErrorNetworkConnectionLost:
+            return "网络连接中断，请重试"
+        case NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateUntrusted:
+            return "资源站 HTTPS 证书校验失败"
+        default:
+            return "下载失败（错误码 \(code)）：\(message)\(endpoint)"
+        }
+    }
+
+    private enum HLSDownloadError: LocalizedError {
+        case unsupported(String)
+        case http(Int)
+        case invalid(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupported(let message), .invalid(let message): return message
+            case .http(let status): return "播放列表或分片返回 HTTP \(status)"
+            }
+        }
+    }
+
     private func startHLSDownload(identifier: String, item: DownloadItem, url: URL) {
-        let assetOptions: [String: Any]? = item.headers.isEmpty
+        guard fallbackTasks[identifier] == nil else { return }
+        var updated = item
+        updated.mediaKind = .hls
+        updated.progress = 0
+        updated.bytesWritten = 0
+        updated.totalBytes = 0
+        updated.speedBytesPerSecond = 0
+        updated.status = .downloading
+        items[identifier] = updated
+        progressSamples[identifier.hashValue] = ProgressSample(
+            timestamp: Date().timeIntervalSinceReferenceDate,
+            bytes: 0,
+            speedBytesPerSecond: 0
+        )
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.downloadPlainHLS(identifier: identifier, item: updated, url: url)
+                self.fallbackTasks.removeValue(forKey: identifier)
+                self.hlsAssetFallbackAttempted.remove(identifier)
+            } catch is CancellationError {
+                self.fallbackTasks.removeValue(forKey: identifier)
+                self.updateStatus(for: identifier, status: .cancelled)
+            } catch HLSDownloadError.unsupported(_) {
+                self.fallbackTasks.removeValue(forKey: identifier)
+                self.hlsAssetFallbackAttempted.insert(identifier)
+                self.startHLSAssetDownload(identifier: identifier, item: updated, url: url)
+            } catch {
+                self.fallbackTasks.removeValue(forKey: identifier)
+                self.progressSamples.removeValue(forKey: identifier.hashValue)
+                self.updateStatus(for: identifier, status: .failed(error.localizedDescription))
+            }
+        }
+        fallbackTasks[identifier] = task
+    }
+
+    private func startHLSAssetDownload(identifier: String, item: DownloadItem, url: URL) {
+        let headers = Self.normalizedHeaders(item.headers)
+        let assetOptions: [String: Any]? = headers.isEmpty
             ? nil
-            : ["AVURLAssetHTTPHeaderFieldsKey": item.headers]
+            : ["AVURLAssetHTTPHeaderFieldsKey": headers]
         let asset = AVURLAsset(url: url, options: assetOptions)
         guard let task = assetSession.makeAssetDownloadTask(
             asset: asset,
@@ -320,17 +445,243 @@ final class DownloadManager: NSObject, ObservableObject {
             assetArtworkData: nil,
             options: nil
         ) else {
+            hlsAssetFallbackAttempted.remove(identifier)
             updateStatus(for: identifier, status: .failed("系统无法创建 HLS 离线缓存任务"))
             return
         }
-        var updated = item
-        updated.mediaKind = .hls
-        updated.progress = 0
-        updated.status = .downloading
-        items[identifier] = updated
         taskIDs[task.taskIdentifier] = identifier
         activeTasks[task.taskIdentifier] = task
+        progressSamples.removeValue(forKey: task.taskIdentifier)
         task.resume()
+    }
+
+    private func downloadPlainHLS(identifier: String, item: DownloadItem, url: URL) async throws {
+        let headers = Self.normalizedHeaders(item.headers)
+        var playlistURL = url
+        var playlist = try await Self.fetchHLSPlaylist(url: playlistURL, headers: headers)
+        if let variantURL = Self.highestVariantURL(baseURL: playlistURL, playlist: playlist) {
+            playlistURL = variantURL
+            playlist = try await Self.fetchHLSPlaylist(url: playlistURL, headers: headers)
+        }
+        let segments = try Self.parsePlainTSPlaylist(baseURL: playlistURL, playlist: playlist)
+        guard !segments.isEmpty else { throw HLSDownloadError.invalid("播放列表中没有可下载分片") }
+
+        let token = String(identifier.hashValue.magnitude)
+        let segmentDirectory = downloadsDirectory.appendingPathComponent(".hls-\(token)", isDirectory: true)
+        let outputPart = downloadsDirectory.appendingPathComponent(".download-\(token).ts.part")
+        try fileManager.createDirectory(at: segmentDirectory, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: segmentDirectory)
+            try? fileManager.removeItem(at: outputPart)
+        }
+
+        var segmentFiles = Array<URL?>(repeating: nil, count: segments.count)
+        var nextIndex = 0
+        var completedCount = 0
+        var completedBytes: Int64 = 0
+        let progressKey = identifier.hashValue
+
+        try await withThrowingTaskGroup(of: (Int, URL, Int64).self) { group in
+            let initialCount = min(6, segments.count)
+            for _ in 0..<initialCount {
+                let index = nextIndex
+                nextIndex += 1
+                group.addTask {
+                    try await Self.downloadHLSSegment(
+                        index: index,
+                        url: segments[index],
+                        headers: headers,
+                        directory: segmentDirectory
+                    )
+                }
+            }
+
+            while let result = try await group.next() {
+                try Task.checkCancellation()
+                segmentFiles[result.0] = result.1
+                completedCount += 1
+                completedBytes += result.2
+                let speed = self.speedSample(taskIdentifier: progressKey, bytes: completedBytes)
+                if var progressItem = self.items[identifier] {
+                    progressItem.status = .downloading
+                    progressItem.progress = Double(completedCount) / Double(segments.count)
+                    progressItem.bytesWritten = completedBytes
+                    progressItem.totalBytes = 0
+                    progressItem.speedBytesPerSecond = speed
+                    self.items[identifier] = progressItem
+                }
+                if nextIndex < segments.count {
+                    let index = nextIndex
+                    nextIndex += 1
+                    group.addTask {
+                        try await Self.downloadHLSSegment(
+                            index: index,
+                            url: segments[index],
+                            headers: headers,
+                            directory: segmentDirectory
+                        )
+                    }
+                }
+            }
+        }
+
+        try Task.checkCancellation()
+        guard segmentFiles.allSatisfy({ $0 != nil }) else {
+            throw HLSDownloadError.invalid("分片下载不完整")
+        }
+        fileManager.createFile(atPath: outputPart.path, contents: nil)
+        let output = try FileHandle(forWritingTo: outputPart)
+        defer { try? output.close() }
+        for segmentFile in segmentFiles.compactMap({ $0 }) {
+            try Task.checkCancellation()
+            try output.write(contentsOf: Data(contentsOf: segmentFile))
+        }
+        try output.close()
+
+        let outputAttributes = try? fileManager.attributesOfItem(atPath: outputPart.path)
+        let outputSize = (outputAttributes?[.size] as? NSNumber)?.int64Value ?? 0
+        guard fileManager.fileExists(atPath: outputPart.path), outputSize > 0 else {
+            throw HLSDownloadError.invalid("合并后的离线文件为空")
+        }
+        let destination = destinationURL(for: item, mimeType: "video/mp2t", forcedExtension: "ts")
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.moveItem(at: outputPart, to: destination)
+        var completed = item
+        completed.mediaKind = .directFile
+        completed.status = .completed
+        completed.progress = 1
+        completed.bytesWritten = completedBytes
+        completed.totalBytes = completedBytes
+        completed.speedBytesPerSecond = 0
+        completed.localURL = destination
+        items[identifier] = completed
+        saveManifest()
+        progressSamples.removeValue(forKey: progressKey)
+    }
+
+    private static func fetchHLSPlaylist(url: URL, headers: [String: String]) async throws -> String {
+        var request = URLRequest(url: url)
+        headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.timeoutInterval = 30
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw HLSDownloadError.invalid("播放列表响应无效")
+        }
+        guard (200...299).contains(http.statusCode) else {
+            throw HLSDownloadError.http(http.statusCode)
+        }
+        guard let playlist = String(data: data, encoding: .utf8),
+              playlist.localizedCaseInsensitiveContains("#EXTM3U") else {
+            throw HLSDownloadError.unsupported("服务器返回的不是有效 HLS 播放列表")
+        }
+        return playlist
+    }
+
+    private static func highestVariantURL(baseURL: URL, playlist: String) -> URL? {
+        let lines = playlist.components(separatedBy: .newlines)
+        var best: (bandwidth: Int, url: URL)?
+        for index in lines.indices where lines[index].uppercased().hasPrefix("#EXT-X-STREAM-INF:") {
+            let attributes = String(lines[index].dropFirst("#EXT-X-STREAM-INF:".count))
+            let bandwidth = attributes
+                .split(separator: ",")
+                .first(where: { $0.uppercased().hasPrefix("BANDWIDTH=") })
+                .flatMap { Int($0.split(separator: "=", maxSplits: 1).last ?? "") } ?? 0
+            var next = index + 1
+            while next < lines.count {
+                let value = lines[next].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty && !value.hasPrefix("#") {
+                    if let url = URL(string: value, relativeTo: baseURL)?.absoluteURL,
+                       best == nil || bandwidth > best!.bandwidth {
+                        best = (bandwidth, url)
+                    }
+                    break
+                }
+                next += 1
+            }
+        }
+        return best?.url
+    }
+
+    private static func parsePlainTSPlaylist(baseURL: URL, playlist: String) throws -> [URL] {
+        guard playlist.localizedCaseInsensitiveContains("#EXT-X-ENDLIST") else {
+            throw HLSDownloadError.unsupported("该地址不是有限点播流")
+        }
+        let upper = playlist.uppercased()
+        if upper.contains("#EXT-X-MAP:") || upper.contains("#EXT-X-BYTERANGE:") {
+            throw HLSDownloadError.unsupported("该 HLS 使用 fMP4 或 BYTERANGE，交由系统转换")
+        }
+        for line in playlist.components(separatedBy: .newlines) where line.uppercased().hasPrefix("#EXT-X-KEY:") {
+            if !line.uppercased().contains("METHOD=NONE") {
+                throw HLSDownloadError.unsupported("该 HLS 使用加密分片，交由系统转换")
+            }
+        }
+        var urls: [URL] = []
+        var expectsURL = false
+        for rawLine in playlist.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty { continue }
+            if line.uppercased().hasPrefix("#EXTINF:") {
+                expectsURL = true
+                continue
+            }
+            if line.hasPrefix("#") { continue }
+            guard expectsURL else { continue }
+            guard let segmentURL = URL(string: line, relativeTo: baseURL)?.absoluteURL else {
+                throw HLSDownloadError.invalid("分片地址无效")
+            }
+            urls.append(segmentURL)
+            expectsURL = false
+        }
+        guard !urls.isEmpty else { throw HLSDownloadError.invalid("没有找到有效 MPEG-TS 分片") }
+        return urls
+    }
+
+    private static func downloadHLSSegment(
+        index: Int,
+        url: URL,
+        headers: [String: String],
+        directory: URL
+    ) async throws -> (Int, URL, Int64) {
+        let destination = directory.appendingPathComponent(String(format: "%06d.seg", index))
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                try Task.checkCancellation()
+                var request = URLRequest(url: url)
+                headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+                request.timeoutInterval = 45
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw HLSDownloadError.invalid("分片响应无效")
+                }
+                guard (200...299).contains(http.statusCode) else {
+                    throw HLSDownloadError.http(http.statusCode)
+                }
+                guard !data.isEmpty, !Self.looksLikeTextError(data) else {
+                    throw HLSDownloadError.invalid("分片返回了错误页")
+                }
+                try data.write(to: destination, options: .atomic)
+                return (index, destination, Int64(data.count))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                if attempt < 2 {
+                    try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 400_000_000))
+                }
+            }
+        }
+        throw lastError ?? HLSDownloadError.invalid("分片下载失败")
+    }
+
+    private static func looksLikeTextError(_ data: Data) -> Bool {
+        let prefix = String(data: data.prefix(512), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        return prefix.hasPrefix("#extm3u") || prefix.hasPrefix("<html")
+            || prefix.hasPrefix("<!doctype") || prefix.hasPrefix("{\"error")
     }
 
     nonisolated private static func looksLikeHLS(response: URLResponse?, location: URL) -> Bool {
@@ -356,8 +707,13 @@ final class DownloadManager: NSObject, ObservableObject {
         return normalized.hasPrefix("<!doctype html") || normalized.hasPrefix("<html")
     }
 
-    private func destinationURL(for item: DownloadItem, mimeType: String?) -> URL {
-        let extensionName = preferredExtension(for: item.url, mimeType: mimeType)
+    private func destinationURL(
+        for item: DownloadItem,
+        mimeType: String?,
+        forcedExtension: String? = nil
+    ) -> URL {
+        let extensionName = forcedExtension.map { safeFileComponent($0) }
+            ?? preferredExtension(for: item.url, mimeType: mimeType)
         let title = safeFileComponent(item.title)
         let episode = String(format: "%02d", max(0, item.episodeIndex + 1))
         let digest = SHA256.hash(data: Data(item.id.utf8))
@@ -417,6 +773,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 progress: 1,
                 bytesWritten: entry.totalBytes,
                 totalBytes: entry.totalBytes,
+                speedBytesPerSecond: 0,
                 localURL: localURL
             )
         }
@@ -485,7 +842,11 @@ extension DownloadManager: URLSessionDownloadDelegate {
             self.updateProgress(
                 for: identifier,
                 bytesWritten: totalBytesWritten,
-                totalBytes: totalBytesExpectedToWrite
+                totalBytes: totalBytesExpectedToWrite,
+                speedBytesPerSecond: self.speedSample(
+                    taskIdentifier: taskIdentifier,
+                    bytes: totalBytesWritten
+                )
             )
         }
     }
@@ -504,6 +865,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
                       let identifier = self.taskIDs.removeValue(forKey: taskIdentifier),
                       let item = self.items[identifier] else { return }
                 self.activeTasks.removeValue(forKey: taskIdentifier)
+                self.progressSamples.removeValue(forKey: taskIdentifier)
                 self.startHLSDownload(identifier: identifier, item: item, url: finalURL ?? item.url)
             }
             return
@@ -515,6 +877,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 guard let self,
                       let identifier = self.taskIDs.removeValue(forKey: taskIdentifier) else { return }
                 self.activeTasks.removeValue(forKey: taskIdentifier)
+                self.progressSamples.removeValue(forKey: taskIdentifier)
                 self.updateStatus(for: identifier, status: .failed(message))
             }
             return
@@ -524,6 +887,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 guard let self,
                       let identifier = self.taskIDs.removeValue(forKey: taskIdentifier) else { return }
                 self.activeTasks.removeValue(forKey: taskIdentifier)
+                self.progressSamples.removeValue(forKey: taskIdentifier)
                 self.updateStatus(for: identifier, status: .failed("服务器返回了网页而不是可播放媒体"))
             }
             return
@@ -566,12 +930,14 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 self.items[identifier] = completed
                 self.taskIDs.removeValue(forKey: taskIdentifier)
                 self.activeTasks.removeValue(forKey: taskIdentifier)
+                self.progressSamples.removeValue(forKey: taskIdentifier)
                 self.saveManifest()
             } catch {
                 try? self.fileManager.removeItem(at: stagedURL)
                 self.items[identifier]?.status = .failed(error.localizedDescription)
                 self.taskIDs.removeValue(forKey: taskIdentifier)
                 self.activeTasks.removeValue(forKey: taskIdentifier)
+                self.progressSamples.removeValue(forKey: taskIdentifier)
             }
         }
     }
@@ -584,15 +950,32 @@ extension DownloadManager: URLSessionDownloadDelegate {
         guard let error else { return }
         let taskIdentifier = task.taskIdentifier
         let errorCode = (error as NSError).code
-        let errorMessage = error.localizedDescription
+        let isAssetDownloadTask = task is AVAssetDownloadTask
         Task { @MainActor [weak self] in
             guard let self,
                   let identifier = self.taskIDs.removeValue(forKey: taskIdentifier) else { return }
             self.activeTasks.removeValue(forKey: taskIdentifier)
+            self.progressSamples.removeValue(forKey: taskIdentifier)
+            guard self.items[identifier]?.status != .completed else { return }
+
+            // 系统 HLS 离线任务失败时，若此前尚未尝试过系统转换，先退回到
+            // 自定义 MPEG-TS 分片下载；第二次失败才将真实错误展示给用户，避免循环重试。
+            if isAssetDownloadTask,
+               self.items[identifier]?.mediaKind == .hls,
+               !self.hlsAssetFallbackAttempted.contains(identifier),
+               let item = self.items[identifier] {
+                self.hlsAssetFallbackAttempted.insert(identifier)
+                self.startHLSDownload(identifier: identifier, item: item, url: item.url)
+                return
+            }
             if errorCode == NSURLErrorCancelled {
                 self.updateStatus(for: identifier, status: .cancelled)
             } else {
-                self.updateStatus(for: identifier, status: .failed(errorMessage))
+                let message = isAssetDownloadTask
+                    ? "HLS 离线下载失败：\(error.localizedDescription)"
+                    : self.descriptiveError(error, task: task)
+                self.hlsAssetFallbackAttempted.remove(identifier)
+                self.updateStatus(for: identifier, status: .failed(message))
             }
         }
     }
@@ -611,11 +994,27 @@ extension DownloadManager: AVAssetDownloadDelegate {
             partialResult + value.timeRangeValue.duration.seconds
         }
         let expectedDuration = timeRangeExpectedToLoad.duration.seconds
-        let progress = expectedDuration > 0 ? loadedDuration / expectedDuration : 0
         Task { @MainActor [weak self] in
             guard let self,
                   let identifier = self.taskIDs[taskIdentifier] else { return }
-            self.updateProgress(for: identifier, progress: progress)
+            let received = max(0, assetDownloadTask.countOfBytesReceived)
+            let expected = assetDownloadTask.countOfBytesExpectedToReceive
+            let speed = self.speedSample(taskIdentifier: taskIdentifier, bytes: received)
+            if expected > 0 {
+                self.updateProgress(
+                    for: identifier,
+                    bytesWritten: received,
+                    totalBytes: expected,
+                    speedBytesPerSecond: speed
+                )
+            } else {
+                let progress = expectedDuration > 0 ? loadedDuration / expectedDuration : 0
+                self.updateProgress(for: identifier, progress: progress)
+                if var item = self.items[identifier] {
+                    item.speedBytesPerSecond = speed
+                    self.items[identifier] = item
+                }
+            }
         }
     }
 
@@ -640,6 +1039,7 @@ extension DownloadManager: AVAssetDownloadDelegate {
                 guard let self,
                       let identifier = self.taskIDs.removeValue(forKey: taskIdentifier) else { return }
                 self.activeTasks.removeValue(forKey: taskIdentifier)
+                self.hlsAssetFallbackAttempted.remove(identifier)
                 self.updateStatus(for: identifier, status: .failed("保存 HLS 离线文件失败：\(errorMessage)"))
             }
             return
@@ -651,9 +1051,12 @@ extension DownloadManager: AVAssetDownloadDelegate {
             item.mediaKind = .hls
             item.status = .completed
             item.progress = 1
+            item.speedBytesPerSecond = 0
             item.localURL = stableURL
             self.items[identifier] = item
             self.activeTasks.removeValue(forKey: taskIdentifier)
+            self.progressSamples.removeValue(forKey: taskIdentifier)
+            self.hlsAssetFallbackAttempted.remove(identifier)
             self.saveManifest()
         }
     }
