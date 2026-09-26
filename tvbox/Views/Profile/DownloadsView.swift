@@ -148,6 +148,10 @@ struct DownloadsView: View {
                     }
                     .font(.caption2.monospacedDigit())
                     .foregroundColor(.white.opacity(0.62))
+                } else if item.status == .completed, let sizeLabel = downloadSizeLabel(item) {
+                    Text(sizeLabel)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundColor(.white.opacity(0.62))
                 } else if case .failed(let message) = item.status {
                     Text(message)
                         .font(.caption2)
@@ -254,14 +258,48 @@ struct DownloadsView: View {
     }
 
     private func downloadProgressLabel(_ item: DownloadItem) -> String {
-        let percent = "\(Int((item.progress * 100).rounded()))%"
-        if item.totalBytes > 0 {
-            return "\(percent) · \(formatBytes(item.bytesWritten))/\(formatBytes(item.totalBytes))"
+        let progress = normalizedProgress(item.progress)
+        let percent = "\(Int((progress * 100).rounded()))%"
+        if let total = resolvedTotalBytes(for: item) {
+            let prefix = total.isEstimated ? "预计总大小 " : ""
+            return "\(percent) · \(formatBytes(item.bytesWritten))/\(prefix)\(formatBytes(total.bytes))"
         }
         if item.bytesWritten > 0 {
             return "\(percent) · 已下载 \(formatBytes(item.bytesWritten))"
         }
         return percent
+    }
+
+    private func downloadSizeLabel(_ item: DownloadItem) -> String? {
+        guard let total = resolvedTotalBytes(for: item) else { return nil }
+        return total.isEstimated
+            ? "预计总大小 \(formatBytes(total.bytes))"
+            : "文件大小 \(formatBytes(total.bytes))"
+    }
+
+    private func resolvedTotalBytes(for item: DownloadItem) -> (bytes: Int64, isEstimated: Bool)? {
+        if item.totalBytes > 0 {
+            return (item.totalBytes, false)
+        }
+
+        let progress = normalizedProgress(item.progress)
+        guard item.bytesWritten > 0, progress > 0, progress < 1 else {
+            if item.status == .completed, item.bytesWritten > 0 {
+                return (item.bytesWritten, false)
+            }
+            return nil
+        }
+
+        let estimate = Double(item.bytesWritten) / progress
+        guard estimate.isFinite, estimate >= Double(item.bytesWritten), estimate <= Double(Int64.max) else {
+            return nil
+        }
+        return (Int64(estimate.rounded()), true)
+    }
+
+    private func normalizedProgress(_ progress: Double) -> Double {
+        guard progress.isFinite else { return 0 }
+        return min(max(progress, 0), 1)
     }
 
     private func downloadSpeedLabel(_ item: DownloadItem) -> String {
