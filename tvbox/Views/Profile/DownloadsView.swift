@@ -5,6 +5,10 @@ import SwiftUI
 struct DownloadsView: View {
     @StateObject private var downloadManager = DownloadManager.shared
     @State private var activeItem: DownloadItem?
+    @State private var isEditing = false
+    @State private var selectedIDs = Set<String>()
+    @State private var pendingDeleteIDs = Set<String>()
+    @State private var showingDeleteConfirmation = false
 
     var body: some View {
         Group {
@@ -20,6 +24,10 @@ struct DownloadsView: View {
                         downloadRow(item)
                             .contentShape(Rectangle())
                             .onTapGesture {
+                                if isEditing {
+                                    toggleSelection(for: item.id)
+                                    return
+                                }
                                 guard item.status == .completed,
                                       let localURL = downloadManager.localFileURL(identifier: item.id) else {
                                     return
@@ -28,9 +36,15 @@ struct DownloadsView: View {
                                 playableItem.localURL = localURL
                                 activeItem = playableItem
                             }
+                            .onLongPressGesture(minimumDuration: 0.45) {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    isEditing = true
+                                    selectedIDs.insert(item.id)
+                                }
+                            }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
-                                    try? downloadManager.delete(identifier: item.id)
+                                    requestDelete(ids: [item.id])
                                 } label: {
                                     Label("删除", systemImage: "trash")
                                 }
@@ -44,13 +58,73 @@ struct DownloadsView: View {
         .background(AppTheme.primaryGradient)
         .navigationTitle("离线下载")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !downloadManager.allItems().isEmpty {
+                ToolbarItem(placement: .topBarLeading) {
+                    if isEditing {
+                        Button(selectedIDs.count == downloadManager.allItems().count ? "取消全选" : "全选") {
+                            toggleSelectAll()
+                        }
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(isEditing ? "完成" : "编辑") {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isEditing.toggle()
+                            if !isEditing { selectedIDs.removeAll() }
+                        }
+                    }
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if isEditing {
+                Button(role: .destructive) {
+                    requestDelete(ids: selectedIDs)
+                } label: {
+                    Label("删除已选 (\(selectedIDs.count))", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(selectedIDs.isEmpty)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial)
+            }
+        }
         .sheet(item: $activeItem) { item in
             OfflineDownloadPlayerView(item: item)
+        }
+        .alert("确认删除下载内容？", isPresented: $showingDeleteConfirmation) {
+            Button("删除", role: .destructive) {
+                deletePendingItems()
+            }
+            Button("取消", role: .cancel) {
+                pendingDeleteIDs.removeAll()
+            }
+        } message: {
+            Text("删除后将清理本地文件和下载记录，此操作无法撤销。")
+        }
+        .onChange(of: downloadManager.allItems().map(\.id)) { ids in
+            let availableIDs = Set(ids)
+            selectedIDs.formIntersection(availableIDs)
+            pendingDeleteIDs.formIntersection(availableIDs)
+            if ids.isEmpty {
+                isEditing = false
+                selectedIDs.removeAll()
+            }
         }
     }
 
     private func downloadRow(_ item: DownloadItem) -> some View {
         HStack(spacing: 12) {
+            if isEditing {
+                Image(systemName: selectedIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundColor(selectedIDs.contains(item.id) ? .blue : .white.opacity(0.55))
+                    .accessibilityHidden(true)
+            }
             Image(systemName: icon(for: item.status))
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundColor(color(for: item.status))
@@ -116,6 +190,42 @@ struct DownloadsView: View {
         }
         .padding(.vertical, 8)
         .listRowBackground(Color.white.opacity(0.06))
+    }
+
+    private func toggleSelection(for id: String) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+    }
+
+    private func toggleSelectAll() {
+        let allIDs = Set(downloadManager.allItems().map(\.id))
+        selectedIDs = selectedIDs == allIDs ? [] : allIDs
+    }
+
+    private func requestDelete(ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        pendingDeleteIDs = ids
+        showingDeleteConfirmation = true
+    }
+
+    private func requestDelete(ids: [String]) {
+        requestDelete(ids: Set(ids))
+    }
+
+    private func deletePendingItems() {
+        let ids = pendingDeleteIDs
+        for id in ids {
+            try? downloadManager.delete(identifier: id)
+        }
+        if let activeItem, ids.contains(activeItem.id) {
+            self.activeItem = nil
+        }
+        selectedIDs.removeAll()
+        pendingDeleteIDs.removeAll()
+        isEditing = false
     }
 
     private func episodeLabel(_ item: DownloadItem) -> String {
