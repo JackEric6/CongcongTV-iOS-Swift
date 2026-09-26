@@ -20,12 +20,14 @@ struct ContentView: View {
         .onAppear {
             // 自动加载已保存的配置
             let defaults = UserDefaults.standard
-            let savedVodUrl = defaults.string(forKey: HawkConfig.API_URL)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .flatMap { $0.isEmpty ? nil : $0 } ?? CongcongBrand.defaultConfigURL
-            let savedLiveUrl = defaults.string(forKey: HawkConfig.LIVE_API_URL)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .flatMap { $0.isEmpty ? nil : $0 } ?? savedVodUrl
+            let configuredVodUrl = defaults.string(forKey: HawkConfig.API_URL)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let savedVodUrl = configuredVodUrl.isEmpty
+                ? CongcongBrand.defaultConfigURL
+                : configuredVodUrl
+            let configuredLiveUrl = defaults.string(forKey: HawkConfig.LIVE_API_URL)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let savedLiveUrl = configuredLiveUrl.isEmpty ? savedVodUrl : configuredLiveUrl
             if !savedVodUrl.isEmpty {
                 // 启动自动恢复配置，避免每次重启都回到首次配置页。
                 Task {
