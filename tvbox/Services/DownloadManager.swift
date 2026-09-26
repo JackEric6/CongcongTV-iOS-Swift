@@ -348,7 +348,7 @@ final class DownloadManager: NSObject, ObservableObject {
         return smoothed
     }
 
-    private func normalizedHeaders(_ headers: [String: String]) -> [String: String] {
+    private static func normalizedHeaders(_ headers: [String: String]) -> [String: String] {
         var result = headers
         if result.keys.contains(where: { $0.caseInsensitiveCompare("User-Agent") == .orderedSame }) == false {
             result["User-Agent"] = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148"
