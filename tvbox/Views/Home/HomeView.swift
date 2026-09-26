@@ -181,7 +181,7 @@ struct HomeView: View {
         let isHome = viewModel.selectedSort?.id == "home"
         let videos = isHome ? viewModel.homeVideos : viewModel.categoryVideos
 
-        Group {
+        return Group {
             if viewModel.isLoading && videos.isEmpty {
                 VStack {
                     Spacer()
