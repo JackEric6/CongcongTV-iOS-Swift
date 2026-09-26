@@ -72,6 +72,11 @@ struct KSPlayerVodPlayerView: View {
 private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureRecognizerDelegate {
     private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
     private weak var interactivePopGestureRecognizer: UIGestureRecognizer?
+    private weak var inlineSuperview: UIView?
+    private var inlineFrameConstraints: [NSLayoutConstraint] = []
+    private var inlineFrame = CGRect.zero
+    private var inlineTranslatesAutoresizingMaskIntoConstraints = false
+    private var restoreTask: DispatchWorkItem?
     // KSPlayer moves this exact view into its native full-screen controller.
     // Keep the playback layer alive until the view has been reattached inline.
     private var preservingFullscreenPlayer = false
@@ -95,8 +100,6 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private var nativePanDirection: KSPanDirection?
     private var pendingSeekTarget: TimeInterval?
     private var seekRequestID = 0
-    private var longPressOriginalPlaybackRate: Float?
-    private var longPressTipTask: DispatchWorkItem?
 
     override var isMaskShow: Bool {
         didSet {
@@ -107,7 +110,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
     override func updateUI(isFullScreen: Bool) {
         if isFullScreen {
+            restoreTask?.cancel()
+            restoreTask = nil
             preservingFullscreenPlayer = true
+            captureInlineLayout()
         } else {
             // Keep this flag set while KSPlayer dismisses its controller. The
             // native completion reattaches the same view; only then can it be
@@ -140,6 +146,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         DispatchQueue.main.async {
             self.syncInteractivePopGesture()
             self.landscapeButton.isHidden = false
+        }
+
+        if !isFullScreen {
+            scheduleInlineRestoration()
         }
     }
 
@@ -249,58 +259,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
     deinit {
         deviceStatusTimer?.invalidate()
-        longPressTipTask?.cancel()
         NotificationCenter.default.removeObserver(self)
-    }
-
-    /// KSPlayer's default long-press speed is 2x. Keep the gesture on the
-    /// existing backend and use the same 3x ceiling as the rate menu. The
-    /// original rate is restored without seeking or recreating the item.
-    override func longPressGestureAction(_ gesture: UILongPressGestureRecognizer) {
-        guard let player = playerLayer?.player else { return }
-
-        switch gesture.state {
-        case .began:
-            guard longPressOriginalPlaybackRate == nil else { return }
-            let currentRate = player.playbackRate
-            longPressOriginalPlaybackRate = currentRate.isFinite && currentRate > 0
-                ? currentRate
-                : desiredPlaybackRate
-            player.playbackRate = 3.0
-            showLongPressSpeedTip("3x")
-
-        case .ended, .cancelled, .failed:
-            guard let originalRate = longPressOriginalPlaybackRate else { return }
-            longPressOriginalPlaybackRate = nil
-            let restoredRate = normalizedPlaybackRate(originalRate)
-            // Resolve the player again only at the gesture boundary. Never
-            // seek here: rate changes must not reset the current episode.
-            playerLayer?.player.playbackRate = restoredRate
-            showLongPressSpeedTip(String(format: "%.2gx", restoredRate))
-
-        default:
-            break
-        }
-    }
-
-    private func showLongPressSpeedTip(_ text: String) {
-        longPressTipTask?.cancel()
-        speedTipLabel.text = text
-        speedTipLabel.isHidden = false
-        UIView.animate(withDuration: 0.2) {
-            self.speedTipLabel.alpha = 1
-        }
-
-        let task = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            UIView.animate(withDuration: 0.2, animations: {
-                self.speedTipLabel.alpha = 0
-            }, completion: { _ in
-                self.speedTipLabel.isHidden = true
-            })
-        }
-        longPressTipTask = task
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: task)
     }
 
     private func installDeviceStatusViewIfNeeded() {
@@ -467,11 +426,21 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                 return
             }
 
-            // The rate setter changes the existing backend in place. Do not
-            // issue a compensating seek here: KSPlayer updates its timeline
-            // asynchronously, and a seek during that transition can reset
-            // the item or report a false finish at 2.5x/3x.
+            // The rate setter changes the existing AVPlayer backend in place.
+            // Keep a defensive position checkpoint so a backend implementation
+            // that momentarily resets its time cannot restart the episode.
+            let position = player.currentPlaybackTime
+            let wasPlaying = player.isPlaying
             player.playbackRate = rate
+            if position.isFinite, position > 0,
+               abs(player.currentPlaybackTime - position) > 0.25 {
+                player.seek(time: position) { [weak self] success in
+                    guard success, wasPlaying else { return }
+                    DispatchQueue.main.async {
+                        self?.playerLayer?.player.play()
+                    }
+                }
+            }
             if rebuildMenu {
                 self.rebuildPlaybackRateMenu()
             }
@@ -506,15 +475,82 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     override func didMoveToSuperview() {
         super.didMoveToSuperview()
         applyTransparentSurfaces()
-        // KSPlayer reattaches this exact view and activates its original
-        // constraints in the native dismiss completion. Only release the
-        // SwiftUI lifecycle guard after that reparent has completed; touching
-        // frame/constraints here would race PlayerTransitionAnimator and can
-        // expose a transient top-left frame.
-        if !landscapeButton.isSelected, preservingFullscreenPlayer {
-            preservingFullscreenPlayer = false
+        // KSPlayer performs the actual reparenting in its dismissal
+        // completion. Restore constraints only after that callback, never by
+        // racing it with an early addSubview from our side.
+        if !landscapeButton.isSelected, superview === inlineSuperview {
+            restoreInlineLayout()
         }
         syncInteractivePopGesture()
+    }
+
+    private func captureInlineLayout() {
+        guard let container = superview else { return }
+        if inlineSuperview === container, !inlineFrameConstraints.isEmpty {
+            return
+        }
+        inlineSuperview = container
+        inlineFrameConstraints = inlineLayoutConstraints(in: container)
+        inlineFrame = frame
+        inlineTranslatesAutoresizingMaskIntoConstraints = translatesAutoresizingMaskIntoConstraints
+    }
+
+    private func inlineLayoutConstraints(in container: UIView) -> [NSLayoutConstraint] {
+        var result = container.constraints.filter { constraint in
+            constraint.firstItem === self || constraint.secondItem === self
+        }
+        result.append(contentsOf: constraints.filter { constraint in
+            guard constraint.firstItem === self || constraint.secondItem === self else {
+                return false
+            }
+            return constraint.firstAttribute == .width
+                || constraint.firstAttribute == .height
+                || constraint.secondAttribute == .width
+                || constraint.secondAttribute == .height
+        })
+        return result
+    }
+
+    private func scheduleInlineRestoration() {
+        restoreTask?.cancel()
+        let task = DispatchWorkItem { [weak self] in
+            self?.restoreInlineLayout()
+        }
+        restoreTask = task
+
+        // Wait for KSPlayer's PlayerTransitionAnimator to finish before
+        // restoring the inline constraints. Reattaching during the animation
+        // is what causes the view to briefly jump to the window's top-left.
+        if let coordinator = owningViewController?.transitionCoordinator {
+            coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+                self?.restoreInlineLayout()
+            }
+        }
+        // Covers rotation and dismissals without a transition coordinator.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: task)
+    }
+
+    private func restoreInlineLayout() {
+        guard !landscapeButton.isSelected, let container = inlineSuperview else { return }
+        restoreTask?.cancel()
+        restoreTask = nil
+
+        // The native KSPlayer transition owns reparenting. If it has not
+        // completed yet, leave the view where KSPlayer put it and let
+        // didMoveToSuperview call us again after the dismissal callback.
+        guard superview === container else { return }
+        translatesAutoresizingMaskIntoConstraints = inlineTranslatesAutoresizingMaskIntoConstraints
+        if inlineFrameConstraints.isEmpty {
+            translatesAutoresizingMaskIntoConstraints = true
+            frame = inlineFrame
+        } else {
+            NSLayoutConstraint.activate(inlineFrameConstraints)
+        }
+        applyTransparentSurfaces()
+        container.setNeedsLayout()
+        container.layoutIfNeeded()
+        updateUI(isLandscape: false)
+        preservingFullscreenPlayer = false
     }
 
     fileprivate var isPreservingFullscreenPlayer: Bool {
@@ -1161,27 +1197,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
         func playerController(finish error: Error?) {
             danmakuView?.reset()
-            guard error == nil,
-                  let layer = playerView?.playerLayer,
-                  layer.state == .playedToTheEnd else { return }
-
-            // A backend can emit finish while buffering/replacing an item.
-            // Only a player that is actually at the end of a finite item may
-            // advance the episode; this prevents rate changes from doing so.
-            let duration = layer.player.duration
-            let current = layer.player.currentPlaybackTime
-            guard duration.isFinite, duration > 0,
-                  current.isFinite,
-                  current >= duration - max(0.75, min(5.0, duration * 0.02)) else {
-                return
-            }
-            DispatchQueue.main.async { [weak self, weak layer] in
-                guard let self,
-                      let layer,
-                      let currentLayer = self.playerView?.playerLayer,
-                      currentLayer === layer,
-                      currentLayer.state == .playedToTheEnd else { return }
-                self.onPlaybackEnded?()
+            guard error == nil else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.onPlaybackEnded?()
             }
         }
 
