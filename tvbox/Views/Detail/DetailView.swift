@@ -509,6 +509,7 @@ struct DetailView: View {
         switch status {
         case .completed: return "checkmark"
         case .downloading, .queued: return "arrow.down.circle"
+        case .paused: return "play.circle"
         case .failed: return "arrow.clockwise"
         case .cancelled, .none: return "arrow.down.circle"
         }
@@ -518,6 +519,7 @@ struct DetailView: View {
         switch status {
         case .completed: return "已下载"
         case .downloading, .queued: return "正在下载"
+        case .paused: return "继续下载"
         case .failed: return "重新下载"
         case .cancelled, .none: return "下载当前集"
         }
@@ -527,6 +529,10 @@ struct DetailView: View {
         guard !viewModel.currentEpisodes.isEmpty else {
             downloadAlertMessage = "当前线路没有可下载的剧集"
             showDownloadAlert = true
+            return
+        }
+        if downloadManager.item(identifier: currentDownloadIdentifier)?.status == .paused {
+            downloadManager.resume(identifier: currentDownloadIdentifier)
             return
         }
         if viewModel.currentEpisodes.count > 1 {

@@ -59,6 +59,7 @@ struct DownloadRequest: Identifiable, Hashable, Sendable {
 enum DownloadStatus: Equatable, Sendable {
     case queued
     case downloading
+    case paused
     case completed
     case failed(String)
     case cancelled
@@ -124,6 +125,9 @@ final class DownloadManager: NSObject, ObservableObject {
     private var progressSamples: [Int: ProgressSample] = [:]
     private var fallbackTasks: [String: Task<Void, Never>] = [:]
     private var hlsAssetFallbackAttempted = Set<String>()
+    private var pausedIdentifiers = Set<String>()
+    private var pendingPauseIdentifiers = Set<String>()
+    private var resumeDataByIdentifier: [String: Data] = [:]
 
     private struct ProgressSample {
         let timestamp: TimeInterval
@@ -187,6 +191,11 @@ final class DownloadManager: NSObject, ObservableObject {
             return existing
         }
 
+        if let existing = items[request.identifier], existing.status == .paused {
+            resume(identifier: request.identifier)
+            return items[request.identifier] ?? existing
+        }
+
         let mediaKind = Self.mediaKind(for: request.url)
         let item = DownloadItem(
             id: request.identifier,
@@ -226,19 +235,105 @@ final class DownloadManager: NSObject, ObservableObject {
         return items[request.identifier] ?? item
     }
 
+    /// 暂停当前下载。直链使用 URLSession resume data，普通 HLS 保留已完成分片。
+    func pause(identifier: String) {
+        guard let item = items[identifier], item.status == .downloading else { return }
+        pausedIdentifiers.insert(identifier)
+
+        if let fallbackTask = fallbackTasks[identifier] {
+            fallbackTask.cancel()
+            updateStatus(for: identifier, status: .paused)
+            saveManifest()
+            return
+        }
+
+        guard let taskID = taskIDs.first(where: { $0.value == identifier })?.key,
+              let task = activeTasks[taskID] else {
+            updateStatus(for: identifier, status: .paused)
+            saveManifest()
+            return
+        }
+
+        if let assetTask = task as? AVAssetDownloadTask {
+            assetTask.suspend()
+            updateStatus(for: identifier, status: .paused)
+            saveManifest()
+            return
+        }
+
+        guard let downloadTask = task as? URLSessionDownloadTask else { return }
+        pendingPauseIdentifiers.insert(identifier)
+        updateStatus(for: identifier, status: .paused)
+        downloadTask.cancel(byProducingResumeData: { [weak self] resumeData in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let resumeData {
+                    self.resumeDataByIdentifier[identifier] = resumeData
+                }
+                self.saveManifest()
+            }
+        })
+    }
+
+    /// 继续已暂停的下载。直链优先使用系统 resume data，普通 HLS 从已完成分片继续。
+    func resume(identifier: String) {
+        guard let item = items[identifier], item.status == .paused else { return }
+        if pendingPauseIdentifiers.contains(identifier) { return }
+
+        pausedIdentifiers.remove(identifier)
+        if let taskID = taskIDs.first(where: { $0.value == identifier })?.key,
+           let task = activeTasks[taskID] {
+            if let assetTask = task as? AVAssetDownloadTask {
+                assetTask.resume()
+                updateStatus(for: identifier, status: .downloading)
+                saveManifest()
+            }
+            return
+        }
+
+        if item.mediaKind == .hls {
+            startHLSDownload(identifier: identifier, item: item, url: item.url, resetProgress: false)
+            updateStatus(for: identifier, status: .downloading)
+            return
+        }
+
+        guard let resumeData = resumeDataByIdentifier.removeValue(forKey: identifier) else {
+            updateStatus(for: identifier, status: .failed("该下载没有可用的断点数据，请重新下载"))
+            saveManifest()
+            return
+        }
+        let task = session.downloadTask(withResumeData: resumeData)
+        taskIDs[task.taskIdentifier] = identifier
+        activeTasks[task.taskIdentifier] = task
+        progressSamples[task.taskIdentifier] = ProgressSample(
+            timestamp: Date().timeIntervalSinceReferenceDate,
+            bytes: item.bytesWritten,
+            speedBytesPerSecond: 0
+        )
+        updateStatus(for: identifier, status: .downloading)
+        task.resume()
+    }
+
     func cancel(identifier: String) {
+        pausedIdentifiers.remove(identifier)
+        pendingPauseIdentifiers.remove(identifier)
+        resumeDataByIdentifier.removeValue(forKey: identifier)
         if let fallbackTask = fallbackTasks.removeValue(forKey: identifier) {
             fallbackTask.cancel()
             hlsAssetFallbackAttempted.remove(identifier)
+            removeHLSArtifacts(identifier: identifier)
             updateStatus(for: identifier, status: .cancelled)
             return
         }
-        guard let taskID = taskIDs.first(where: { $0.value == identifier })?.key,
-              let task = activeTasks[taskID] else { return }
-        task.cancel()
-        taskIDs.removeValue(forKey: taskID)
-        activeTasks.removeValue(forKey: taskID)
+        if let taskID = taskIDs.first(where: { $0.value == identifier })?.key,
+           let task = activeTasks[taskID] {
+            task.cancel()
+            taskIDs.removeValue(forKey: taskID)
+            activeTasks.removeValue(forKey: taskID)
+            progressSamples.removeValue(forKey: taskID)
+        }
         hlsAssetFallbackAttempted.remove(identifier)
+        removeHLSArtifacts(identifier: identifier)
         updateStatus(for: identifier, status: .cancelled)
     }
 
@@ -251,6 +346,10 @@ final class DownloadManager: NSObject, ObservableObject {
         items.removeValue(forKey: identifier)
         fallbackTasks.removeValue(forKey: identifier)?.cancel()
         hlsAssetFallbackAttempted.remove(identifier)
+        pausedIdentifiers.remove(identifier)
+        pendingPauseIdentifiers.remove(identifier)
+        resumeDataByIdentifier.removeValue(forKey: identifier)
+        removeHLSArtifacts(identifier: identifier)
         saveManifest()
     }
 
@@ -306,6 +405,7 @@ final class DownloadManager: NSObject, ObservableObject {
         speedBytesPerSecond: Double? = nil
     ) {
         guard var item = items[identifier] else { return }
+        guard item.status != .paused else { return }
         let normalizedTotal = max(0, totalBytes)
         item.status = .downloading
         item.bytesWritten = bytesWritten
@@ -321,6 +421,7 @@ final class DownloadManager: NSObject, ObservableObject {
 
     private func updateProgress(for identifier: String, progress: Double) {
         guard var item = items[identifier] else { return }
+        guard item.status != .paused else { return }
         item.status = .downloading
         item.progress = min(1, max(0, progress.isFinite ? progress : 0))
         items[identifier] = item
@@ -395,13 +496,20 @@ final class DownloadManager: NSObject, ObservableObject {
         }
     }
 
-    private func startHLSDownload(identifier: String, item: DownloadItem, url: URL) {
+    private func startHLSDownload(
+        identifier: String,
+        item: DownloadItem,
+        url: URL,
+        resetProgress: Bool = true
+    ) {
         guard fallbackTasks[identifier] == nil else { return }
         var updated = item
         updated.mediaKind = .hls
-        updated.progress = 0
-        updated.bytesWritten = 0
-        updated.totalBytes = 0
+        if resetProgress {
+            updated.progress = 0
+            updated.bytesWritten = 0
+            updated.totalBytes = 0
+        }
         updated.speedBytesPerSecond = 0
         updated.status = .downloading
         items[identifier] = updated
@@ -419,7 +527,12 @@ final class DownloadManager: NSObject, ObservableObject {
                 self.hlsAssetFallbackAttempted.remove(identifier)
             } catch is CancellationError {
                 self.fallbackTasks.removeValue(forKey: identifier)
-                self.updateStatus(for: identifier, status: .cancelled)
+                if self.pausedIdentifiers.contains(identifier) {
+                    self.updateStatus(for: identifier, status: .paused)
+                    self.saveManifest()
+                } else {
+                    self.updateStatus(for: identifier, status: .cancelled)
+                }
             } catch HLSDownloadError.unsupported(_) {
                 self.fallbackTasks.removeValue(forKey: identifier)
                 self.hlsAssetFallbackAttempted.insert(identifier)
@@ -466,26 +579,49 @@ final class DownloadManager: NSObject, ObservableObject {
         let segments = try Self.parsePlainTSPlaylist(baseURL: playlistURL, playlist: playlist)
         guard !segments.isEmpty else { throw HLSDownloadError.invalid("播放列表中没有可下载分片") }
 
-        let token = String(identifier.hashValue.magnitude)
-        let segmentDirectory = downloadsDirectory.appendingPathComponent(".hls-\(token)", isDirectory: true)
-        let outputPart = downloadsDirectory.appendingPathComponent(".download-\(token).ts.part")
+        let segmentDirectory = hlsSegmentDirectory(identifier: identifier)
+        let outputPart = hlsOutputPartURL(identifier: identifier)
         try fileManager.createDirectory(at: segmentDirectory, withIntermediateDirectories: true)
         defer {
-            try? fileManager.removeItem(at: segmentDirectory)
+            if !self.pausedIdentifiers.contains(identifier) {
+                try? fileManager.removeItem(at: segmentDirectory)
+            }
             try? fileManager.removeItem(at: outputPart)
         }
 
         var segmentFiles = Array<URL?>(repeating: nil, count: segments.count)
-        var nextIndex = 0
+        var pendingIndices: [Int] = []
         var completedCount = 0
         var completedBytes: Int64 = 0
         let progressKey = identifier.hashValue
 
+        for index in segments.indices {
+            let segmentFile = segmentDirectory.appendingPathComponent(String(format: "%06d.seg", index))
+            let attributes = try? fileManager.attributesOfItem(atPath: segmentFile.path)
+            let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            if size > 0 {
+                segmentFiles[index] = segmentFile
+                completedCount += 1
+                completedBytes += size
+            } else {
+                pendingIndices.append(index)
+            }
+        }
+        if var progressItem = self.items[identifier] {
+            progressItem.status = .downloading
+            progressItem.progress = Double(completedCount) / Double(segments.count)
+            progressItem.bytesWritten = completedBytes
+            progressItem.totalBytes = 0
+            progressItem.speedBytesPerSecond = 0
+            self.items[identifier] = progressItem
+        }
+
         try await withThrowingTaskGroup(of: (Int, URL, Int64).self) { group in
-            let initialCount = min(6, segments.count)
+            var nextPending = 0
+            let initialCount = min(6, pendingIndices.count)
             for _ in 0..<initialCount {
-                let index = nextIndex
-                nextIndex += 1
+                let index = pendingIndices[nextPending]
+                nextPending += 1
                 group.addTask {
                     try await Self.downloadHLSSegment(
                         index: index,
@@ -510,9 +646,9 @@ final class DownloadManager: NSObject, ObservableObject {
                     progressItem.speedBytesPerSecond = speed
                     self.items[identifier] = progressItem
                 }
-                if nextIndex < segments.count {
-                    let index = nextIndex
-                    nextIndex += 1
+                if nextPending < pendingIndices.count {
+                    let index = pendingIndices[nextPending]
+                    nextPending += 1
                     group.addTask {
                         try await Self.downloadHLSSegment(
                             index: index,
@@ -707,6 +843,31 @@ final class DownloadManager: NSObject, ObservableObject {
         return normalized.hasPrefix("<!doctype html") || normalized.hasPrefix("<html")
     }
 
+    private func hlsArtifactToken(for identifier: String) -> String {
+        SHA256.hash(data: Data(identifier.utf8))
+            .prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private func hlsSegmentDirectory(identifier: String) -> URL {
+        downloadsDirectory.appendingPathComponent(
+            ".hls-\(hlsArtifactToken(for: identifier))",
+            isDirectory: true
+        )
+    }
+
+    private func hlsOutputPartURL(identifier: String) -> URL {
+        downloadsDirectory.appendingPathComponent(
+            ".download-\(hlsArtifactToken(for: identifier)).ts.part"
+        )
+    }
+
+    private func removeHLSArtifacts(identifier: String) {
+        try? fileManager.removeItem(at: hlsSegmentDirectory(identifier: identifier))
+        try? fileManager.removeItem(at: hlsOutputPartURL(identifier: identifier))
+    }
+
     private func destinationURL(
         for item: DownloadItem,
         mimeType: String?,
@@ -754,6 +915,31 @@ final class DownloadManager: NSObject, ObservableObject {
         guard let data = try? Data(contentsOf: manifestURL),
               let entries = try? JSONDecoder().decode([ManifestEntry].self, from: data) else { return }
         for entry in entries {
+            if entry.status == "paused" {
+                let item = DownloadItem(
+                    id: entry.id,
+                    title: entry.title,
+                    sourceKey: entry.sourceKey,
+                    videoID: entry.videoID,
+                    episodeIndex: entry.episodeIndex,
+                    episodeName: entry.episodeName ?? "",
+                    headers: entry.headers ?? [:],
+                    url: entry.url,
+                    mediaKind: entry.mediaKind ?? .directFile,
+                    status: .paused,
+                    progress: min(1, max(0, entry.progress ?? 0)),
+                    bytesWritten: max(0, entry.bytesWritten ?? 0),
+                    totalBytes: max(0, entry.totalBytes),
+                    speedBytesPerSecond: 0,
+                    localURL: nil
+                )
+                items[entry.id] = item
+                pausedIdentifiers.insert(entry.id)
+                if let resumeData = entry.resumeData {
+                    resumeDataByIdentifier[entry.id] = resumeData
+                }
+                continue
+            }
             guard let localURL = entry.localURL
                 ?? entry.fileName.map({ downloadsDirectory.appendingPathComponent($0) }) else {
                 continue
@@ -781,9 +967,13 @@ final class DownloadManager: NSObject, ObservableObject {
 
     private func saveManifest() {
         let entries = items.values.compactMap { item -> ManifestEntry? in
-            guard item.status == .completed,
-                  let localURL = item.localURL,
-                  fileManager.fileExists(atPath: localURL.path) else { return nil }
+            let isCompleted = item.status == .completed
+            let isPaused = item.status == .paused
+            guard isCompleted || isPaused else { return nil }
+            let localURL = item.localURL.flatMap { url in
+                fileManager.fileExists(atPath: url.path) ? url : nil
+            }
+            guard isPaused || localURL != nil else { return nil }
             return ManifestEntry(
                 id: item.id,
                 title: item.title,
@@ -793,10 +983,14 @@ final class DownloadManager: NSObject, ObservableObject {
                 episodeName: item.episodeName,
                 headers: item.headers,
                 url: item.url,
-                fileName: localURL.lastPathComponent,
+                fileName: localURL?.lastPathComponent,
                 localURL: localURL,
                 mediaKind: item.mediaKind,
-                totalBytes: item.totalBytes
+                totalBytes: item.totalBytes,
+                status: isPaused ? "paused" : "completed",
+                progress: item.progress,
+                bytesWritten: item.bytesWritten,
+                resumeData: resumeDataByIdentifier[item.id]
             )
         }
         guard let data = try? JSONEncoder().encode(entries) else { return }
@@ -816,6 +1010,10 @@ final class DownloadManager: NSObject, ObservableObject {
         let localURL: URL?
         let mediaKind: DownloadMediaKind?
         let totalBytes: Int64
+        let status: String?
+        let progress: Double?
+        let bytesWritten: Int64?
+        let resumeData: Data?
     }
 
     private static func mediaKind(for url: URL) -> DownloadMediaKind {
@@ -949,7 +1147,9 @@ extension DownloadManager: URLSessionDownloadDelegate {
     ) {
         guard let error else { return }
         let taskIdentifier = task.taskIdentifier
-        let errorCode = (error as NSError).code
+        let nsError = error as NSError
+        let errorCode = nsError.code
+        let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
         let isAssetDownloadTask = task is AVAssetDownloadTask
         Task { @MainActor [weak self] in
             guard let self,
@@ -957,6 +1157,16 @@ extension DownloadManager: URLSessionDownloadDelegate {
             self.activeTasks.removeValue(forKey: taskIdentifier)
             self.progressSamples.removeValue(forKey: taskIdentifier)
             guard self.items[identifier]?.status != .completed else { return }
+
+            if self.pendingPauseIdentifiers.remove(identifier) != nil {
+                if let resumeData {
+                    self.resumeDataByIdentifier[identifier] = resumeData
+                }
+                self.pausedIdentifiers.insert(identifier)
+                self.updateStatus(for: identifier, status: .paused)
+                self.saveManifest()
+                return
+            }
 
             // 系统 HLS 离线任务失败时，若此前尚未尝试过系统转换，先退回到
             // 自定义 MPEG-TS 分片下载；第二次失败才将真实错误展示给用户，避免循环重试。

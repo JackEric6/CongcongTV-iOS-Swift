@@ -64,7 +64,7 @@ struct DownloadsView: View {
                 Text(episodeLabel(item))
                     .font(.caption)
                     .foregroundColor(.white.opacity(0.65))
-                if item.status == .downloading {
+                if item.status == .downloading || item.status == .paused {
                     ProgressView(value: item.progress)
                         .tint(.blue)
                     HStack(spacing: 6) {
@@ -88,9 +88,30 @@ struct DownloadsView: View {
                 Image(systemName: "play.fill")
                     .foregroundColor(.white.opacity(0.7))
             } else if item.status == .downloading {
-                Text("\(Int(item.progress * 100))%")
-                    .font(.caption.monospacedDigit())
-                    .foregroundColor(.white.opacity(0.7))
+                HStack(spacing: 10) {
+                    Text("\(Int(item.progress * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundColor(.white.opacity(0.7))
+                    Button {
+                        downloadManager.pause(identifier: item.id)
+                    } label: {
+                        Image(systemName: "pause.fill")
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.borderless)
+                    .tint(.white)
+                    .accessibilityLabel("暂停下载")
+                }
+            } else if item.status == .paused {
+                Button {
+                    downloadManager.resume(identifier: item.id)
+                } label: {
+                    Image(systemName: "play.fill")
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.borderless)
+                .tint(.white)
+                .accessibilityLabel("继续下载")
             }
         }
         .padding(.vertical, 8)
@@ -106,6 +127,7 @@ struct DownloadsView: View {
         switch status {
         case .completed: return "checkmark.circle.fill"
         case .downloading, .queued: return "arrow.down.circle"
+        case .paused: return "pause.circle.fill"
         case .failed: return "exclamationmark.circle.fill"
         case .cancelled: return "pause.circle"
         }
@@ -115,6 +137,7 @@ struct DownloadsView: View {
         switch status {
         case .completed: return .green
         case .downloading, .queued: return .blue
+        case .paused: return .orange
         case .failed: return .red
         case .cancelled: return .gray
         }
@@ -132,6 +155,7 @@ struct DownloadsView: View {
     }
 
     private func downloadSpeedLabel(_ item: DownloadItem) -> String {
+        if item.status == .paused { return "已暂停" }
         guard item.speedBytesPerSecond > 0 else { return "准备中" }
         return "\(formatBytes(Int64(item.speedBytesPerSecond)))/秒"
     }
