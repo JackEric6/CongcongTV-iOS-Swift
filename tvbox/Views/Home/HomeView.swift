@@ -178,8 +178,11 @@ struct HomeView: View {
     // MARK: - 内容区
     
     private var contentArea: some View {
+        let isHome = viewModel.selectedSort?.id == "home"
+        let videos = isHome ? viewModel.homeVideos : viewModel.categoryVideos
+
         Group {
-            if viewModel.isLoading && viewModel.categoryVideos.isEmpty && viewModel.homeVideos.isEmpty {
+            if viewModel.isLoading && videos.isEmpty {
                 VStack {
                     Spacer()
                     ProgressView()
@@ -191,7 +194,7 @@ struct HomeView: View {
                         .padding(.top, 12)
                     Spacer()
                 }
-            } else if let error = viewModel.errorMessage, viewModel.categoryVideos.isEmpty && viewModel.homeVideos.isEmpty {
+            } else if let error = viewModel.errorMessage, videos.isEmpty {
                 VStack(spacing: 12) {
                     Spacer()
                     Image(systemName: "exclamationmark.triangle")
@@ -211,11 +214,6 @@ struct HomeView: View {
                     Spacer()
                 }
             } else {
-                // 分类首屏尚未返回时先展示西瓜源首页，避免豆瓣增强或分类请求阻塞首屏。
-                let videos = viewModel.selectedSort?.id == "home" || viewModel.categoryVideos.isEmpty
-                    ? viewModel.homeVideos
-                    : viewModel.categoryVideos
-                
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
                         ForEach(videos) { video in

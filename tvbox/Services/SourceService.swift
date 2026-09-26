@@ -139,8 +139,14 @@ class SourceService {
                     } else {
                         id = cls["type_id"] as? String ?? ""
                     }
+                    let parentID: String
+                    if let intParentID = cls["type_pid"] as? Int {
+                        parentID = String(intParentID)
+                    } else {
+                        parentID = cls["type_pid"] as? String ?? ""
+                    }
                     let name = cls["type_name"] as? String ?? ""
-                    sorts.append(MovieSort.SortData(id: id, name: name))
+                    sorts.append(MovieSort.SortData(id: id, name: name, parentID: parentID))
                 }
             }
 
@@ -189,64 +195,6 @@ class SourceService {
         guard !api.isEmpty else { throw SourceError.emptyApi }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
-
-        if sourceBean.type == 1,
-           isXgzySource(sourceBean),
-           let childTypeIDs = xiguaChildTypeIDs(for: sortData.id) {
-            var merged: [Movie.Video] = []
-            var seen = Set<String>()
-            var successfulResponses = 0
-            var lastError: Error?
-
-            // 西瓜的 1/2/3/4 是聚合父类，逐个请求 Android 端使用的子分类。
-            for childTypeID in childTypeIDs {
-                var queryItems: [URLQueryItem] = [
-                    URLQueryItem(name: "ac", value: "videolist"),
-                    URLQueryItem(name: "t", value: childTypeID),
-                    URLQueryItem(name: "pg", value: String(page))
-                ]
-                if let filters {
-                    queryItems.append(contentsOf: filters.map {
-                        URLQueryItem(name: $0.key, value: $0.value)
-                    })
-                }
-
-                guard let childURL = try? buildURL(base: api, queryItems: queryItems) else {
-                    continue
-                }
-
-                let childJSON: String
-                do {
-                    childJSON = try await getString(from: childURL, sourceBean: sourceBean, expectation: .catalog)
-                } catch {
-                    lastError = error
-                    continue
-                }
-
-                let childVideos: [Movie.Video]
-                do {
-                    childVideos = try parseVideoList(
-                        normalizedResponse(childJSON, sourceBean: sourceBean),
-                        sourceKey: sourceBean.key,
-                        type: sourceBean.type
-                    )
-                } catch {
-                    lastError = error
-                    continue
-                }
-                successfulResponses += 1
-                for video in childVideos {
-                    let deduplicationKey = video.id.isEmpty ? "name:\(video.name)" : "id:\(video.id)"
-                    guard seen.insert(deduplicationKey).inserted else { continue }
-                    merged.append(video)
-                    if merged.count == 20 { return merged }
-                }
-            }
-            if successfulResponses == 0, let lastError {
-                throw lastError
-            }
-            return merged
-        }
 
         let url: String
         if sourceBean.type == 0 {
@@ -840,16 +788,6 @@ class SourceService {
             || key.contains("xigua")
             || api.contains("xgzyapi.com")
             || api.contains("xiguam3u8")
-    }
-
-    private func xiguaChildTypeIDs(for parentID: String) -> [String]? {
-        switch parentID {
-        case "1": return ["6", "7", "8", "9", "10", "11", "12", "20", "34", "37"]
-        case "2": return ["13", "14", "15", "16", "21", "22", "23", "24"]
-        case "3": return ["25", "26", "27", "28"]
-        case "4": return ["29", "30", "31", "32", "33"]
-        default: return nil
-        }
     }
 
     private func parseXMLDetail(_ xml: String, sourceKey: String) -> VodInfo? {

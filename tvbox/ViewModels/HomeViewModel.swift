@@ -231,7 +231,8 @@ class HomeViewModel: ObservableObject {
         
         do {
             let videos = try await sourceService.getList(sourceBean: source, sortData: sort, page: page)
-            let enrichedVideos = await PosterCache.shared.fill(videos)
+            let filteredVideos = strictCategoryVideos(videos, for: sort, source: source)
+            let enrichedVideos = await PosterCache.shared.fill(filteredVideos)
             
             // 分类切换过程中，丢弃旧请求结果
             guard selectedSort?.id == sort.id else { return }
@@ -298,7 +299,8 @@ class HomeViewModel: ObservableObject {
         defer { isLoading = false }
         do {
             let videos = try await sourceService.getList(sourceBean: source, sortData: firstCategory, page: 1)
-            let enrichedVideos = await PosterCache.shared.fill(videos)
+            let filteredVideos = strictCategoryVideos(videos, for: firstCategory, source: source)
+            let enrichedVideos = await PosterCache.shared.fill(filteredVideos)
             guard requestGeneration == refreshGeneration else { return }
 
             if enrichedVideos.isEmpty && !categoryVideos.isEmpty {
@@ -323,8 +325,7 @@ class HomeViewModel: ObservableObject {
         }
     }
 
-    /// 过滤明显的父分类并按安卓版规则稳定排序。
-    /// 仅对西瓜额外过滤 1/2/3/4，这些 ID 在西瓜接口中是电影/剧集/综艺/动漫聚合入口。
+    /// 过滤父分类并按安卓版规则稳定排序，只保留首页可直接请求的子分类。
     private func visibleChildSorts(_ sourceSorts: [MovieSort.SortData], source: SourceBean) -> [MovieSort.SortData] {
         let isXigua = isXiguaSource(source)
         var seen = Set<String>()
@@ -332,7 +333,15 @@ class HomeViewModel: ObservableObject {
             let id = sort.id.trimmingCharacters(in: .whitespacesAndNewlines)
             let name = normalizedCategoryName(sort.name)
             guard !id.isEmpty, !name.isEmpty, id != "home" else { return false }
-            if isXigua && ["1", "2", "3", "4"].contains(id) { return false }
+            if isXigua {
+                if !sort.parentID.isEmpty {
+                    // 西瓜接口的 type_pid=0 是父分类；主页只显示真正的子分类。
+                    guard sort.parentID != "0" else { return false }
+                } else if ["1", "2", "3", "4", "36", "46"].contains(id) {
+                    // 兼容旧接口未返回 type_pid 的情况。
+                    return false
+                }
+            }
             if obviousParentCategoryNames.contains(name) { return false }
             let dedupKey = "\(id)|\(name)"
             return seen.insert(dedupKey).inserted
@@ -354,7 +363,22 @@ class HomeViewModel: ObservableObject {
     }
 
     private var obviousParentCategoryNames: Set<String> {
-        ["电影", "电影片", "电影类", "电视剧", "连续剧", "电视剧类", "剧集", "影视", "影视剧", "综艺", "综艺片", "综艺类", "动漫", "动漫类"]
+        ["电影", "电影片", "电影类", "电视剧", "连续剧", "电视剧类", "剧集", "影视", "影视剧", "综艺", "综艺片", "综艺类", "动漫", "动漫类", "短剧", "短剧类", "体育", "体育类", "体育赛事"]
+    }
+
+    /// 分类接口偶尔会把推荐或父分类数据混进 list；首页分类只接受精确的子分类 type_id。
+    private func strictCategoryVideos(
+        _ videos: [Movie.Video],
+        for sort: MovieSort.SortData,
+        source: SourceBean
+    ) -> [Movie.Video] {
+        guard isXiguaSource(source) else { return videos }
+        let categoryID = sort.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !categoryID.isEmpty, categoryID != "home" else { return [] }
+        return videos.filter { video in
+            let videoTypeID = video.tid.trimmingCharacters(in: .whitespacesAndNewlines)
+            !videoTypeID.isEmpty && videoTypeID == categoryID
+        }
     }
 
     private func normalizedCategoryName(_ value: String) -> String {

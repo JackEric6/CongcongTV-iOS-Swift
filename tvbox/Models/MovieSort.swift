@@ -9,6 +9,8 @@ struct MovieSort: Codable {
     struct SortData: Codable, Identifiable, Hashable {
         /// 分类唯一标识（接口字段通常为 type_id）。
         var id: String
+        /// 父分类唯一标识（接口字段通常为 type_pid）。"0" 表示顶级父分类。
+        var parentID: String = ""
         /// 分类显示名。
         var name: String = ""
         /// 标记位（不同源可定义不同语义，常用于首页/推荐标识）。
@@ -16,8 +18,9 @@ struct MovieSort: Codable {
         /// 分类下可选筛选项（年份、地区、类型等）。
         var filters: [SortFilter] = []
         
-        init(id: String = "", name: String = "", flag: String = "") {
+        init(id: String = "", name: String = "", flag: String = "", parentID: String = "") {
             self.id = id
+            self.parentID = parentID
             self.name = name
             self.flag = flag
         }
