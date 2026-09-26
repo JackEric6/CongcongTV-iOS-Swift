@@ -189,9 +189,11 @@ final class DownloadManager: NSObject, ObservableObject {
 
         let task: URLSessionTask
         if mediaKind == .hls {
+            // The symbolic AVURLAssetHTTPHeaderFieldsKey is absent from the
+            // current SDK overlay; its documented raw key remains accepted.
             let assetOptions: [String: Any]? = request.headers.isEmpty
                 ? nil
-                : [AVURLAssetHTTPHeaderFieldsKey: request.headers]
+                : ["AVURLAssetHTTPHeaderFieldsKey": request.headers]
             let asset = AVURLAsset(url: request.url, options: assetOptions)
             guard let assetTask = assetSession.makeAssetDownloadTask(
                 asset: asset,
@@ -302,7 +304,7 @@ final class DownloadManager: NSObject, ObservableObject {
     private func startHLSDownload(identifier: String, item: DownloadItem, url: URL) {
         let assetOptions: [String: Any]? = item.headers.isEmpty
             ? nil
-            : [AVURLAssetHTTPHeaderFieldsKey: item.headers]
+            : ["AVURLAssetHTTPHeaderFieldsKey": item.headers]
         let asset = AVURLAsset(url: url, options: assetOptions)
         guard let task = assetSession.makeAssetDownloadTask(
             asset: asset,
@@ -323,7 +325,7 @@ final class DownloadManager: NSObject, ObservableObject {
         task.resume()
     }
 
-    private static func looksLikeHLS(response: URLResponse?, location: URL) -> Bool {
+    nonisolated private static func looksLikeHLS(response: URLResponse?, location: URL) -> Bool {
         if let mimeType = response?.mimeType?.lowercased(), mimeType.contains("mpegurl") {
             return true
         }
@@ -334,7 +336,7 @@ final class DownloadManager: NSObject, ObservableObject {
         return text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U")
     }
 
-    private static func looksLikeHTML(response: URLResponse?, location: URL) -> Bool {
+    nonisolated private static func looksLikeHTML(response: URLResponse?, location: URL) -> Bool {
         if let mimeType = response?.mimeType?.lowercased(), mimeType.contains("text/html") {
             return true
         }
@@ -590,7 +592,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
 
 extension DownloadManager: AVAssetDownloadDelegate {
     nonisolated func urlSession(
-        _ session: AVAssetDownloadURLSession,
+        _ session: URLSession,
         assetDownloadTask: AVAssetDownloadTask,
         didLoad timeRange: CMTimeRange,
         totalTimeRangesLoaded loadedTimeRanges: [NSValue],
@@ -610,7 +612,7 @@ extension DownloadManager: AVAssetDownloadDelegate {
     }
 
     nonisolated func urlSession(
-        _ session: AVAssetDownloadURLSession,
+        _ session: URLSession,
         assetDownloadTask: AVAssetDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
