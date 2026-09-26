@@ -69,7 +69,7 @@ struct KSPlayerVodPlayerView: View {
     }
 }
 
-private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
+private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureRecognizerDelegate {
     private weak var interactivePopGestureRecognizer: UIGestureRecognizer?
     private weak var inlineSuperview: UIView?
     private var inlineFrameConstraints: [NSLayoutConstraint] = []
@@ -90,6 +90,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     var customControlsLayout: ((Bool) -> Void)?
     private var isSliderDragging = false
     private var sliderSeekCommitted = false
+    private var panStartPoint: CGPoint?
 
     override var isMaskShow: Bool {
         didSet {
@@ -526,6 +527,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
     }
 
     private func syncInteractivePopGesture() {
+        // Full-screen controller may not have a navigation controller. The
+        // slider exclusion must remain active there as well.
+        panGesture.delegate = self
         guard let navigationController = owningNavigationController,
               let popGesture = navigationController.interactivePopGestureRecognizer else {
             return
@@ -555,6 +559,50 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView {
             responder = next
         }
         return nil
+    }
+
+    // The native KSPlayer pan gesture handles both horizontal seeking and
+    // vertical brightness/volume changes. Keep the progress slider's touch
+    // area exclusive to the slider, but only suppress horizontal pans there
+    // so vertical gestures retain their normal behavior.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldReceive touch: UITouch
+    ) -> Bool {
+        guard gestureRecognizer === panGesture else { return true }
+        panStartPoint = touch.location(in: self)
+        return true
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === panGesture,
+              let pan = gestureRecognizer as? UIPanGestureRecognizer else {
+            return true
+        }
+
+        let velocity = pan.velocity(in: self)
+        guard abs(velocity.x) > abs(velocity.y), abs(velocity.x) > 1 else {
+            return true
+        }
+
+        let touchPoint = panStartPoint ?? pan.location(in: self)
+        panStartPoint = nil
+        return !isProgressSliderTouchArea(touchPoint)
+    }
+
+    private func isProgressSliderTouchArea(_ point: CGPoint) -> Bool {
+        guard !toolBar.timeSlider.isHidden,
+              toolBar.timeSlider.bounds.width > 0,
+              toolBar.timeSlider.bounds.height > 0 else {
+            return false
+        }
+
+        var sliderFrame = toolBar.timeSlider.convert(toolBar.timeSlider.bounds, to: self)
+        // Include the visual toolbar row around the thumb/track, while
+        // avoiding a full-height exclusion that would make the player feel
+        // unresponsive near the bottom edge.
+        sliderFrame = sliderFrame.insetBy(dx: -12, dy: -18)
+        return sliderFrame.contains(point)
     }
 }
 

@@ -6,8 +6,6 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     /// 网络连接状态。
     @EnvironmentObject var networkMonitor: NetworkMonitor
-    /// 设置页 ViewModel。根视图复用它处理首次配置与多仓库选择。
-    @StateObject private var settingsVM = SettingsViewModel()
     /// 当前主标签索引。
     @State private var selectedTab = 0
     
@@ -15,7 +13,6 @@ struct ContentView: View {
         Group {
             mainTabView
         }
-        .overlay(multiRepoSelectionOverlay)
         .overlay(alignment: .top) {
             networkStatusBanner
         }
@@ -23,39 +20,18 @@ struct ContentView: View {
         .onAppear {
             // 自动加载已保存的配置
             let defaults = UserDefaults.standard
-            let savedVodUrl = defaults.string(forKey: HawkConfig.API_URL) ?? CongcongBrand.defaultConfigURL
-            let savedLiveUrl = defaults.string(forKey: HawkConfig.LIVE_API_URL) ?? savedVodUrl
+            let savedVodUrl = defaults.string(forKey: HawkConfig.API_URL)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .flatMap { $0.isEmpty ? nil : $0 } ?? CongcongBrand.defaultConfigURL
+            let savedLiveUrl = defaults.string(forKey: HawkConfig.LIVE_API_URL)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .flatMap { $0.isEmpty ? nil : $0 } ?? savedVodUrl
             if !savedVodUrl.isEmpty {
                 // 启动自动恢复配置，避免每次重启都回到首次配置页。
                 Task {
                     await appState.loadConfig(vodUrl: savedVodUrl, liveUrl: savedLiveUrl)
                 }
             }
-        }
-    }
-    
-    @ViewBuilder
-    private var multiRepoSelectionOverlay: some View {
-        // 若配置地址解析出“多仓库入口”，在根层统一弹窗，避免被子页面导航遮挡。
-        if let pending = settingsVM.pendingMultiRepoSelection {
-            SelectionModal(
-                title: "选择\(pending.target.title)仓库",
-                icon: "list.bullet.rectangle.portrait.fill",
-                items: pending.options,
-                selectedItem: nil,
-                itemTitle: { $0.name },
-                onSelect: { option in
-                    Task {
-                        await settingsVM.selectPendingMultiRepoOption(option)
-                        if settingsVM.configSuccess {
-                            appState.applyLoadedConfigState()
-                        }
-                    }
-                },
-                onCancel: {
-                    settingsVM.cancelPendingMultiRepoSelection()
-                }
-            )
         }
     }
     

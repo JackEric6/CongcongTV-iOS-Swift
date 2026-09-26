@@ -12,6 +12,7 @@ struct DetailView: View {
     @StateObject private var viewModel = DetailViewModel()
     @StateObject private var sharedSystemController = SystemPlayerSessionController()
     @StateObject private var sharedVLCController = VLCPlayerController()
+    @StateObject private var downloadManager = DownloadManager.shared
     @ObservedObject private var apiConfig = ApiConfig.shared
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
@@ -25,6 +26,8 @@ struct DetailView: View {
     @State private var playbackSessionToken = UUID()
     @State private var isCollected = false
     @State private var showEpisodePicker = false
+    @State private var showDownloadAlert = false
+    @State private var downloadAlertMessage = ""
     #if os(iOS)
     @State private var isDescriptionExpanded = false
     #endif
@@ -105,6 +108,11 @@ struct DetailView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .alert("影片下载", isPresented: $showDownloadAlert) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(downloadAlertMessage)
+        }
         .sheet(isPresented: $showEpisodePicker) {
             EpisodePickerSheet(
                 episodes: viewModel.currentEpisodes,
@@ -281,6 +289,7 @@ struct DetailView: View {
                 if !viewModel.isPlaying {
                     playButton
                 }
+                downloadButton
                 collectButton
             }
 
@@ -454,6 +463,81 @@ struct DetailView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    private var currentDownloadIdentifier: String {
+        DownloadRequest.identifier(
+            sourceKey: video.sourceKey,
+            videoID: video.id,
+            episodeIndex: viewModel.selectedEpisodeIndex
+        )
+    }
+
+    @ViewBuilder
+    private var downloadButton: some View {
+        let item = downloadManager.item(identifier: currentDownloadIdentifier)
+        Button {
+            startDownloadCurrentEpisode()
+        } label: {
+            Image(systemName: downloadIcon(for: item?.status))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(item?.status == .completed ? .green : .white)
+                .frame(width: 42, height: 42)
+                .background(Color.white.opacity(0.08))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(downloadAccessibilityLabel(for: item?.status))
+        .disabled(item?.status == .downloading || viewModel.playUrl == nil)
+    }
+
+    private func downloadIcon(for status: DownloadStatus?) -> String {
+        switch status {
+        case .completed: return "checkmark"
+        case .downloading, .queued: return "arrow.down.circle"
+        case .failed: return "arrow.clockwise"
+        case .cancelled, .none: return "arrow.down.circle"
+        }
+    }
+
+    private func downloadAccessibilityLabel(for status: DownloadStatus?) -> String {
+        switch status {
+        case .completed: return "已下载"
+        case .downloading, .queued: return "正在下载"
+        case .failed: return "重新下载"
+        case .cancelled, .none: return "下载当前集"
+        }
+    }
+
+    private func startDownloadCurrentEpisode() {
+        guard let rawURL = viewModel.playUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let url = URL(string: rawURL),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            downloadAlertMessage = "当前集没有可下载的播放地址"
+            showDownloadAlert = true
+            return
+        }
+
+        let episodeName = viewModel.vodInfo?.currentEpisode?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let title = displayName.isEmpty ? video.name : displayName
+        let sourceHeaders = apiConfig.getSource(key: video.sourceKey)?.headers ?? [:]
+        let request = DownloadRequest(
+            identifier: currentDownloadIdentifier,
+            title: title,
+            sourceKey: video.sourceKey,
+            videoID: video.id,
+            episodeIndex: viewModel.selectedEpisodeIndex,
+            episodeName: episodeName,
+            url: url,
+            headers: sourceHeaders
+        )
+
+        do {
+            _ = try downloadManager.start(request)
+        } catch {
+            downloadAlertMessage = error.localizedDescription
+            showDownloadAlert = true
+        }
     }
     
     @ViewBuilder
