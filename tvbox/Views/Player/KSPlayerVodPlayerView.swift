@@ -70,7 +70,7 @@ struct KSPlayerVodPlayerView: View {
 }
 
 private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureRecognizerDelegate {
-    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
+    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     private weak var interactivePopGestureRecognizer: UIGestureRecognizer?
     private weak var inlineSuperview: UIView?
     private var inlineFrameConstraints: [NSLayoutConstraint] = []
@@ -725,7 +725,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 }
 
 private struct KSPlayerUIView: UIViewRepresentable {
-    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
+    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     let url: URL
     let startPosition: Double

@@ -224,7 +224,7 @@ struct PlayerView: View {
 
 /// 基于系统 AVPlayer 的点播播放器实现
 struct AVPlayerContentView: View {
-    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
+    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     let urlString: String
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil

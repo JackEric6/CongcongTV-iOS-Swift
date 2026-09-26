@@ -9,7 +9,7 @@ import UIKit
 
 @MainActor
 final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDelegate {
-    static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
+    static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     private static let defaultVolume = 100
     private static let maxVolume = 200
     private static let drawableSizeChangeThreshold: CGFloat = 24
