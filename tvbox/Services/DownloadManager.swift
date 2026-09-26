@@ -1,6 +1,21 @@
 import Combine
 import CryptoKit
+import AVFoundation
 import Foundation
+
+/// AVAssetDownloadDelegate 的回调必须在返回前接管 .movpkg，避免系统清理临时位置。
+private func stableHLSDownloadURL(taskIdentifier: Int) throws -> URL {
+    let applicationSupport = FileManager.default.urls(
+        for: .applicationSupportDirectory,
+        in: .userDomainMask
+    ).first ?? FileManager.default.temporaryDirectory
+    let downloadsDirectory = applicationSupport.appendingPathComponent("Downloads", isDirectory: true)
+    try FileManager.default.createDirectory(at: downloadsDirectory, withIntermediateDirectories: true)
+    return downloadsDirectory.appendingPathComponent(
+        "congcong-hls-\(taskIdentifier)-\(UUID().uuidString).movpkg",
+        isDirectory: true
+    )
+}
 
 /// 可下载的实际播放地址。`identifier` 应由调用方使用 sourceKey、影片 ID 和集数组成，
 /// 不能使用搜索结果的临时索引，以便同一集在重启后仍能查询到。
@@ -49,6 +64,11 @@ enum DownloadStatus: Equatable, Sendable {
     case cancelled
 }
 
+enum DownloadMediaKind: String, Codable, Sendable {
+    case directFile
+    case hls
+}
+
 struct DownloadItem: Identifiable, Equatable, Sendable {
     let id: String
     let title: String
@@ -56,7 +76,9 @@ struct DownloadItem: Identifiable, Equatable, Sendable {
     let videoID: String
     let episodeIndex: Int
     let episodeName: String
+    let headers: [String: String]
     let url: URL
+    var mediaKind: DownloadMediaKind
     var status: DownloadStatus
     var progress: Double
     var bytesWritten: Int64
@@ -95,8 +117,9 @@ final class DownloadManager: NSObject, ObservableObject {
     private let downloadsDirectory: URL
     private let manifestURL: URL
     private var session: URLSession!
+    private var assetSession: AVAssetDownloadURLSession!
     private var taskIDs: [Int: String] = [:]
-    private var activeTasks: [Int: URLSessionDownloadTask] = [:]
+    private var activeTasks: [Int: URLSessionTask] = [:]
 
     private override init() {
         let applicationSupport = FileManager.default.urls(
@@ -116,6 +139,16 @@ final class DownloadManager: NSObject, ObservableObject {
         configuration.httpMaximumConnectionsPerHost = 2
         configuration.waitsForConnectivity = true
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+
+        let assetConfiguration = URLSessionConfiguration.default
+        assetConfiguration.timeoutIntervalForRequest = 60
+        assetConfiguration.timeoutIntervalForResource = 24 * 60 * 60
+        assetConfiguration.waitsForConnectivity = true
+        assetSession = AVAssetDownloadURLSession(
+            configuration: assetConfiguration,
+            assetDownloadDelegate: self,
+            delegateQueue: nil
+        )
     }
 
     /// 开始下载。重复调用同一 identifier 时会复用已完成文件或抛出正在下载错误。
@@ -123,12 +156,6 @@ final class DownloadManager: NSObject, ObservableObject {
     func start(_ request: DownloadRequest) throws -> DownloadItem {
         guard request.url.scheme?.lowercased() == "http" || request.url.scheme?.lowercased() == "https" else {
             throw DownloadError.invalidURL
-        }
-        let normalizedURL = request.url.absoluteString.lowercased()
-        guard request.url.pathExtension.lowercased() != "m3u8",
-              !normalizedURL.contains(".m3u8"),
-              !normalizedURL.contains("format=m3u8") else {
-            throw DownloadError.unsupportedStream
         }
         guard taskIDs.values.contains(request.identifier) == false else {
             throw DownloadError.alreadyDownloading
@@ -141,6 +168,7 @@ final class DownloadManager: NSObject, ObservableObject {
             return existing
         }
 
+        let mediaKind = Self.mediaKind(for: request.url)
         let item = DownloadItem(
             id: request.identifier,
             title: request.title,
@@ -148,7 +176,9 @@ final class DownloadManager: NSObject, ObservableObject {
             videoID: request.videoID,
             episodeIndex: request.episodeIndex,
             episodeName: request.episodeName,
+            headers: request.headers,
             url: request.url,
+            mediaKind: mediaKind,
             status: .queued,
             progress: 0,
             bytesWritten: 0,
@@ -157,9 +187,27 @@ final class DownloadManager: NSObject, ObservableObject {
         )
         items[request.identifier] = item
 
-        var urlRequest = URLRequest(url: request.url)
-        request.headers.forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
-        let task = session.downloadTask(with: urlRequest)
+        let task: URLSessionTask
+        if mediaKind == .hls {
+            let assetOptions: [String: Any]? = request.headers.isEmpty
+                ? nil
+                : [AVURLAssetHTTPHeaderFieldsKey: request.headers]
+            let asset = AVURLAsset(url: request.url, options: assetOptions)
+            guard let assetTask = assetSession.makeAssetDownloadTask(
+                asset: asset,
+                assetTitle: request.title,
+                assetArtworkData: nil,
+                options: nil
+            ) else {
+                items.removeValue(forKey: request.identifier)
+                throw DownloadError.downloadFailed("系统无法创建 HLS 离线缓存任务")
+            }
+            task = assetTask
+        } else {
+            var urlRequest = URLRequest(url: request.url)
+            request.headers.forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
+            task = session.downloadTask(with: urlRequest)
+        }
         taskIDs[task.taskIdentifier] = request.identifier
         activeTasks[task.taskIdentifier] = task
         task.resume()
@@ -200,7 +248,8 @@ final class DownloadManager: NSObject, ObservableObject {
         guard let item = items[identifier],
               item.status == .completed,
               let localURL = item.localURL,
-              fileManager.fileExists(atPath: localURL.path) else { return nil }
+              fileManager.fileExists(atPath: localURL.path),
+              isPlayableLocalURL(localURL, mediaKind: item.mediaKind) else { return nil }
         return localURL
     }
 
@@ -210,6 +259,18 @@ final class DownloadManager: NSObject, ObservableObject {
 
     func allItems() -> [DownloadItem] {
         items.values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    /// AVAssetDownloadURLSession returns a `.movpkg` directory for HLS.
+    /// Treat both regular files and downloaded asset packages as playable;
+    /// this also prevents stale manifest entries from opening a broken sheet.
+    private func isPlayableLocalURL(_ url: URL, mediaKind: DownloadMediaKind) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return false }
+        if mediaKind == .hls {
+            return isDirectory.boolValue || url.pathExtension.lowercased() == "movpkg"
+        }
+        return !isDirectory.boolValue
     }
 
     private func updateStatus(for identifier: String, status: DownloadStatus) {
@@ -229,6 +290,60 @@ final class DownloadManager: NSObject, ObservableObject {
         item.totalBytes = totalBytes
         item.progress = totalBytes > 0 ? min(1, max(0, Double(bytesWritten) / Double(totalBytes))) : 0
         items[identifier] = item
+    }
+
+    private func updateProgress(for identifier: String, progress: Double) {
+        guard var item = items[identifier] else { return }
+        item.status = .downloading
+        item.progress = min(1, max(0, progress.isFinite ? progress : 0))
+        items[identifier] = item
+    }
+
+    private func startHLSDownload(identifier: String, item: DownloadItem, url: URL) {
+        let assetOptions: [String: Any]? = item.headers.isEmpty
+            ? nil
+            : [AVURLAssetHTTPHeaderFieldsKey: item.headers]
+        let asset = AVURLAsset(url: url, options: assetOptions)
+        guard let task = assetSession.makeAssetDownloadTask(
+            asset: asset,
+            assetTitle: item.title,
+            assetArtworkData: nil,
+            options: nil
+        ) else {
+            updateStatus(for: identifier, status: .failed("系统无法创建 HLS 离线缓存任务"))
+            return
+        }
+        var updated = item
+        updated.mediaKind = .hls
+        updated.progress = 0
+        updated.status = .downloading
+        items[identifier] = updated
+        taskIDs[task.taskIdentifier] = identifier
+        activeTasks[task.taskIdentifier] = task
+        task.resume()
+    }
+
+    private static func looksLikeHLS(response: URLResponse?, location: URL) -> Bool {
+        if let mimeType = response?.mimeType?.lowercased(), mimeType.contains("mpegurl") {
+            return true
+        }
+        guard let handle = try? FileHandle(forReadingFrom: location) else { return false }
+        let prefix = (try? handle.read(upToCount: 256)) ?? Data()
+        try? handle.close()
+        guard let text = String(data: prefix, encoding: .utf8) else { return false }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U")
+    }
+
+    private static func looksLikeHTML(response: URLResponse?, location: URL) -> Bool {
+        if let mimeType = response?.mimeType?.lowercased(), mimeType.contains("text/html") {
+            return true
+        }
+        guard let handle = try? FileHandle(forReadingFrom: location) else { return false }
+        let prefix = (try? handle.read(upToCount: 256)) ?? Data()
+        try? handle.close()
+        guard let text = String(data: prefix, encoding: .utf8) else { return false }
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.hasPrefix("<!doctype html") || normalized.hasPrefix("<html")
     }
 
     private func destinationURL(for item: DownloadItem, mimeType: String?) -> URL {
@@ -273,7 +388,10 @@ final class DownloadManager: NSObject, ObservableObject {
         guard let data = try? Data(contentsOf: manifestURL),
               let entries = try? JSONDecoder().decode([ManifestEntry].self, from: data) else { return }
         for entry in entries {
-            let localURL = downloadsDirectory.appendingPathComponent(entry.fileName)
+            guard let localURL = entry.localURL
+                ?? entry.fileName.map({ downloadsDirectory.appendingPathComponent($0) }) else {
+                continue
+            }
             guard fileManager.fileExists(atPath: localURL.path) else { continue }
             items[entry.id] = DownloadItem(
                 id: entry.id,
@@ -282,7 +400,9 @@ final class DownloadManager: NSObject, ObservableObject {
                 videoID: entry.videoID,
                 episodeIndex: entry.episodeIndex,
                 episodeName: entry.episodeName ?? "",
+                headers: entry.headers ?? [:],
                 url: entry.url,
+                mediaKind: entry.mediaKind ?? .directFile,
                 status: .completed,
                 progress: 1,
                 bytesWritten: entry.totalBytes,
@@ -304,8 +424,11 @@ final class DownloadManager: NSObject, ObservableObject {
                 videoID: item.videoID,
                 episodeIndex: item.episodeIndex,
                 episodeName: item.episodeName,
+                headers: item.headers,
                 url: item.url,
                 fileName: localURL.lastPathComponent,
+                localURL: localURL,
+                mediaKind: item.mediaKind,
                 totalBytes: item.totalBytes
             )
         }
@@ -320,9 +443,20 @@ final class DownloadManager: NSObject, ObservableObject {
         let videoID: String
         let episodeIndex: Int
         let episodeName: String?
+        let headers: [String: String]?
         let url: URL
-        let fileName: String
+        let fileName: String?
+        let localURL: URL?
+        let mediaKind: DownloadMediaKind?
         let totalBytes: Int64
+    }
+
+    private static func mediaKind(for url: URL) -> DownloadMediaKind {
+        let value = url.absoluteString.lowercased()
+        if value.contains(".m3u8") || value.contains("format=m3u8") {
+            return .hls
+        }
+        return .directFile
     }
 }
 
@@ -353,16 +487,34 @@ extension DownloadManager: URLSessionDownloadDelegate {
     ) {
         let taskIdentifier = downloadTask.taskIdentifier
         let mimeType = downloadTask.response?.mimeType
-        if let mimeType,
-           mimeType.lowercased().contains("mpegurl") || mimeType.lowercased().contains("text/html") {
+        if Self.looksLikeHLS(response: downloadTask.response, location: location) {
+            let finalURL = downloadTask.response?.url
+            Task { @MainActor [weak self] in
+                guard let self,
+                      let identifier = self.taskIDs.removeValue(forKey: taskIdentifier),
+                      let item = self.items[identifier] else { return }
+                self.activeTasks.removeValue(forKey: taskIdentifier)
+                self.startHLSDownload(identifier: identifier, item: item, url: finalURL ?? item.url)
+            }
+            return
+        }
+        if let response = downloadTask.response as? HTTPURLResponse,
+           !(200...299).contains(response.statusCode) {
+            let message = "服务器返回 HTTP \(response.statusCode)，无法缓存"
             Task { @MainActor [weak self] in
                 guard let self,
                       let identifier = self.taskIDs.removeValue(forKey: taskIdentifier) else { return }
                 self.activeTasks.removeValue(forKey: taskIdentifier)
-                self.updateStatus(
-                    for: identifier,
-                    status: .failed("服务器返回的不是可下载视频文件")
-                )
+                self.updateStatus(for: identifier, status: .failed(message))
+            }
+            return
+        }
+        if Self.looksLikeHTML(response: downloadTask.response, location: location) {
+            Task { @MainActor [weak self] in
+                guard let self,
+                      let identifier = self.taskIDs.removeValue(forKey: taskIdentifier) else { return }
+                self.activeTasks.removeValue(forKey: taskIdentifier)
+                self.updateStatus(for: identifier, status: .failed("服务器返回了网页而不是可播放媒体"))
             }
             return
         }
@@ -432,6 +584,67 @@ extension DownloadManager: URLSessionDownloadDelegate {
             } else {
                 self.updateStatus(for: identifier, status: .failed(errorMessage))
             }
+        }
+    }
+}
+
+extension DownloadManager: AVAssetDownloadDelegate {
+    nonisolated func urlSession(
+        _ session: AVAssetDownloadURLSession,
+        assetDownloadTask: AVAssetDownloadTask,
+        didLoad timeRange: CMTimeRange,
+        totalTimeRangesLoaded loadedTimeRanges: [NSValue],
+        timeRangeExpectedToLoad: CMTimeRange
+    ) {
+        let taskIdentifier = assetDownloadTask.taskIdentifier
+        let loadedDuration = loadedTimeRanges.reduce(0.0) { partialResult, value in
+            partialResult + value.timeRangeValue.duration.seconds
+        }
+        let expectedDuration = timeRangeExpectedToLoad.duration.seconds
+        let progress = expectedDuration > 0 ? loadedDuration / expectedDuration : 0
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let identifier = self.taskIDs[taskIdentifier] else { return }
+            self.updateProgress(for: identifier, progress: progress)
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: AVAssetDownloadURLSession,
+        assetDownloadTask: AVAssetDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        let taskIdentifier = assetDownloadTask.taskIdentifier
+        let stableURL: URL
+        do {
+            stableURL = try stableHLSDownloadURL(taskIdentifier: taskIdentifier)
+            if FileManager.default.fileExists(atPath: stableURL.path) {
+                try FileManager.default.removeItem(at: stableURL)
+            }
+            // This move is intentionally synchronous and happens before the
+            // delegate callback returns; the temporary .movpkg is not retained.
+            try FileManager.default.moveItem(at: location, to: stableURL)
+        } catch {
+            let errorMessage = error.localizedDescription
+            Task { @MainActor [weak self] in
+                guard let self,
+                      let identifier = self.taskIDs.removeValue(forKey: taskIdentifier) else { return }
+                self.activeTasks.removeValue(forKey: taskIdentifier)
+                self.updateStatus(for: identifier, status: .failed("保存 HLS 离线文件失败：\(errorMessage)"))
+            }
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let identifier = self.taskIDs.removeValue(forKey: taskIdentifier),
+                  var item = self.items[identifier] else { return }
+            item.mediaKind = .hls
+            item.status = .completed
+            item.progress = 1
+            item.localURL = stableURL
+            self.items[identifier] = item
+            self.activeTasks.removeValue(forKey: taskIdentifier)
+            self.saveManifest()
         }
     }
 }

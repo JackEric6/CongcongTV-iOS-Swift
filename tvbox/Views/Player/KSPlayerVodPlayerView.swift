@@ -91,6 +91,19 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private var isSliderDragging = false
     private var sliderSeekCommitted = false
     private var panStartPoint: CGPoint?
+    private var seekPanStartPoint: CGPoint?
+    private var seekStartTime: TimeInterval = 0
+    private var seekDuration: TimeInterval = 0
+    private var seekPreviewTime: TimeInterval = 0
+    private var isCustomSeeking = false
+    private var seekGestureInstalled = false
+    private lazy var horizontalSeekGesture: UIPanGestureRecognizer = {
+        let gesture = UIPanGestureRecognizer(target: self, action: #selector(horizontalSeekGestureAction(_:)))
+        gesture.delegate = self
+        gesture.cancelsTouchesInView = false
+        gesture.maximumNumberOfTouches = 1
+        return gesture
+    }()
 
     override var isMaskShow: Bool {
         didSet {
@@ -177,6 +190,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         updateDeviceStatus(isLandscape: isLandscape)
         customControlsLayout?(isLandscape)
         owningViewController?.setNeedsStatusBarAppearanceUpdate()
+        refreshGestureAvailability()
     }
 
     override func slider(value: Double, event: ControlEvents) {
@@ -232,7 +246,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
             deviceStatusTimer = nil
         }
         applyTransparentSurfaces()
+        installSeekGestureIfNeeded()
         syncInteractivePopGesture()
+        refreshGestureAvailability()
     }
 
     deinit {
@@ -356,6 +372,8 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
     override func player(layer: KSPlayerLayer, state: KSPlayerState) {
         super.player(layer: layer, state: state)
+        installSeekGestureIfNeeded()
+        refreshGestureAvailability()
         guard state == .readyToPlay else { return }
 
         if !didApplyStartPosition,
@@ -397,7 +415,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     override func didMoveToSuperview() {
         super.didMoveToSuperview()
         applyTransparentSurfaces()
+        installSeekGestureIfNeeded()
         syncInteractivePopGesture()
+        refreshGestureAvailability()
     }
 
     private func captureInlineLayout() {
@@ -529,7 +549,13 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private func syncInteractivePopGesture() {
         // Full-screen controller may not have a navigation controller. The
         // slider exclusion must remain active there as well.
-        panGesture.delegate = self
+        // KSPlayer currently leaves this delegate unset. Only claim it when
+        // it is available (or already ours), so a future KSPlayer delegate is
+        // never overwritten on every view lifecycle callback.
+        if panGesture.delegate == nil || panGesture.delegate === self {
+            panGesture.delegate = self
+        }
+        panGesture.cancelsTouchesInView = false
         guard let navigationController = owningNavigationController,
               let popGesture = navigationController.interactivePopGestureRecognizer else {
             return
@@ -537,10 +563,6 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
         if interactivePopGestureRecognizer !== popGesture {
             interactivePopGestureRecognizer = popGesture
-            // KSPlayer 的 pan 手势覆盖在播放器控制层上；让系统边缘返回
-            // 优先识别，避免左滑偶发被播放器快进手势吞掉。
-            panGesture.require(toFail: popGesture)
-            panGesture.cancelsTouchesInView = false
         }
 
         popGesture.isEnabled = !landscapeButton.isSelected
@@ -561,6 +583,23 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         return nil
     }
 
+    private func installSeekGestureIfNeeded() {
+        guard !seekGestureInstalled else { return }
+        controllerView.addGestureRecognizer(horizontalSeekGesture)
+        // Horizontal seeking owns horizontal pans. If it declines a vertical
+        // gesture, KSPlayer's native pan remains free to handle brightness or
+        // volume adjustment.
+        panGesture.require(toFail: horizontalSeekGesture)
+        seekGestureInstalled = true
+    }
+
+    private func refreshGestureAvailability() {
+        let canSeek = toolBar.isSeekable && !replayButton.isSelected && !isLock
+        let nativeCanSeek = canSeek && (landscapeButton.isSelected || toolBar.playButton.isSelected)
+        panGesture.isEnabled = nativeCanSeek
+        horizontalSeekGesture.isEnabled = canSeek
+    }
+
     // The native KSPlayer pan gesture handles both horizontal seeking and
     // vertical brightness/volume changes. Keep the progress slider's touch
     // area exclusive to the slider, but only suppress horizontal pans there
@@ -569,25 +608,91 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         _ gestureRecognizer: UIGestureRecognizer,
         shouldReceive touch: UITouch
     ) -> Bool {
-        guard gestureRecognizer === panGesture else { return true }
-        panStartPoint = touch.location(in: self)
+        if gestureRecognizer === panGesture {
+            panStartPoint = touch.location(in: self)
+        } else if gestureRecognizer === horizontalSeekGesture {
+            let point = touch.location(in: self)
+            // Let KSSlider exclusively own touches on and around the progress
+            // track. Rejecting here is important: waiting until
+            // gestureRecognizerShouldBegin still lets the custom recognizer
+            // compete with slider tracking on some iOS versions.
+            guard !isProgressSliderTouchArea(point) else { return false }
+            seekPanStartPoint = point
+        }
         return true
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard gestureRecognizer === panGesture,
-              let pan = gestureRecognizer as? UIPanGestureRecognizer else {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+              gestureRecognizer === panGesture || gestureRecognizer === horizontalSeekGesture else {
             return true
         }
 
         let velocity = pan.velocity(in: self)
         guard abs(velocity.x) > abs(velocity.y), abs(velocity.x) > 1 else {
-            return true
+            // The native KSPlayer pan remains responsible for vertical
+            // brightness/volume gestures. Our horizontal recognizer must
+            // decline them so the two recognizers do not compete.
+            return gestureRecognizer === panGesture
         }
 
-        let touchPoint = panStartPoint ?? pan.location(in: self)
-        panStartPoint = nil
+        let touchPoint: CGPoint
+        if gestureRecognizer === panGesture {
+            touchPoint = panStartPoint ?? pan.location(in: self)
+            panStartPoint = nil
+            // At the edge, let UINavigationController own the interactive
+            // pop gesture. Ordinary horizontal swipes remain seek gestures.
+            if !landscapeButton.isSelected && touchPoint.x <= 32 {
+                return false
+            }
+        } else {
+            touchPoint = seekPanStartPoint ?? pan.location(in: self)
+            seekPanStartPoint = nil
+            // Keep the portrait left-edge swipe available for
+            // UINavigationController's interactive pop gesture.
+            if !landscapeButton.isSelected && touchPoint.x <= 32 {
+                return false
+            }
+        }
         return !isProgressSliderTouchArea(touchPoint)
+    }
+
+    @objc private func horizontalSeekGestureAction(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            guard toolBar.isSeekable,
+                  !replayButton.isSelected,
+                  !isLock,
+                  seekDuration > 0 || toolBar.totalTime > 0 else {
+                return
+            }
+            seekStartTime = max(0, toolBar.currentTime)
+            seekDuration = max(toolBar.totalTime, playerLayer?.player.duration ?? 0)
+            guard seekDuration > 0 else { return }
+            seekPreviewTime = seekStartTime
+            isCustomSeeking = true
+            showSeekToView(second: seekPreviewTime, isAdd: false)
+
+        case .changed:
+            guard isCustomSeeking, seekDuration > 0 else { return }
+            let translation = gesture.translation(in: controllerView)
+            let width = max(controllerView.bounds.width, 1)
+            let delta = TimeInterval(translation.x / width) * seekDuration
+            seekPreviewTime = min(max(seekStartTime + delta, 0), seekDuration)
+            showSeekToView(second: seekPreviewTime, isAdd: seekPreviewTime >= seekStartTime)
+
+        case .ended, .cancelled, .failed:
+            guard isCustomSeeking else { return }
+            isCustomSeeking = false
+            let target = seekPreviewTime
+            hideSeekToView()
+            seek(time: target) { [weak self] _ in
+                self?.toolBar.currentTime = target
+            }
+
+        default:
+            break
+        }
     }
 
     private func isProgressSliderTouchArea(_ point: CGPoint) -> Bool {
@@ -598,11 +703,24 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         }
 
         var sliderFrame = toolBar.timeSlider.convert(toolBar.timeSlider.bounds, to: self)
-        // Include the visual toolbar row around the thumb/track, while
-        // avoiding a full-height exclusion that would make the player feel
-        // unresponsive near the bottom edge.
-        sliderFrame = sliderFrame.insetBy(dx: -12, dy: -18)
-        return sliderFrame.contains(point)
+        // Include a generous but local hit-protection band around the visual
+        // track. This prevents a horizontal seek gesture from stealing a
+        // thumb drag while leaving the rest of the video surface available.
+        sliderFrame = sliderFrame.insetBy(dx: -20, dy: -28)
+        if sliderFrame.contains(point) {
+            return true
+        }
+
+        // Some KSPlayer layouts make the slider's bounds very short while
+        // the surrounding toolbar row is taller. Protect that row as well,
+        // but only across the slider's horizontal span.
+        let rowFrame = CGRect(
+            x: sliderFrame.minX,
+            y: sliderFrame.midY - 28,
+            width: sliderFrame.width,
+            height: 56
+        )
+        return rowFrame.contains(point)
     }
 }
 

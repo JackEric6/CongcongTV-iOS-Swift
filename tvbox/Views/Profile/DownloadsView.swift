@@ -20,8 +20,13 @@ struct DownloadsView: View {
                         downloadRow(item)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                guard item.status == .completed else { return }
-                                activeItem = item
+                                guard item.status == .completed,
+                                      let localURL = downloadManager.localFileURL(identifier: item.id) else {
+                                    return
+                                }
+                                var playableItem = item
+                                playableItem.localURL = localURL
+                                activeItem = playableItem
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
@@ -116,7 +121,8 @@ private struct OfflineDownloadPlayerView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if let localURL = item.localURL {
+                if let localURL = item.localURL,
+                   FileManager.default.fileExists(atPath: localURL.path) {
                     PlayerView(
                         urlString: localURL.absoluteString,
                         onBack: { dismiss() },
@@ -125,7 +131,11 @@ private struct OfflineDownloadPlayerView: View {
                     )
                     .aspectRatio(16 / 9, contentMode: .fit)
                 } else {
-                    ContentUnavailableView("文件不存在", systemImage: "exclamationmark.triangle")
+                    ContentUnavailableView(
+                        "离线文件不可用",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("请删除该条目后重新下载")
+                    )
                 }
                 Spacer(minLength: 0)
             }
