@@ -1114,6 +1114,7 @@ private struct DownloadEpisodePickerSheet: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
