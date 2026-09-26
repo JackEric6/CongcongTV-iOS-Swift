@@ -90,13 +90,35 @@ class DetailViewModel: ObservableObject {
             if let info = try await sourceService.getDetail(sourceBean: source, vodId: video.id) {
                 let displayInfo = Self.mergeMissingMetadata(info, from: video)
                 self.vodInfo = displayInfo
-                self.selectedFlag = info.playFlag
-                self.selectedEpisodeIndex = info.playIndex
+
+                // Some CMS responses advertise a play flag or episode index
+                // that is not present in playUrlMap. Keep the detail page
+                // usable, but never let that malformed state reach the
+                // player/episode views.
+                let availableFlags = displayInfo.playFlags.filter {
+                    !displayInfo.playUrlMap[$0, default: []].isEmpty
+                }
+                let preferredFlag = displayInfo.playFlag.isEmpty
+                    ? displayInfo.playFlags.first
+                    : displayInfo.playFlag
+                let safeFlag = preferredFlag.flatMap { availableFlags.contains($0) ? $0 : nil }
+                    ?? availableFlags.first
+                    ?? displayInfo.playFlags.first
+                    ?? ""
+                self.selectedFlag = safeFlag
+                self.vodInfo?.playFlag = safeFlag
+
+                let safeEpisodes = displayInfo.playUrlMap[safeFlag] ?? []
+                let safeIndex = safeEpisodes.isEmpty
+                    ? 0
+                    : min(max(displayInfo.playIndex, 0), safeEpisodes.count - 1)
+                self.selectedEpisodeIndex = safeIndex
+                self.vodInfo?.playIndex = safeIndex
                 self.resumeSeconds = 0
                 self.realtimeProgressSeconds = 0
                 self.hasRealtimeProgressSnapshot = false
                 self.pendingResumeProtection = nil
-                if let episode = info.currentEpisode {
+                if let episode = safeEpisodes[safeIndex] {
                     updateQualityOptions(
                         for: KktvsResponseNormalizer.normalizeMediaURL(episode.url),
                         resetSelection: true
@@ -337,6 +359,7 @@ class DetailViewModel: ObservableObject {
     
     /// 选择剧集并播放
     func selectEpisode(index: Int) {
+        guard index >= 0, index < currentEpisodes.count else { return }
         guard selectedEpisodeIndex != index || !isPlaying else { return }
         selectedEpisodeIndex = index
         vodInfo?.playIndex = index
