@@ -70,6 +70,7 @@ struct KSPlayerVodPlayerView: View {
 }
 
 private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureRecognizerDelegate {
+    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
     private weak var interactivePopGestureRecognizer: UIGestureRecognizer?
     private weak var inlineSuperview: UIView?
     private var inlineFrameConstraints: [NSLayoutConstraint] = []
@@ -84,6 +85,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     /// 因此在 readyToPlay 后由宿主显式 seek 一次。
     fileprivate var pendingStartPosition: TimeInterval = 0
     fileprivate var didApplyStartPosition = false
+    // Keep the selected rate independent from KSPlayer's transient menu/player
+    // rebuilds. Applying a rate must never recreate the current media item.
+    fileprivate var desiredPlaybackRate: Float = 1.0
     private let deviceStatusView = UIView()
     private let deviceTimeLabel = UILabel()
     private let deviceBatteryIconView = UIImageView()
@@ -376,6 +380,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         super.player(layer: layer, state: state)
         guard state == .readyToPlay else { return }
 
+        // KSPlayer can replace its backend during preparation. Re-apply only
+        // the rate to the current backend; do not call set(url:) or seek.
+        applyPlaybackRate(desiredPlaybackRate, persist: false, rebuildMenu: false)
+
         if !didApplyStartPosition,
            pendingStartPosition > 0,
            pendingStartPosition.isFinite {
@@ -391,25 +399,77 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
         // KSPlayer 2.3.4 每次 readyToPlay 都会重建一次默认倍速菜单，默认只到 2x。
         // 在它完成初始化后覆盖菜单，避免切集或重连时选项又被恢复。
-        if #available(iOS 14.0, *) {
-            let rates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
-            let current = playerLayer?.player.playbackRate ?? 1.0
-            let actions = rates.map { rate in
-                UIAction(
-                    title: String(format: "%.2gx", rate),
-                    state: abs(rate - current) < 0.01 ? .on : .off
-                ) { [weak self] _ in
-                    self?.playerLayer?.player.playbackRate = rate
-                    self?.toolBar.playbackRateButton.setTitle(nil, for: .normal)
-                    self?.toolBar.playbackRateButton.setImage(UIImage(systemName: "speedometer"), for: .normal)
+        rebuildPlaybackRateMenu()
+    }
+
+    private func normalizedPlaybackRate(_ raw: Float) -> Float {
+        guard raw.isFinite, raw > 0 else { return 1.0 }
+        return Self.supportedPlaybackRates.min {
+            abs($0 - raw) < abs($1 - raw)
+        } ?? 1.0
+    }
+
+    private func applyPlaybackRate(
+        _ rawRate: Float,
+        persist: Bool,
+        rebuildMenu: Bool
+    ) {
+        let rate = normalizedPlaybackRate(rawRate)
+        let apply = { [weak self] in
+            guard let self else { return }
+            self.desiredPlaybackRate = rate
+            if persist {
+                UserDefaults.standard.set(Double(rate), forKey: HawkConfig.PLAY_SPEED)
+            }
+            guard let player = self.playerLayer?.player else {
+                if rebuildMenu { self.rebuildPlaybackRateMenu() }
+                return
+            }
+
+            // The rate setter changes the existing AVPlayer backend in place.
+            // Keep a defensive position checkpoint so a backend implementation
+            // that momentarily resets its time cannot restart the episode.
+            let position = player.currentPlaybackTime
+            let wasPlaying = player.isPlaying
+            player.playbackRate = rate
+            if position.isFinite, position > 0,
+               abs(player.currentPlaybackTime - position) > 0.25 {
+                player.seek(time: position) { [weak self] success in
+                    guard success, wasPlaying else { return }
+                    DispatchQueue.main.async {
+                        self?.playerLayer?.player.play()
+                    }
                 }
             }
-            toolBar.playbackRateButton.menu = UIMenu(title: "倍速", children: actions)
-            toolBar.playbackRateButton.showsMenuAsPrimaryAction = true
-            toolBar.playbackRateButton.setTitle(nil, for: .normal)
-            toolBar.playbackRateButton.setImage(UIImage(systemName: "speedometer"), for: .normal)
-            toolBar.playbackRateButton.accessibilityLabel = "倍速"
+            if rebuildMenu {
+                self.rebuildPlaybackRateMenu()
+            }
         }
+        if Thread.isMainThread {
+            apply()
+        } else {
+            DispatchQueue.main.async(execute: apply)
+        }
+    }
+
+    fileprivate func rebuildPlaybackRateMenu() {
+        guard #available(iOS 14.0, *) else { return }
+        let current = normalizedPlaybackRate(
+            playerLayer?.player.playbackRate ?? desiredPlaybackRate
+        )
+        let actions = Self.supportedPlaybackRates.map { rate in
+            UIAction(
+                title: String(format: "%.2gx", rate),
+                state: abs(rate - current) < 0.01 ? .on : .off
+            ) { [weak self] _ in
+                self?.applyPlaybackRate(rate, persist: true, rebuildMenu: true)
+            }
+        }
+        toolBar.playbackRateButton.menu = UIMenu(title: "倍速", children: actions)
+        toolBar.playbackRateButton.showsMenuAsPrimaryAction = true
+        toolBar.playbackRateButton.setTitle(nil, for: .normal)
+        toolBar.playbackRateButton.setImage(UIImage(systemName: "speedometer"), for: .normal)
+        toolBar.playbackRateButton.accessibilityLabel = "倍速"
     }
 
     override func didMoveToSuperview() {
@@ -768,9 +828,11 @@ private struct KSPlayerUIView: UIViewRepresentable {
         let options = KSOptions()
         options.startPlayTime = startPosition
         let savedRate = UserDefaults.standard.object(forKey: HawkConfig.PLAY_SPEED) as? Double ?? 1.0
-        options.startPlayRate = Self.normalizedPlaybackRate(
+        let initialRate = Self.normalizedPlaybackRate(
             from: savedRate
         )
+        view.desiredPlaybackRate = initialRate
+        options.startPlayRate = initialRate
         options.registerRemoteControll = true
         // 本应用只提供点播，不启用画中画；尤其不能让播放器在内联状态下
         // 因切后台或系统事件自动进入 PiP。
@@ -794,6 +856,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
         view.toolBar.playbackRateButton.tintColor = .white
         view.toolBar.playbackRateButton.widthAnchor.constraint(equalToConstant: 30).isActive = true
         view.toolBar.playbackRateButton.accessibilityLabel = "倍速"
+        // Keep the persisted selection visible even before the first ready
+        // callback rebuilds KSPlayer's native controls.
+        view.rebuildPlaybackRateMenu()
         view.landscapeButton.isHidden = false
         view.landscapeButton.isEnabled = true
         coordinator.installActionButtons(
