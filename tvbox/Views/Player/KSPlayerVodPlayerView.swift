@@ -76,7 +76,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private var inlineFrame = CGRect.zero
     private var inlineTranslatesAutoresizingMaskIntoConstraints = false
     private var restoreTask: DispatchWorkItem?
-    private var transitionAnimationTask: DispatchWorkItem?
+    // KSPlayer moves this exact view into its native full-screen controller.
+    // Keep the playback layer alive until the view has been reattached inline.
+    private var preservingFullscreenPlayer = false
     private var routeButtonLayoutInstalled = false
     /// KSPlayer 的 AVPlayer 后端不会消费 KSOptions.startPlayTime，
     /// 因此在 readyToPlay 后由宿主显式 seek 一次。
@@ -104,24 +106,15 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
     override func updateUI(isFullScreen: Bool) {
         if isFullScreen {
-            transitionAnimationTask?.cancel()
-            transitionAnimationTask = nil
             restoreTask?.cancel()
             restoreTask = nil
+            preservingFullscreenPlayer = true
             captureInlineLayout()
-            // Keep the native KSPlayer presentation animation, but avoid a
-            // hard jump when the same view is reparented into the landscape
-            // controller.
-            alpha = 0
-            transform = CGAffineTransform(scaleX: 0.985, y: 0.985)
-        } else if landscapeButton.isSelected {
-            // Hide before KSPlayer dismisses its full-screen controller. Its
-            // own completion reattaches the view, and keeping it hidden here
-            // prevents one frame of the stale window/top-left layout.
-            transitionAnimationTask?.cancel()
-            transitionAnimationTask = nil
-            alpha = 0
-            transform = CGAffineTransform(scaleX: 0.985, y: 0.985)
+        } else {
+            // Keep this flag set while KSPlayer dismisses its controller. The
+            // native completion reattaches the same view; only then can it be
+            // treated as an ordinary inline SwiftUI view again.
+            preservingFullscreenPlayer = true
         }
 
         // KSPlayer 的原生全屏控制器会在呈现完成后写入同一个全局掩码。
@@ -149,21 +142,6 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         DispatchQueue.main.async {
             self.syncInteractivePopGesture()
             self.landscapeButton.isHidden = false
-            guard isFullScreen else { return }
-            self.transitionAnimationTask?.cancel()
-            let task = DispatchWorkItem { [weak self] in
-                guard let self, self.landscapeButton.isSelected else { return }
-                UIView.animate(
-                    withDuration: 0.24,
-                    delay: 0,
-                    options: [.beginFromCurrentState, .curveEaseOut]
-                ) {
-                    self.alpha = 1
-                    self.transform = .identity
-                }
-            }
-            self.transitionAnimationTask = task
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: task)
         }
 
         if !isFullScreen {
@@ -437,6 +415,12 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     override func didMoveToSuperview() {
         super.didMoveToSuperview()
         applyTransparentSurfaces()
+        // KSPlayer performs the actual reparenting in its dismissal
+        // completion. Restore constraints only after that callback, never by
+        // racing it with an early addSubview from our side.
+        if !landscapeButton.isSelected, superview === inlineSuperview {
+            restoreInlineLayout()
+        }
         syncInteractivePopGesture()
     }
 
@@ -469,7 +453,6 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
     private func scheduleInlineRestoration() {
         restoreTask?.cancel()
-        transitionAnimationTask?.cancel()
         let task = DispatchWorkItem { [weak self] in
             self?.restoreInlineLayout()
         }
@@ -492,9 +475,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         restoreTask?.cancel()
         restoreTask = nil
 
-        if superview !== container {
-            container.addSubview(self)
-        }
+        // The native KSPlayer transition owns reparenting. If it has not
+        // completed yet, leave the view where KSPlayer put it and let
+        // didMoveToSuperview call us again after the dismissal callback.
+        guard superview === container else { return }
         translatesAutoresizingMaskIntoConstraints = inlineTranslatesAutoresizingMaskIntoConstraints
         if inlineFrameConstraints.isEmpty {
             translatesAutoresizingMaskIntoConstraints = true
@@ -506,26 +490,11 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         container.setNeedsLayout()
         container.layoutIfNeeded()
         updateUI(isLandscape: false)
+        preservingFullscreenPlayer = false
+    }
 
-        // The native controller has finished dismissing. Reattach the view
-        // invisibly, lay out its 16:9 constraints first, then reveal it with
-        // a short fade/scale so the transient window top-left frame is never
-        // shown to the user.
-        alpha = 0
-        transform = CGAffineTransform(scaleX: 0.985, y: 0.985)
-        let task = DispatchWorkItem { [weak self] in
-            guard let self, !self.landscapeButton.isSelected else { return }
-            UIView.animate(
-                withDuration: 0.24,
-                delay: 0,
-                options: [.beginFromCurrentState, .curveEaseInOut]
-            ) {
-                self.alpha = 1
-                self.transform = .identity
-            }
-        }
-        transitionAnimationTask = task
-        DispatchQueue.main.async(execute: task)
+    fileprivate var isPreservingFullscreenPlayer: Bool {
+        preservingFullscreenPlayer || landscapeButton.isSelected
     }
 
     /// Stop and release the current media item before installing another URL.
@@ -731,7 +700,17 @@ private struct KSPlayerUIView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> CongcongKSVideoPlayerView {
+        // KSPlayer's native full-screen controller temporarily reparents this
+        // view. SwiftUI may ask the representable for its view again while
+        // that transition is still in flight; reuse the retained instance so
+        // the AVPlayer session is not torn down and recreated.
+        if let retainedView = context.coordinator.retainedPlayerView {
+            context.coordinator.configure(retainedView)
+            return retainedView
+        }
+
         let view = CongcongKSVideoPlayerView()
+        context.coordinator.retainedPlayerView = view
         context.coordinator.configure(view)
         view.customControlsLayout = { [weak coordinator = context.coordinator] isLandscape in
             coordinator?.updateActionButtonsLayout(isLandscape: isLandscape)
@@ -759,6 +738,11 @@ private struct KSPlayerUIView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ view: CongcongKSVideoPlayerView, coordinator: Coordinator) {
+        // A native full-screen transition can temporarily make SwiftUI think
+        // the representable disappeared. Do not tear down its layer or
+        // coordinator callbacks; the same view is still owned by KSPlayer and
+        // will be reattached when dismissal completes.
+        guard !view.isPreservingFullscreenPlayer else { return }
         coordinator.tearDownDanmaku()
         view.stopCurrentPlayback()
         view.backBlock = nil
@@ -857,7 +841,12 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private let verticalSeekStack = UIStackView()
         private let volumeButton = UIButton(type: .system)
         private let episodeButton = UIButton(type: .system)
-        private weak var playerView: IOSVideoPlayerView?
+        /// Strongly retain the native view across SwiftUI's transient
+        /// dismantle/re-make cycle during KSPlayer full-screen transitions.
+        /// The view's delegate and callbacks are weak, so this does not form
+        /// a retain cycle with the coordinator.
+        private var retainedPlayerView: CongcongKSVideoPlayerView?
+        private var playerView: IOSVideoPlayerView?
         private var canPlayPrevious = false
         private var canPlayNext = false
         private var canSelectEpisode = false

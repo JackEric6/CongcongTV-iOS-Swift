@@ -86,7 +86,17 @@ class DetailViewModel: ObservableObject {
     }
 
     /// 加载视频详情
-    func loadDetail(video: Movie.Video) async {
+    func loadDetail(
+        video: Movie.Video,
+        preferredPlaybackState: VodPlaybackState? = nil,
+        autoplay: Bool = false
+    ) async {
+        let isReloadingSamePlayback = autoplay
+            && preferredPlaybackState != nil
+            && lastVideo?.id == video.id
+            && lastVideo?.sourceKey == video.sourceKey
+            && isPlaying
+            && playUrl != nil
         lastVideo = video
         let sourceKey = video.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let source: SourceBean?
@@ -117,8 +127,10 @@ class DetailViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         vodInfo = nil
-        playUrl = nil
-        isPlaying = false
+        if !isReloadingSamePlayback {
+            playUrl = nil
+            isPlaying = false
+        }
         selectedFlag = ""
         selectedEpisodeIndex = 0
         resetQualityState()
@@ -168,6 +180,59 @@ class DetailViewModel: ObservableObject {
             } else {
                 resetQualityState()
             }
+
+            // 详情解析完成后只初始化一次播放会话。历史状态优先于源站默认
+            // playIndex；无历史时固定从第一集开始，避免先创建第一集播放器
+            // 再切换到历史集造成重复拉流和首屏延迟。
+            if autoplay {
+                let playbackFlag: String
+                if let preferredPlaybackState,
+                   availableFlags.contains(preferredPlaybackState.flag),
+                   !(displayInfo.playUrlMap[preferredPlaybackState.flag] ?? []).isEmpty {
+                    playbackFlag = preferredPlaybackState.flag
+                } else {
+                    playbackFlag = safeFlag
+                }
+
+                let playbackEpisodes = displayInfo.playUrlMap[playbackFlag] ?? []
+                let playbackIndex: Int
+                if let preferredPlaybackState,
+                   playbackFlag == preferredPlaybackState.flag,
+                   !playbackEpisodes.isEmpty {
+                    playbackIndex = min(
+                        max(preferredPlaybackState.episodeIndex, 0),
+                        playbackEpisodes.count - 1
+                    )
+                } else {
+                    playbackIndex = 0
+                }
+
+                self.selectedFlag = playbackFlag
+                self.vodInfo?.playFlag = playbackFlag
+                self.selectedEpisodeIndex = playbackIndex
+                self.vodInfo?.playIndex = playbackIndex
+                let progress = preferredPlaybackState.map { max($0.progressSeconds, 0) } ?? 0
+                self.resumeSeconds = progress
+                self.realtimeProgressSeconds = progress
+                self.hasRealtimeProgressSnapshot = false
+                self.pendingResumeProtection = progress > 0
+                    ? (position: progress, deadline: Date().addingTimeInterval(4))
+                    : nil
+
+                if playbackEpisodes.indices.contains(playbackIndex) {
+                    let normalizedURL = KktvsResponseNormalizer.normalizeMediaURL(
+                        playbackEpisodes[playbackIndex].url
+                    )
+                    if SourceService.validPlayableURL(normalizedURL) != nil {
+                        updateQualityOptions(for: normalizedURL, resetSelection: true)
+                        playUrl = selectedPlayableURL(fallback: normalizedURL)
+                        isPlaying = playUrl != nil
+                        if isPlaying {
+                            resolvePlayableURLIfNeeded(normalizedURL)
+                        }
+                    }
+                }
+            }
             startMetadataEnrichment(
                 originalVideo: video,
                 playbackInfo: displayInfo,
@@ -194,11 +259,12 @@ class DetailViewModel: ObservableObject {
             episodeIndex: selectedEpisodeIndex,
             progressSeconds: currentPlaybackSeconds()
         )
-        await loadDetail(video: video)
+        await loadDetail(
+            video: video,
+            preferredPlaybackState: wasPlaying ? state : nil,
+            autoplay: wasPlaying
+        )
         guard vodInfo != nil else { return }
-        if wasPlaying {
-            applyPlaybackState(state)
-        }
     }
 
     /// 在实际播放源详情成功后，异步从其他可搜索源补全缺失元数据。

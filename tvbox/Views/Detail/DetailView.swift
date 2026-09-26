@@ -38,36 +38,8 @@ struct DetailView: View {
         ScrollView {
             VStack(spacing: 0) {
                 // 播放器区域
-                if shouldShowInlinePlayer, viewModel.isPlaying, let url = viewModel.playUrl {
-                    // 播放器会话由共享控制器持有；AVKit 全屏时复用同一个控制器。
-                    ZStack {
-                        Color.black
-                        PlayerView(
-                            urlString: url,
-                            startPosition: viewModel.currentPlaybackSeconds(),
-                            onProgressChanged: { [playbackSessionToken] seconds, _ in
-                                handlePlaybackProgress(seconds, sessionToken: playbackSessionToken)
-                            },
-                            onPlaybackEnded: playNextEpisodeIfNeeded,
-                            onToggleFullScreen: inlineFullScreenHandler,
-                            onBack: { dismiss() },
-                            canPlayPrevious: viewModel.selectedEpisodeIndex > 0,
-                            onPlayPrevious: playPreviousEpisode,
-                            canPlayNext: canPlayNextEpisode,
-                            onPlayNext: playNextEpisodeIfNeeded,
-                            canSelectEpisode: viewModel.currentEpisodes.count > 1,
-                            onSelectEpisode: handlePlayerEpisodeSelection,
-                            danmakuTitle: viewModel.vodInfo?.name ?? video.name,
-                            danmakuEpisode: currentDanmakuEpisode,
-                            onFullScreenChanged: { showFullScreen = $0 },
-                            systemController: sharedSystemController,
-                            vlcController: sharedVLCController
-                        )
-                        .frame(maxWidth: .infinity)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .aspectRatio(16 / 9, contentMode: .fit)
-                    .clipped()
+                if shouldShowInlinePlayer {
+                    inlinePlayerSection
                 }
 
                 // 视频信息
@@ -143,14 +115,29 @@ struct DetailView: View {
             )
         }
         .task(id: "\(video.sourceKey)-\(video.id)") {
-            await viewModel.loadDetail(video: video)
-            restorePlaybackFromHistory()
+            let savedPlaybackState = CacheStore.shared.getPlaybackState(
+                vodId: video.id,
+                sourceKey: video.sourceKey,
+                context: modelContext
+            )
+            await viewModel.loadDetail(
+                video: video,
+                preferredPlaybackState: savedPlaybackState,
+                autoplay: true
+            )
+            if let savedPlaybackState {
+                lastPersistedProgress = max(savedPlaybackState.progressSeconds, 0)
+            }
             // 海报点击后默认直接进入播放：先按历史续播，无历史则自动选中第一集播放，
             // 用户无需再额外点击“立即播放”。
             if !viewModel.isPlaying {
                 beginPlaybackSession()
-                viewModel.selectEpisode(index: 0)
-                saveHistoryForCurrentEpisode()
+                // 历史状态存在时保留其线路/集数；只有无历史时才从第一集开始。
+                let index = savedPlaybackState == nil ? 0 : viewModel.selectedEpisodeIndex
+                viewModel.selectEpisode(index: index)
+                if viewModel.isPlaying {
+                    saveHistoryForCurrentEpisode()
+                }
             }
             refreshCollectState()
         }
@@ -227,6 +214,58 @@ struct DetailView: View {
         // 详情页始终保留唯一的播放器实例，避免重建第二个控制器。
         return true
         #endif
+    }
+
+    /// 始终保留固定的 16:9 播放器区域。详情请求和播放地址解析期间只替换
+    /// 内容，不改变布局，这样影片标题从进入页面起就稳定在播放器下方。
+    @ViewBuilder
+    private var inlinePlayerSection: some View {
+        ZStack {
+            Color.black
+            if viewModel.isPlaying, let url = viewModel.playUrl {
+                // 全屏时 KSPlayer 只移动内部 UIView，继续复用同一个播放会话。
+                PlayerView(
+                    urlString: url,
+                    startPosition: viewModel.currentPlaybackSeconds(),
+                    onProgressChanged: { [playbackSessionToken] seconds, _ in
+                        handlePlaybackProgress(seconds, sessionToken: playbackSessionToken)
+                    },
+                    onPlaybackEnded: playNextEpisodeIfNeeded,
+                    onToggleFullScreen: inlineFullScreenHandler,
+                    onBack: { dismiss() },
+                    canPlayPrevious: viewModel.selectedEpisodeIndex > 0,
+                    onPlayPrevious: playPreviousEpisode,
+                    canPlayNext: canPlayNextEpisode,
+                    onPlayNext: playNextEpisodeIfNeeded,
+                    canSelectEpisode: viewModel.currentEpisodes.count > 1,
+                    onSelectEpisode: handlePlayerEpisodeSelection,
+                    danmakuTitle: viewModel.vodInfo?.name ?? video.name,
+                    danmakuEpisode: currentDanmakuEpisode,
+                    onFullScreenChanged: { showFullScreen = $0 },
+                    systemController: sharedSystemController,
+                    vlcController: sharedVLCController
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.isLoading {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(1.15)
+            } else if let error = viewModel.errorMessage {
+                VStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.75))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .padding(.horizontal, 20)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(16 / 9, contentMode: .fit)
+        .clipped()
     }
 
     private var inlineFullScreenHandler: (() -> Void)? {
