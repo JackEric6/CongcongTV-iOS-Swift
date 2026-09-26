@@ -118,7 +118,8 @@ class DetailViewModel: ObservableObject {
                 self.realtimeProgressSeconds = 0
                 self.hasRealtimeProgressSnapshot = false
                 self.pendingResumeProtection = nil
-                if let episode = safeEpisodes[safeIndex] {
+                if safeEpisodes.indices.contains(safeIndex) {
+                    let episode = safeEpisodes[safeIndex]
                     updateQualityOptions(
                         for: KktvsResponseNormalizer.normalizeMediaURL(episode.url),
                         resetSelection: true
