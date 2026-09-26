@@ -377,7 +377,7 @@ class HomeViewModel: ObservableObject {
         guard !categoryID.isEmpty, categoryID != "home" else { return [] }
         return videos.filter { video in
             let videoTypeID = video.tid.trimmingCharacters(in: .whitespacesAndNewlines)
-            !videoTypeID.isEmpty && videoTypeID == categoryID
+            return !videoTypeID.isEmpty && videoTypeID == categoryID
         }
     }
 
