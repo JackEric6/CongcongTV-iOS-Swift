@@ -91,6 +91,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private var isSliderDragging = false
     private var sliderSeekCommitted = false
     private var panStartPoint: CGPoint?
+    private var nativePanDirection: KSPanDirection?
+    private var pendingSeekTarget: TimeInterval?
+    private var seekRequestID = 0
 
     override var isMaskShow: Bool {
         didSet {
@@ -184,6 +187,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         case .touchDown:
             isSliderDragging = true
             sliderSeekCommitted = false
+            pendingSeekTarget = nil
             // The base implementation only updates the preview value here;
             // it does not seek until the release event.
             super.slider(value: value, event: event)
@@ -194,6 +198,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                 isSliderDragging = true
                 sliderSeekCommitted = false
             }
+            pendingSeekTarget = nil
             super.slider(value: value, event: event)
         case .touchUpInside, .touchCancel:
             guard !sliderSeekCommitted else { return }
@@ -208,6 +213,34 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         }
     }
 
+    override func seek(
+        time: TimeInterval,
+        completion: @escaping ((Bool) -> Void)
+    ) {
+        guard time.isFinite else {
+            completion(false)
+            return
+        }
+
+        seekRequestID &+= 1
+        let requestID = seekRequestID
+        pendingSeekTarget = max(0, min(time, toolBar.totalTime > 0 ? toolBar.totalTime : time))
+        let target = pendingSeekTarget ?? max(0, time)
+
+        // Keep the target visible until KSPlayer confirms this particular seek.
+        // A stale playback tick must not move the thumb back to the pre-seek time.
+        super.seek(time: target) { [weak self] success in
+            DispatchQueue.main.async {
+                guard let self, self.seekRequestID == requestID else { return }
+                if success {
+                    self.toolBar.currentTime = target
+                }
+                self.pendingSeekTarget = nil
+                completion(success)
+            }
+        }
+    }
+
     override func player(
         layer: KSPlayerLayer,
         currentTime: TimeInterval,
@@ -216,6 +249,13 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // IOSVideoPlayerView normally guards this internally, but its private
         // drag flag does not cover every KSSlider tracking path. Keep the
         // user's preview thumb from being overwritten by playback callbacks.
+        if let pendingSeekTarget {
+            if abs(toolBar.totalTime - totalTime) > 0.1 {
+                toolBar.totalTime = totalTime
+            }
+            toolBar.currentTime = pendingSeekTarget
+            return
+        }
         if isSliderDragging || toolBar.timeSlider.isTracking {
             if abs(toolBar.totalTime - totalTime) > 0.1 {
                 toolBar.totalTime = totalTime
@@ -623,6 +663,35 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
             height: 56
         )
         return rowFrame.contains(point)
+    }
+
+    override func panGestureBegan(location point: CGPoint, direction: KSPanDirection) {
+        nativePanDirection = direction
+        if direction == .horizontal {
+            // KSPlayer owns the seek math and target preview. Do not replace
+            // its default velocity-to-time mapping with a second calculation.
+            pendingSeekTarget = nil
+            sliderSeekCommitted = false
+        }
+        super.panGestureBegan(location: point, direction: direction)
+    }
+
+    override func panGestureChanged(velocity point: CGPoint, direction: KSPanDirection) {
+        super.panGestureChanged(velocity: point, direction: direction)
+        if direction == .horizontal, toolBar.currentTime.isFinite {
+            pendingSeekTarget = toolBar.currentTime
+        }
+    }
+
+    override func panGestureEnded() {
+        if nativePanDirection == .horizontal {
+            // panGestureEnded in KSPlayer commits exactly this preview value
+            // through slider(.touchUpInside). Keep it protected from the last
+            // stale playback callback while that seek is in flight.
+            pendingSeekTarget = toolBar.currentTime
+        }
+        super.panGestureEnded()
+        nativePanDirection = nil
     }
 }
 

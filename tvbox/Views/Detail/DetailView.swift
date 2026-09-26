@@ -33,7 +33,7 @@ struct DetailView: View {
     #if os(iOS)
     @State private var isDescriptionExpanded = false
     #endif
-    
+
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -69,26 +69,26 @@ struct DetailView: View {
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .clipped()
                 }
-                
+
                 // 视频信息
                 videoInfoSection
                     .padding(.horizontal, 14)
                     .padding(.top, 10)
-                
+
                 // 线路选择
                 if viewModel.flags.count > 1 {
                     flagSelector
                         .padding(.horizontal, 14)
                         .padding(.top, 10)
                 }
-                
+
                 // 清晰度选择
                 if viewModel.hasQualityChoices {
                     qualitySelector
                         .padding(.horizontal, 14)
                         .padding(.top, 10)
                 }
-                
+
                 // 剧集列表
                 if !viewModel.currentEpisodes.isEmpty {
                     episodeSection
@@ -170,7 +170,14 @@ struct DetailView: View {
             #endif
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase != .active else { return }
+            if phase == .active {
+                Task {
+                    // 仅重试此前明确因网络失败的详情请求；正常播放回到前台时
+                    // 不重建详情和播放器，避免出现短暂黑屏或从头播放。
+                    await viewModel.retryCurrentDetailIfNeeded()
+                }
+                return
+            }
             viewModel.commitPlaybackProgressSnapshot()
             persistHistoryIfNeeded(force: true)
         }
@@ -290,9 +297,9 @@ struct DetailView: View {
         presenter.present(hostingController, animated: true)
     }
     #endif
-    
+
     // MARK: - 视频信息
-    
+
     #if os(iOS)
     @ViewBuilder
     private var videoInfoSection: some View {
@@ -319,9 +326,9 @@ struct DetailView: View {
     private var videoInfoSection: some View {
         HStack(alignment: .top, spacing: 20) {
             videoPoster
-            
+
             videoDetails
-            
+
             Spacer()
         }
         .padding(15)
@@ -371,7 +378,7 @@ struct DetailView: View {
                 }
                 .font(.system(size: 14, weight: .semibold))
             }
-            
+
             if let info = viewModel.vodInfo {
                 VStack(alignment: .leading, spacing: 3) {
                     infoRow("年份", info.year)
@@ -381,10 +388,10 @@ struct DetailView: View {
                     infoRow("演员", info.actor)
                 }
             }
-            
+
             #if os(macOS)
             Spacer(minLength: 10)
-            
+
             HStack(spacing: 10) {
                 playButton
                 collectButton
@@ -448,7 +455,7 @@ struct DetailView: View {
             .buttonStyle(.plain)
         }
     }
-    
+
     private var collectButton: some View {
         Button {
             toggleCollect()
@@ -598,7 +605,7 @@ struct DetailView: View {
             }
         }
     }
-    
+
     @ViewBuilder
     private func infoRow(_ label: String, _ value: String) -> some View {
         if !value.isEmpty {
@@ -614,16 +621,16 @@ struct DetailView: View {
             }
         }
     }
-    
+
     // MARK: - 线路选择
-    
+
     @ViewBuilder
     private var flagSelector: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("播放线路")
                 .font(.system(size: 16, weight: .bold))
                 .foregroundColor(.white)
-            
+
             flagScrollView
         }
         .padding(15)
@@ -671,16 +678,16 @@ struct DetailView: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     // MARK: - 清晰度选择
-    
+
     @ViewBuilder
     private var qualitySelector: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("视频清晰度")
                 .font(.system(size: 16, weight: .bold))
                 .foregroundColor(.white)
-            
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(viewModel.qualityOptions) { option in
@@ -692,7 +699,7 @@ struct DetailView: View {
         .padding(15)
         .glassCard(cornerRadius: AppTheme.glassRadius)
     }
-    
+
     @ViewBuilder
     private func qualityButton(_ option: PlaybackQualityOption) -> some View {
         Button {
@@ -723,16 +730,16 @@ struct DetailView: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     // MARK: - 剧集列表
-    
+
     private var episodeSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("选集播放")
                 .font(.system(size: 16, weight: .bold))
                 .foregroundColor(.white)
                 .padding(.horizontal, 20)
-            
+
             EpisodeListView(
                 episodes: viewModel.currentEpisodes,
                 selectedIndex: viewModel.selectedEpisodeIndex,
@@ -747,9 +754,9 @@ struct DetailView: View {
             )
         }
     }
-    
+
     // MARK: - 简介
-    
+
     private func descriptionSection(_ des: String) -> some View {
         let cleanedDescription = normalizedDescription(des)
 
@@ -815,20 +822,20 @@ struct DetailView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? "第\(viewModel.selectedEpisodeIndex + 1)集" : name
     }
-    
+
     private func saveHistoryForCurrentEpisode(progressOverride: Double? = nil) {
         let episodeName = viewModel.vodInfo?.currentEpisode?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let episodeLabel = episodeName.isEmpty ? "第\(viewModel.selectedEpisodeIndex + 1)集" : episodeName
         let progress = max(progressOverride ?? viewModel.currentPlaybackSeconds(), 0)
         let timeLabel = progress > 0 ? Int(progress).durationString : ""
         let playNote = timeLabel.isEmpty ? episodeLabel : "\(episodeLabel) \(timeLabel)"
-        
+
         let playbackState = VodPlaybackState(
             flag: viewModel.selectedFlag,
             episodeIndex: viewModel.selectedEpisodeIndex,
             progressSeconds: progress
         )
-        
+
         // CacheStore 的写入方法本身运行在 MainActor，同步写入可避免异步任务乱序覆盖最新进度。
         CacheStore.shared.addRecord(
             video,
@@ -837,7 +844,7 @@ struct DetailView: View {
             context: modelContext
         )
     }
-    
+
     private func handlePlaybackProgress(_ seconds: Double, sessionToken: UUID? = nil) {
         if let sessionToken, sessionToken != playbackSessionToken {
             return
@@ -854,11 +861,11 @@ struct DetailView: View {
         guard viewModel.vodInfo != nil, viewModel.playUrl != nil else { return }
         let progress = max(currentProgress ?? viewModel.currentPlaybackSeconds(), 0)
         guard progress.isFinite else { return }
-        
+
         if !force && abs(progress - lastPersistedProgress) < 20 {
             return
         }
-        
+
         lastPersistedProgress = progress
         saveHistoryForCurrentEpisode(progressOverride: progress)
     }
@@ -874,18 +881,18 @@ struct DetailView: View {
         viewModel.commitPlaybackProgressSnapshot()
         persistHistoryIfNeeded(force: true)
     }
-    
+
     private func restorePlaybackFromHistory() {
         guard let playbackState = CacheStore.shared.getPlaybackState(
             vodId: video.id,
             sourceKey: video.sourceKey,
             context: modelContext
         ) else { return }
-        
+
         viewModel.applyPlaybackState(playbackState)
         lastPersistedProgress = max(playbackState.progressSeconds, 0)
     }
-    
+
     private func refreshCollectState() {
         isCollected = CacheStore.shared.isCollected(
             vodId: video.id,
@@ -893,7 +900,7 @@ struct DetailView: View {
             context: modelContext
         )
     }
-    
+
     private func toggleCollect() {
         if isCollected {
             CacheStore.shared.removeCollect(
@@ -906,14 +913,14 @@ struct DetailView: View {
         }
         refreshCollectState()
     }
-    
+
     private func playNextEpisodeIfNeeded() {
         flushPlaybackHistoryBeforeSwitch()
         var moved = false
         withAnimation {
             moved = viewModel.playNext()
         }
-        
+
         if moved {
             beginPlaybackSession()
             saveHistoryForCurrentEpisode()
@@ -931,18 +938,18 @@ struct DetailView: View {
             saveHistoryForCurrentEpisode()
         }
     }
-    
+
     #if os(macOS)
     private func openFullScreenPlayer() {
         guard viewModel.playUrl != nil else { return }
         appState.enterPlayerFullScreen()
-        
+
         if let window = NSApp.keyWindow ?? NSApp.mainWindow,
            window.styleMask.contains(.fullScreen) {
             showFullScreen = true
             return
         }
-        
+
         pendingMacWindowFullScreen = requestMacWindowFullScreen(enter: true)
         if !pendingMacWindowFullScreen {
             showFullScreen = true
@@ -957,7 +964,7 @@ struct DetailView: View {
         window.toggleFullScreen(nil)
         return true
     }
-    
+
     private func closeMacFullScreenOverlay() {
         pendingMacWindowFullScreen = false
         let window = NSApp.keyWindow ?? NSApp.mainWindow
@@ -1093,11 +1100,11 @@ struct FullScreenPlayerView: View {
     var vlcController: VLCPlayerController? = nil
     var onCloseRequested: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
-    
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            
+
             PlayerView(
                 urlString: urlString,
                 startPosition: startPosition,
@@ -1119,7 +1126,7 @@ struct FullScreenPlayerView: View {
                 vlcController: vlcController
             )
                 .ignoresSafeArea()
-            
+
             VStack {
                 HStack {
                     Button {

@@ -31,6 +31,10 @@ class HomeViewModel: ObservableObject {
     /// 防止较早的刷新请求在较新的请求之后回写页面状态。
     private var loadGeneration = 0
     private var refreshGeneration = 0
+    /// 同一时间只允许一个分类列表请求和一个刷新流程进入，避免页面生命周期事件重复拉取。
+    private var sortsLoadInFlight = false
+    private var refreshInFlight = false
+    private var recommendationTask: Task<Void, Never>?
     
     init() {
         setupNetworkRestoredAutoRetry()
@@ -39,6 +43,9 @@ class HomeViewModel: ObservableObject {
     /// 加载分类列表
     @discardableResult
     func loadSorts() async -> Bool {
+        guard !sortsLoadInFlight else {
+            return false
+        }
         loadGeneration &+= 1
         let requestGeneration = loadGeneration
 
@@ -46,9 +53,11 @@ class HomeViewModel: ObservableObject {
             errorMessage = "未找到西瓜资源站配置"
             return false
         }
+        sortsLoadInFlight = true
         isLoading = true
         errorMessage = nil
         defer {
+            sortsLoadInFlight = false
             if requestGeneration == loadGeneration {
                 isLoading = false
             }
@@ -66,12 +75,8 @@ class HomeViewModel: ObservableObject {
             }
 
             let sourceHomeVideos = result.homeVideos
-            let recommendations = await loadDoubanRecommendations()
-            guard requestGeneration == loadGeneration else { return false }
-            // 豆瓣榜单只是海报增强层；为空或临时失败时保留源首页和既有内容。
-            if !recommendations.isEmpty {
-                self.homeVideos = recommendations
-            } else if !sourceHomeVideos.isEmpty {
+            // 先展示西瓜源返回的首页，豆瓣榜单仅作为后台海报增强，不能阻塞首屏。
+            if !sourceHomeVideos.isEmpty || self.homeVideos.isEmpty {
                 self.homeVideos = sourceHomeVideos
             }
             lastLoadFailedDueToNetwork = false
@@ -82,9 +87,22 @@ class HomeViewModel: ObservableObject {
             }
             // 响应结构虽然合法，但完全没有可用分类或推荐时视为本次加载失败；
             // 这样上层会保留旧内容，下一次刷新仍可重试。
-            if allSorts.isEmpty && recommendations.isEmpty && sourceHomeVideos.isEmpty {
+            if allSorts.isEmpty && sourceHomeVideos.isEmpty {
                 errorMessage = "资源站暂时没有返回可用内容"
                 return false
+            }
+
+            let sourceKey = source.key
+            recommendationTask?.cancel()
+            recommendationTask = Task { [weak self] in
+                guard let self else { return }
+                let recommendations = await self.loadDoubanRecommendations()
+                guard self.loadGeneration == requestGeneration,
+                      self.xiguaSource?.key == sourceKey else { return }
+                // 豆瓣榜单为空或临时失败时保留西瓜源首页和已有内容。
+                if !recommendations.isEmpty {
+                    self.homeVideos = recommendations
+                }
             }
             return true
         } catch {
@@ -97,15 +115,17 @@ class HomeViewModel: ObservableObject {
 
     /// 从豆瓣热门榜中筛出西瓜源确实存在的条目，避免推荐卡片无法播放。
     private func loadDoubanRecommendations() async -> [Movie.Video] {
+        guard !Task.isCancelled else { return [] }
         guard let xiguaSource = ApiConfig.shared.sourceBeanList.first(where: isXiguaSource) else { return [] }
         let trending = await trendingService.fetchTrending(limit: 20)
-        guard !trending.isEmpty else { return [] }
+        guard !Task.isCancelled, !trending.isEmpty else { return [] }
 
         let indexedResults = await withTaskGroup(of: (Int, Movie.Video?).self, returning: [(Int, Movie.Video?)].self) { group in
             var nextIndex = 0
             let concurrency = min(4, trending.count)
 
             func makeRecommendationResult(index: Int, item: DoubanTrendingItem) async -> (Int, Movie.Video?) {
+                guard !Task.isCancelled else { return (index, nil) }
                 guard let coverURL = URL(string: item.cover),
                       let scheme = coverURL.scheme?.lowercased(),
                       scheme == "http" || scheme == "https" else { return (index, nil) }
@@ -134,6 +154,10 @@ class HomeViewModel: ObservableObject {
 
             var results: [(Int, Movie.Video?)] = []
             while let result = await group.next() {
+                if Task.isCancelled {
+                    group.cancelAll()
+                    return []
+                }
                 results.append(result)
                 if nextIndex < trending.count {
                     let index = nextIndex
@@ -249,6 +273,10 @@ class HomeViewModel: ObservableObject {
     
     /// 刷新
     func refresh() async {
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
+        defer { refreshInFlight = false }
+
         refreshGeneration &+= 1
         let requestGeneration = refreshGeneration
 

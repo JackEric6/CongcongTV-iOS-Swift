@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 struct PlaybackQualityOption: Identifiable, Hashable {
     /// “自动”选项固定标识。
@@ -10,11 +11,11 @@ struct PlaybackQualityOption: Identifiable, Hashable {
     let name: String
     /// 对应播放地址。
     let url: String
-    
+
     var isAuto: Bool {
         id == Self.autoIdentifier
     }
-    
+
     static func auto(url: String) -> PlaybackQualityOption {
         PlaybackQualityOption(id: autoIdentifier, name: "自动", url: url)
     }
@@ -50,7 +51,7 @@ class DetailViewModel: ObservableObject {
     /// 播放器加载续播位置时，部分内核会先回调一次 0 秒，再回调真实位置。
     /// 在短窗口内保护已恢复的位置，避免启动回调把续播状态覆盖成 0。
     private var pendingResumeProtection: (position: Double, deadline: Date)?
-    
+
     /// 数据服务与网络服务。
     private let sourceService = SourceService.shared
     private let network = NetworkManager.shared
@@ -69,11 +70,41 @@ class DetailViewModel: ObservableObject {
     /// 跨资源站元数据补全任务。播放源详情先落地，补全任务只允许填写空元数据字段。
     private var metadataEnrichmentTask: Task<Void, Never>?
     private var metadataEnrichmentToken = UUID()
-    
+    /// 详情请求因断网失败时，网络恢复后只重试当前视频和当前源。
+    private var networkRestoredCancellable: AnyCancellable?
+    private var lastVideo: Movie.Video?
+    private var shouldRetryAfterNetworkRecovery = false
+
+    init() {
+        networkRestoredCancellable = NetworkMonitor.shared.networkRestoredPublisher
+            .sink { [weak self] in
+                guard let self else { return }
+                Task { @MainActor [weak self] in
+                    await self?.retryCurrentDetailIfNeeded()
+                }
+            }
+    }
+
     /// 加载视频详情
     func loadDetail(video: Movie.Video) async {
-        guard let source = ApiConfig.shared.getSource(key: video.sourceKey)
-                ?? ApiConfig.shared.homeSourceBean else { return }
+        lastVideo = video
+        let sourceKey = video.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source: SourceBean?
+        if sourceKey.isEmpty {
+            source = ApiConfig.shared.homeSourceBean
+        } else {
+            // 海报携带了 sourceKey 时必须使用对应源，不能静默回退到首页源。
+            source = ApiConfig.shared.getSource(key: sourceKey)
+        }
+        guard let source else {
+            currentSource = nil
+            vodInfo = nil
+            playUrl = nil
+            isPlaying = false
+            errorMessage = SourceError.invalidResponse("未找到视频对应的数据源").localizedDescription
+            shouldRetryAfterNetworkRecovery = false
+            return
+        }
         currentSource = source
         metadataEnrichmentTask?.cancel()
         metadataEnrichmentTask = nil
@@ -82,63 +113,92 @@ class DetailViewModel: ObservableObject {
         playableResolveTask?.cancel()
         playableResolveTask = nil
         playableResolveToken = UUID()
-        
+
         isLoading = true
         errorMessage = nil
-        
+        vodInfo = nil
+        playUrl = nil
+        isPlaying = false
+        selectedFlag = ""
+        selectedEpisodeIndex = 0
+        resetQualityState()
+        defer { isLoading = false }
+
         do {
-            if let info = try await sourceService.getDetail(sourceBean: source, vodId: video.id) {
-                let displayInfo = Self.mergeMissingMetadata(info, from: video)
-                self.vodInfo = displayInfo
-
-                // Some CMS responses advertise a play flag or episode index
-                // that is not present in playUrlMap. Keep the detail page
-                // usable, but never let that malformed state reach the
-                // player/episode views.
-                let availableFlags = displayInfo.playFlags.filter {
-                    !displayInfo.playUrlMap[$0, default: []].isEmpty
-                }
-                let preferredFlag = displayInfo.playFlag.isEmpty
-                    ? displayInfo.playFlags.first
-                    : displayInfo.playFlag
-                let safeFlag = preferredFlag.flatMap { availableFlags.contains($0) ? $0 : nil }
-                    ?? availableFlags.first
-                    ?? displayInfo.playFlags.first
-                    ?? ""
-                self.selectedFlag = safeFlag
-                self.vodInfo?.playFlag = safeFlag
-
-                let safeEpisodes = displayInfo.playUrlMap[safeFlag] ?? []
-                let safeIndex = safeEpisodes.isEmpty
-                    ? 0
-                    : min(max(displayInfo.playIndex, 0), safeEpisodes.count - 1)
-                self.selectedEpisodeIndex = safeIndex
-                self.vodInfo?.playIndex = safeIndex
-                self.resumeSeconds = 0
-                self.realtimeProgressSeconds = 0
-                self.hasRealtimeProgressSnapshot = false
-                self.pendingResumeProtection = nil
-                if safeEpisodes.indices.contains(safeIndex) {
-                    let episode = safeEpisodes[safeIndex]
-                    updateQualityOptions(
-                        for: KktvsResponseNormalizer.normalizeMediaURL(episode.url),
-                        resetSelection: true
-                    )
-                } else {
-                    resetQualityState()
-                }
-                startMetadataEnrichment(
-                    originalVideo: video,
-                    playbackInfo: displayInfo,
-                    playbackSource: source,
-                    token: metadataToken
-                )
+            guard let info = try await sourceService.getDetail(sourceBean: source, vodId: video.id) else {
+                throw SourceError.invalidResponse("详情响应为空")
             }
+            try Task.checkCancellation()
+            let displayInfo = Self.mergeMissingMetadata(info, from: video)
+            self.vodInfo = displayInfo
+
+            // Some CMS responses advertise a play flag or episode index
+            // that is not present in playUrlMap. Keep the detail page
+            // usable, but never let that malformed state reach the
+            // player/episode views.
+            let availableFlags = displayInfo.playFlags.filter {
+                !displayInfo.playUrlMap[$0, default: []].isEmpty
+            }
+            let preferredFlag = displayInfo.playFlag.isEmpty
+                ? displayInfo.playFlags.first
+                : displayInfo.playFlag
+            let safeFlag = preferredFlag.flatMap { availableFlags.contains($0) ? $0 : nil }
+                ?? availableFlags.first
+                ?? displayInfo.playFlags.first
+                ?? ""
+            self.selectedFlag = safeFlag
+            self.vodInfo?.playFlag = safeFlag
+
+            let safeEpisodes = displayInfo.playUrlMap[safeFlag] ?? []
+            let safeIndex = safeEpisodes.isEmpty
+                ? 0
+                : min(max(displayInfo.playIndex, 0), safeEpisodes.count - 1)
+            self.selectedEpisodeIndex = safeIndex
+            self.vodInfo?.playIndex = safeIndex
+            self.resumeSeconds = 0
+            self.realtimeProgressSeconds = 0
+            self.hasRealtimeProgressSnapshot = false
+            self.pendingResumeProtection = nil
+            if safeEpisodes.indices.contains(safeIndex) {
+                let episode = safeEpisodes[safeIndex]
+                updateQualityOptions(
+                    for: KktvsResponseNormalizer.normalizeMediaURL(episode.url),
+                    resetSelection: true
+                )
+            } else {
+                resetQualityState()
+            }
+            startMetadataEnrichment(
+                originalVideo: video,
+                playbackInfo: displayInfo,
+                playbackSource: source,
+                token: metadataToken
+            )
+            shouldRetryAfterNetworkRecovery = false
         } catch {
+            guard !(error is CancellationError) else { return }
             errorMessage = error.localizedDescription
+            shouldRetryAfterNetworkRecovery = error.isNetworkConnectionError
         }
-        
-        isLoading = false
+    }
+
+    /// 网络恢复后重新验证当前详情源；只恢复此前因网络失败的请求。
+    func retryCurrentDetailIfNeeded(force: Bool = false) async {
+        guard (force || shouldRetryAfterNetworkRecovery),
+              !isLoading,
+              let video = lastVideo else { return }
+
+        let wasPlaying = isPlaying
+        let state = VodPlaybackState(
+            flag: selectedFlag,
+            episodeIndex: selectedEpisodeIndex,
+            progressSeconds: currentPlaybackSeconds()
+        )
+        await loadDetail(video: video)
+        guard vodInfo != nil else { return }
+        if wasPlaying {
+            applyPlaybackState(state)
+        }
     }
 
     /// 在实际播放源详情成功后，异步从其他可搜索源补全缺失元数据。
@@ -323,41 +383,43 @@ class DetailViewModel: ObservableObject {
         }
         return String(String.UnicodeScalarView(scalars)).lowercased()
     }
-    
+
     /// 选择线路
     func selectFlag(_ flag: String) {
         guard selectedFlag != flag else { return }
         let currentIndex = selectedEpisodeIndex
-        
+
         selectedFlag = flag
         vodInfo?.playFlag = flag
         resumeSeconds = 0
         realtimeProgressSeconds = 0
         hasRealtimeProgressSnapshot = false
         pendingResumeProtection = nil
-        
+
         let episodes = vodInfo?.playUrlMap[flag] ?? []
         guard !episodes.isEmpty else {
             selectedEpisodeIndex = 0
             vodInfo?.playIndex = 0
             resetQualityState()
+            playUrl = nil
+            isPlaying = false
             return
         }
-        
+
         let targetIndex = min(max(currentIndex, 0), episodes.count - 1)
         selectedEpisodeIndex = targetIndex
         vodInfo?.playIndex = targetIndex
         let episodeURL = episodes[targetIndex].url
         let normalizedURL = KktvsResponseNormalizer.normalizeMediaURL(episodeURL)
         updateQualityOptions(for: normalizedURL, resetSelection: true)
-        
+
         // 播放中切线路时，立即切换到新线路对应剧集
         if isPlaying {
             playUrl = selectedPlayableURL(fallback: normalizedURL)
             resolvePlayableURLIfNeeded(normalizedURL)
         }
     }
-    
+
     /// 选择剧集并播放
     func selectEpisode(index: Int) {
         guard index >= 0, index < currentEpisodes.count else { return }
@@ -368,9 +430,15 @@ class DetailViewModel: ObservableObject {
         realtimeProgressSeconds = 0
         hasRealtimeProgressSnapshot = false
         pendingResumeProtection = nil
-        
+
         if let episode = vodInfo?.currentEpisode {
             let normalizedURL = KktvsResponseNormalizer.normalizeMediaURL(episode.url)
+            guard SourceService.validPlayableURL(normalizedURL) != nil else {
+                playUrl = nil
+                isPlaying = false
+                errorMessage = SourceError.invalidPlayableURL(episode.url).localizedDescription
+                return
+            }
             // 仅当剧集 URL 变化时重置清晰度选择。
             let shouldResetQuality = qualityBaseEpisodeURL != normalizedURL
             updateQualityOptions(for: normalizedURL, resetSelection: shouldResetQuality)
@@ -379,24 +447,24 @@ class DetailViewModel: ObservableObject {
             isPlaying = true
         }
     }
-    
+
     /// 应用历史续播状态并自动继续播放
     func applyPlaybackState(_ state: VodPlaybackState) {
         guard let info = vodInfo, !info.playFlags.isEmpty else { return }
-        
+
         let fallbackFlag = info.playFlag.isEmpty ? info.playFlags[0] : info.playFlag
         let targetFlag = info.playFlags.contains(state.flag) ? state.flag : fallbackFlag
-        
+
         selectedFlag = targetFlag
         vodInfo?.playFlag = targetFlag
-        
+
         let episodes = vodInfo?.playUrlMap[targetFlag] ?? []
         guard !episodes.isEmpty else { return }
-        
+
         let targetIndex = min(max(state.episodeIndex, 0), episodes.count - 1)
         selectedEpisodeIndex = targetIndex
         vodInfo?.playIndex = targetIndex
-        
+
         let progress = max(0, state.progressSeconds)
         resumeSeconds = progress
         realtimeProgressSeconds = progress
@@ -405,28 +473,34 @@ class DetailViewModel: ObservableObject {
             ? (position: progress, deadline: Date().addingTimeInterval(4))
             : nil
         let episodeURL = KktvsResponseNormalizer.normalizeMediaURL(episodes[targetIndex].url)
+        guard SourceService.validPlayableURL(episodeURL) != nil else {
+            playUrl = nil
+            isPlaying = false
+            errorMessage = SourceError.invalidPlayableURL(episodes[targetIndex].url).localizedDescription
+            return
+        }
         updateQualityOptions(for: episodeURL, resetSelection: true)
         playUrl = selectedPlayableURL(fallback: episodeURL)
         resolvePlayableURLIfNeeded(episodeURL)
         isPlaying = true
     }
-    
+
     /// 选择清晰度
     func selectQuality(_ option: PlaybackQualityOption) {
         guard qualityOptions.contains(option) else { return }
         selectedQualityId = option.id
         guard isPlaying else { return }
-        
+
         // “自动”使用基础剧集地址；其他选项使用对应变体地址。
         let targetURL = option.url.isEmpty ? qualityBaseEpisodeURL : option.url
-        guard !targetURL.isEmpty, playUrl != targetURL else { return }
-        
+        guard let validURL = SourceService.validPlayableURL(targetURL), playUrl != validURL else { return }
+
         let progress = max(currentPlaybackSeconds(), 0)
         resumeSeconds = progress
         realtimeProgressSeconds = progress
-        playUrl = targetURL
+        playUrl = validURL
     }
-    
+
     /// 播放器时间回调
     func updatePlaybackProgress(seconds: Double) {
         guard seconds.isFinite else { return }
@@ -439,12 +513,12 @@ class DetailViewModel: ObservableObject {
         realtimeProgressSeconds = max(seconds, 0)
         hasRealtimeProgressSnapshot = true
     }
-    
+
     /// 当前实时进度（不触发 UI 高频刷新）
     func currentPlaybackSeconds() -> Double {
         hasRealtimeProgressSnapshot ? realtimeProgressSeconds : max(realtimeProgressSeconds, resumeSeconds)
     }
-    
+
     /// 仅在必要时同步快照到可观察状态
     func commitPlaybackProgressSnapshot() {
         let snapshot = max(currentPlaybackSeconds(), 0)
@@ -452,7 +526,7 @@ class DetailViewModel: ObservableObject {
             resumeSeconds = snapshot
         }
     }
-    
+
     /// 播放下一集
     func playNext() -> Bool {
         guard let info = vodInfo else { return false }
@@ -463,7 +537,7 @@ class DetailViewModel: ObservableObject {
         }
         return false
     }
-    
+
     /// 播放上一集
     func playPrevious() -> Bool {
         if selectedEpisodeIndex > 0 {
@@ -472,35 +546,41 @@ class DetailViewModel: ObservableObject {
         }
         return false
     }
-    
+
     /// 当前剧集列表
     var currentEpisodes: [VodInfo.Episode] {
         vodInfo?.playUrlMap[selectedFlag] ?? []
     }
-    
+
     /// 可选线路列表
     var flags: [String] {
         vodInfo?.playFlags ?? []
     }
-    
+
     /// 是否存在可选清晰度
     var hasQualityChoices: Bool {
         qualityOptions.count > 1
     }
-    
-    private func selectedPlayableURL(fallback: String) -> String {
+
+    private func selectedPlayableURL(fallback: String) -> String? {
         // 若当前清晰度存在有效 URL，则优先使用；否则回退剧集原始地址。
         let selected = qualityOptions.first(where: { $0.id == selectedQualityId })?.url
-        if let selected, !selected.isEmpty {
-            return selected
+        if let selected, let validURL = SourceService.validPlayableURL(selected) {
+            return validURL
         }
-        return fallback
+        return SourceService.validPlayableURL(fallback)
     }
 
     /// KKT影视的部分线路是播放器页，先保留原地址，再异步替换为真实媒体地址。
     private func resolvePlayableURLIfNeeded(_ episodeURL: String) {
         guard let source = currentSource else { return }
         let normalized = KktvsResponseNormalizer.normalizeMediaURL(episodeURL)
+        guard SourceService.validPlayableURL(normalized) != nil else {
+            playUrl = nil
+            isPlaying = false
+            errorMessage = SourceError.invalidPlayableURL(episodeURL).localizedDescription
+            return
+        }
         guard KktvsResponseNormalizer.directMediaURL(normalized) == nil else {
             playUrl = selectedPlayableURL(fallback: normalized)
             return
@@ -511,32 +591,49 @@ class DetailViewModel: ObservableObject {
         playableResolveToken = token
         playableResolveTask = Task { [weak self, source, normalized, token] in
             guard let self else { return }
-            let resolved = await self.sourceService.resolvePlayableURL(sourceBean: source, url: normalized)
+            let resolved: String
+            do {
+                resolved = try await self.sourceService.resolvePlayableURL(sourceBean: source, url: normalized)
+            } catch {
+                guard !Task.isCancelled,
+                      self.playableResolveToken == token,
+                      self.qualityBaseEpisodeURL == normalized else { return }
+                self.playUrl = nil
+                self.isPlaying = false
+                self.errorMessage = error.localizedDescription
+                return
+            }
             guard !Task.isCancelled else { return }
             guard self.playableResolveToken == token else { return }
             guard self.qualityBaseEpisodeURL == normalized else { return }
 
             let finalURL = KktvsResponseNormalizer.normalizeMediaURL(resolved)
-            self.updateQualityOptions(for: finalURL, resetSelection: true)
-            self.playUrl = finalURL
+            guard let validURL = SourceService.validPlayableURL(finalURL) else {
+                self.playUrl = nil
+                self.isPlaying = false
+                self.errorMessage = SourceError.invalidPlayableURL(finalURL).localizedDescription
+                return
+            }
+            self.updateQualityOptions(for: validURL, resetSelection: true)
+            self.playUrl = validURL
         }
     }
 
     /// 返回指定剧集的实际播放地址，供下载任务使用。
-    /// 不改变当前播放集、线路或播放器状态；无法解析时返回原始地址，
-    /// 由下载器继续根据响应类型给出明确错误。
+    /// 不改变当前播放集、线路或播放器状态；无法解析或地址无效时返回 nil。
     func resolvedPlayableURL(for index: Int) async -> String? {
         guard currentEpisodes.indices.contains(index) else { return nil }
         let normalized = KktvsResponseNormalizer.normalizeMediaURL(currentEpisodes[index].url)
-        guard let source = currentSource else { return normalized }
+        guard let source = currentSource else { return SourceService.validPlayableURL(normalized) }
         guard KktvsResponseNormalizer.directMediaURL(normalized) == nil else {
-            return normalized
+            return SourceService.validPlayableURL(normalized)
         }
-        let resolved = await sourceService.resolvePlayableURL(sourceBean: source, url: normalized)
-        let finalURL = KktvsResponseNormalizer.normalizeMediaURL(resolved)
-        return finalURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? normalized : finalURL
+        guard let resolved = try? await sourceService.resolvePlayableURL(sourceBean: source, url: normalized) else {
+            return nil
+        }
+        return SourceService.validPlayableURL(resolved)
     }
-    
+
     /// 重置清晰度解析与选择状态。
     private func resetQualityState() {
         qualityResolveTask?.cancel()
@@ -546,28 +643,27 @@ class DetailViewModel: ObservableObject {
         selectedQualityId = PlaybackQualityOption.autoIdentifier
         qualityResolveToken = UUID()
     }
-    
+
     private func updateQualityOptions(for episodeURL: String, resetSelection: Bool) {
-        let trimmedEpisodeURL = episodeURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedEpisodeURL.isEmpty else {
+        guard let trimmedEpisodeURL = SourceService.validPlayableURL(episodeURL) else {
             resetQualityState()
             return
         }
-        
+
         // 切换剧集时先取消旧任务，避免异步回写错位。
         qualityResolveTask?.cancel()
         qualityResolveTask = nil
-        
+
         let autoOption = PlaybackQualityOption.auto(url: trimmedEpisodeURL)
         let previousSelected = selectedQualityId
-        
+
         qualityBaseEpisodeURL = trimmedEpisodeURL
         if resetSelection {
             selectedQualityId = PlaybackQualityOption.autoIdentifier
         }
-        
+
         qualityOptions = [autoOption]
-        
+
         if let cached = qualityOptionCache[trimmedEpisodeURL] {
             // 缓存命中时直接复用，避免重复网络解析。
             qualityOptions = cached
@@ -578,7 +674,7 @@ class DetailViewModel: ObservableObject {
             }
             return
         }
-        
+
         let token = UUID()
         qualityResolveToken = token
         qualityResolveTask = Task { [trimmedEpisodeURL, resetSelection, previousSelected] in
@@ -586,10 +682,10 @@ class DetailViewModel: ObservableObject {
             guard !Task.isCancelled else { return }
             guard qualityResolveToken == token, qualityBaseEpisodeURL == trimmedEpisodeURL else { return }
             guard !resolved.isEmpty else { return }
-            
+
             qualityOptionCache[trimmedEpisodeURL] = resolved
             qualityOptions = resolved
-            
+
             if resetSelection {
                 selectedQualityId = PlaybackQualityOption.autoIdentifier
             } else if resolved.contains(where: { $0.id == selectedQualityId }) {
@@ -601,14 +697,14 @@ class DetailViewModel: ObservableObject {
             }
         }
     }
-    
+
     /// 尝试从 HLS 主播放列表解析多清晰度选项。
     private func resolveQualityOptions(for episodeURL: String) async -> [PlaybackQualityOption] {
         guard let url = URL(string: episodeURL), Self.looksLikeHLSURL(url) else { return [] }
         guard let playlist = try? await network.getString(from: episodeURL) else { return [] }
         return Self.parseMasterPlaylist(playlist, masterURL: url)
     }
-    
+
     /// HLS 变体流中间模型。
     private struct HLSVariant {
         let url: String
@@ -616,7 +712,7 @@ class DetailViewModel: ObservableObject {
         let height: Int?
         let bandwidth: Int?
     }
-    
+
     /// 轻量判断 URL 是否可能是 HLS 播放列表。
     private static func looksLikeHLSURL(_ url: URL) -> Bool {
         let lowercased = url.absoluteString.lowercased()
@@ -624,26 +720,26 @@ class DetailViewModel: ObservableObject {
         let ext = url.pathExtension.lowercased()
         return ext == "m3u8" || ext == "m3u"
     }
-    
+
     /// 解析 HLS 主播放列表并生成清晰度选项。
     /// 仅当解析出 2 个及以上有效变体时才返回（否则不显示清晰度切换）。
     private static func parseMasterPlaylist(_ content: String, masterURL: URL) -> [PlaybackQualityOption] {
         guard content.localizedCaseInsensitiveContains("#EXT-X-STREAM-INF") else { return [] }
-        
+
         let lines = content.components(separatedBy: .newlines)
         var variants: [HLSVariant] = []
         var index = 0
-        
+
         while index < lines.count {
             let line = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
             guard line.hasPrefix("#EXT-X-STREAM-INF:") else {
                 index += 1
                 continue
             }
-            
+
             let attributeString = String(line.dropFirst("#EXT-X-STREAM-INF:".count))
             let attributes = parseAttributeMap(attributeString)
-            
+
             var uri: String?
             var nextIndex = index + 1
             while nextIndex < lines.count {
@@ -659,7 +755,7 @@ class DetailViewModel: ObservableObject {
                 uri = candidate
                 break
             }
-            
+
             if let uri, !uri.isEmpty {
                 let resolvedURL = URL(string: uri, relativeTo: masterURL)?.absoluteURL.absoluteString ?? uri
                 let name = attributes["NAME"]?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -675,7 +771,7 @@ class DetailViewModel: ObservableObject {
                 } else {
                     height = nil
                 }
-                
+
                 variants.append(HLSVariant(
                     url: resolvedURL,
                     name: name?.isEmpty == true ? nil : name,
@@ -683,18 +779,18 @@ class DetailViewModel: ObservableObject {
                     bandwidth: bandwidth
                 ))
             }
-            
+
             index = nextIndex + 1
         }
-        
+
         guard !variants.isEmpty else { return [] }
-        
+
         var seenURLs = Set<String>()
         let deduped = variants.filter { variant in
             let inserted = seenURLs.insert(variant.url).inserted
             return inserted
         }
-        
+
         let sorted = deduped.sorted { lhs, rhs in
             let lhsHeight = lhs.height ?? -1
             let rhsHeight = rhs.height ?? -1
@@ -708,7 +804,7 @@ class DetailViewModel: ObservableObject {
             }
             return lhs.url < rhs.url
         }
-        
+
         let masterURLString = masterURL.absoluteString
         var displayNameCount: [String: Int] = [:]
         let options = sorted.enumerated().map { offset, variant -> PlaybackQualityOption in
@@ -722,21 +818,21 @@ class DetailViewModel: ObservableObject {
             } else {
                 baseName = "清晰度\(offset + 1)"
             }
-            
+
             let newCount = (displayNameCount[baseName] ?? 0) + 1
             displayNameCount[baseName] = newCount
             let finalName = newCount > 1 ? "\(baseName) \(newCount)" : baseName
-            
+
             return PlaybackQualityOption(id: variant.url, name: finalName, url: variant.url)
         }.filter { !$0.url.isEmpty && $0.url != masterURLString }
-        
+
         guard options.count >= 2 else { return [] }
-        
+
         var merged = [PlaybackQualityOption.auto(url: masterURLString)]
         merged.append(contentsOf: options)
         return merged
     }
-    
+
     /// 解析 `EXT-X-STREAM-INF` 的属性串为键值字典。
     private static func parseAttributeMap(_ raw: String) -> [String: String] {
         var result: [String: String] = [:]
@@ -756,20 +852,20 @@ class DetailViewModel: ObservableObject {
         }
         return result
     }
-    
+
     /// 按逗号分隔属性，但保留引号内逗号。
     private static func splitAttributes(_ raw: String) -> [String] {
         var parts: [String] = []
         var buffer = ""
         var inQuotes = false
-        
+
         for char in raw {
             if char == "\"" {
                 inQuotes.toggle()
                 buffer.append(char)
                 continue
             }
-            
+
             if char == "," && !inQuotes {
                 let item = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !item.isEmpty {
@@ -778,10 +874,10 @@ class DetailViewModel: ObservableObject {
                 buffer.removeAll(keepingCapacity: true)
                 continue
             }
-            
+
             buffer.append(char)
         }
-        
+
         let tail = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
         if !tail.isEmpty {
             parts.append(tail)

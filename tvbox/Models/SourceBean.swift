@@ -4,7 +4,7 @@ import Foundation
 struct SourceBean: Codable, Identifiable, Hashable {
     /// 以源 key 作为稳定标识。
     var id: String { key }
-    
+
     /// 源唯一键。
     let key: String
     /// 源显示名。
@@ -39,7 +39,7 @@ struct SourceBean: Codable, Identifiable, Hashable {
     let backupApi: [String]
     /// 备用站点域名。
     let backupDomain: [String]
-    
+
     init(key: String = "", name: String = "", api: String = "",
          searchable: Int = 1, filterable: Int = 1, quickSearch: Int = 0,
          playerType: Int = 0, type: Int = 1, ext: String? = nil,
@@ -94,19 +94,19 @@ struct SourceBean: Codable, Identifiable, Hashable {
             backupDomain: try container.decodeIfPresent([String].self, forKey: .backupDomain) ?? []
         )
     }
-    
+
     var isSearchable: Bool { searchable == 1 }
     var isFilterable: Bool { filterable == 1 }
     var isQuickSearchEnabled: Bool { quickSearch == 1 }
     var isChangeable: Bool { changeable == 1 }
     var isEnabled: Bool { !disabled }
     var isSelectable: Bool { isSupportedInSwift && isEnabled && !hidden }
-    
+
     /// 是否在 Swift 版中受支持（type=3 为 JAR/Spider，需要 Java 运行时，暂不支持）
     var isSupportedInSwift: Bool {
         return type == 0 || type == 1 || type == 4
     }
-    
+
     /// 类型描述
     var typeDescription: String {
         switch type {
@@ -117,9 +117,17 @@ struct SourceBean: Codable, Identifiable, Hashable {
         default: return "未知"
         }
     }
-    
+
     /// api 字段是否为有效 HTTP URL
     var isHttpApi: Bool {
-        return api.hasPrefix("http://") || api.hasPrefix("https://")
+        let trimmed = api.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              let host = components.host,
+              !host.isEmpty else {
+            return false
+        }
+        return true
     }
 }

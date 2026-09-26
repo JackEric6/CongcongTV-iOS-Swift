@@ -4,32 +4,32 @@ import Foundation
 /// 负责从各视频源获取分类、列表、详情和搜索数据
 class SourceService {
     static let shared = SourceService()
-    
+
     private let network = NetworkManager.shared
     /// 短期记录失效源，避免每次搜索都重复等待 403、空结果或超时站点。
     private let searchHealth = SearchSourceHealthCache()
-    
+
     private init() {}
-    
+
     // MARK: - 获取分类列表
-    
+
     /// 获取指定源的分类列表和首页推荐
     func getSort(sourceBean: SourceBean) async throws -> (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]) {
         let api = sourceBean.api
         guard !api.isEmpty else {
             throw SourceError.emptyApi
         }
-        
+
         // type=3 (JAR/Spider) 暂不支持
         guard sourceBean.isSupportedInSwift else {
             throw SourceError.unsupportedType(sourceBean.typeDescription)
         }
-        
+
         // 确保 api 是有效的 HTTP URL
         guard sourceBean.isHttpApi else {
             throw SourceError.invalidApiUrl(api)
         }
-        
+
         let rawJSON: String
         if sourceBean.type == 0 {
             // XML 接口
@@ -56,15 +56,15 @@ class SourceService {
             )
             rawJSON = try await getString(from: url, sourceBean: sourceBean, expectation: .catalog)
         }
-        
+
         let jsonStr = normalizedResponse(rawJSON, sourceBean: sourceBean)
         var (sorts, homeVideos) = try parseSort(jsonStr, sourceBean: sourceBean)
-        
+
         // 当大多数推荐视频的 vod_pic 为空时（ac=class 接口常见情况），
         // 额外请求列表接口获取带完整海报的推荐视频
         let picMissingCount = homeVideos.filter { $0.pic.trimmingCharacters(in: .whitespaces).isEmpty }.count
         let needsFallback = homeVideos.isEmpty || picMissingCount > homeVideos.count / 2
-        
+
         if needsFallback && (sourceBean.type == 1 || sourceBean.type == 4) {
             let listUrl: String
             if sourceBean.type == 4 {
@@ -97,18 +97,18 @@ class SourceService {
                 }
             }
         }
-        
+
         return (sorts, homeVideos)
     }
-    
+
     private func parseSort(_ jsonStr: String, sourceBean: SourceBean) throws -> (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]) {
         guard let data = jsonStr.data(using: .utf8) else {
             throw SourceError.parseError("无法解析数据")
         }
-        
+
         var sorts: [MovieSort.SortData] = []
         var homeVideos: [Movie.Video] = []
-        
+
         if sourceBean.type == 0 {
             // XML 格式
             let lowercased = jsonStr.lowercased()
@@ -159,10 +159,10 @@ class SourceService {
                 }
             }
         }
-        
+
         return (sorts, homeVideos)
     }
-    
+
     private func parseXMLCategories(from xml: String) -> [MovieSort.SortData] {
         // 简化的 XML 分类解析
         var sorts: [MovieSort.SortData] = []
@@ -180,9 +180,9 @@ class SourceService {
         }
         return sorts
     }
-    
+
     // MARK: - 获取分类视频列表
-    
+
     /// 获取分类下的视频列表
     func getList(sourceBean: SourceBean, sortData: MovieSort.SortData, page: Int = 1, filters: [String: String]? = nil) async throws -> [Movie.Video] {
         let api = sourceBean.api
@@ -247,7 +247,7 @@ class SourceService {
             }
             return merged
         }
-        
+
         let url: String
         if sourceBean.type == 0 {
             // XML 接口
@@ -267,7 +267,7 @@ class SourceService {
                 URLQueryItem(name: "t", value: sortData.id),
                 URLQueryItem(name: "pg", value: String(page))
             ]
-            
+
             // 附加筛选参数（base64 编码）
             if let filters = filters, !filters.isEmpty {
                 if let filterData = try? JSONSerialization.data(withJSONObject: filters),
@@ -279,7 +279,7 @@ class SourceService {
                 let ext = Data("{}".utf8).base64EncodedString()
                 queryItems.append(URLQueryItem(name: "ext", value: ext))
             }
-            
+
             // 加载 extend
             if let ext = sourceBean.ext, !ext.isEmpty {
                 let extend = await resolveExtend(ext)
@@ -295,7 +295,7 @@ class SourceService {
                 URLQueryItem(name: "t", value: sortData.id),
                 URLQueryItem(name: "pg", value: String(page))
             ]
-            
+
             // 附加筛选参数
             if let filters = filters {
                 for (key, value) in filters {
@@ -304,7 +304,7 @@ class SourceService {
             }
             url = try buildURL(base: api, queryItems: queryItems)
         }
-        
+
         let jsonStr = try await getString(from: url, sourceBean: sourceBean, expectation: .catalog)
         return try parseVideoList(
             normalizedResponse(jsonStr, sourceBean: sourceBean),
@@ -312,14 +312,14 @@ class SourceService {
             type: sourceBean.type
         )
     }
-    
+
     private func parseVideoList(_ jsonStr: String, sourceKey: String, type: Int) throws -> [Movie.Video] {
         guard let data = jsonStr.data(using: .utf8) else {
             throw SourceError.parseError("无法解析数据")
         }
-        
+
         var videos: [Movie.Video] = []
-        
+
         if type == 0 {
             videos = parseXMLVideoList(from: jsonStr, sourceKey: sourceKey)
         } else {
@@ -339,10 +339,10 @@ class SourceService {
                 }
             }
         }
-        
+
         return videos
     }
-    
+
     private func parseXMLVideoList(from xml: String, sourceKey: String) -> [Movie.Video] {
         // 简化 XML 视频列表解析
         var videos: [Movie.Video] = []
@@ -361,16 +361,19 @@ class SourceService {
         }
         return videos
     }
-    
+
     // MARK: - 获取详情
-    
+
     /// 获取视频详情
     func getDetail(sourceBean: SourceBean, vodId: String) async throws -> VodInfo? {
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
+        guard !vodId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SourceError.invalidResponse("详情 ID 为空")
+        }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
-        
+
         let url: String
         if sourceBean.type == 0 {
             url = try buildURL(
@@ -386,7 +389,7 @@ class SourceService {
                 URLQueryItem(name: "ac", value: "detail"),
                 URLQueryItem(name: "ids", value: vodId)
             ]
-            
+
             // 加载 extend
             if let ext = sourceBean.ext, !ext.isEmpty {
                 let extend = await resolveExtend(ext)
@@ -405,55 +408,61 @@ class SourceService {
                 ]
             )
         }
-        
+
         let jsonStr = try await getString(from: url, sourceBean: sourceBean, expectation: .catalog)
-        return try parseDetail(
+        guard let detail = try parseDetail(
             normalizedResponse(jsonStr, sourceBean: sourceBean),
             sourceKey: sourceBean.key,
             type: sourceBean.type
-        )
+        ) else {
+            throw SourceError.invalidResponse("详情响应没有匹配的视频")
+        }
+        return detail
     }
-    
+
     private func parseDetail(_ jsonStr: String, sourceKey: String, type: Int) throws -> VodInfo? {
         if type == 0 {
-            return parseXMLDetail(jsonStr, sourceKey: sourceKey)
+            guard let detail = parseXMLDetail(jsonStr, sourceKey: sourceKey) else {
+                throw SourceError.invalidResponse("XML 详情缺少有效视频结构")
+            }
+            return detail
         }
-        
+
         guard let data = jsonStr.data(using: .utf8) else {
             throw SourceError.parseError("无法解析数据")
         }
-        
+
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw SourceError.invalidResponse("JSON 响应格式无效")
         }
         guard let list = json["list"] as? [[String: Any]] else {
             throw SourceError.invalidResponse("JSON 响应缺少有效 list 结构")
         }
-        if let first = list.first {
-            let decoder = JSONDecoder()
-            if let itemData = try? JSONSerialization.data(withJSONObject: first),
-               var video = try? decoder.decode(Movie.Video.self, from: itemData) {
-                video.sourceKey = sourceKey
-
-                let playFrom = first["vod_play_from"] as? String ?? ""
-                let playUrl = first["vod_play_url"] as? String ?? ""
-
-                return VodInfo.from(video: video, playFrom: playFrom, playUrl: playUrl)
-            }
+        guard let first = list.first else {
+            throw SourceError.invalidResponse("详情响应 list 为空")
         }
-        
-        return nil
+
+        let decoder = JSONDecoder()
+        guard let itemData = try? JSONSerialization.data(withJSONObject: first),
+              var video = try? decoder.decode(Movie.Video.self, from: itemData) else {
+            throw SourceError.invalidResponse("详情视频结构无效")
+        }
+        video.sourceKey = sourceKey
+
+        let playFrom = first["vod_play_from"] as? String ?? ""
+        let playUrl = first["vod_play_url"] as? String ?? ""
+        return VodInfo.from(video: video, playFrom: playFrom, playUrl: playUrl)
     }
-    
+
     // MARK: - 搜索
-    
+
     /// 在指定源中搜索
     func search(sourceBean: SourceBean, keyword: String) async throws -> [Movie.Video] {
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
-        
+
         let url: String
         if sourceBean.type == 0 {
             url = try buildURL(
@@ -468,7 +477,7 @@ class SourceService {
                 URLQueryItem(name: "ac", value: "detail"),
                 URLQueryItem(name: "quick", value: quickValue)
             ]
-            
+
             // 加载 extend
             if let ext = sourceBean.ext, !ext.isEmpty {
                 let extend = await resolveExtend(ext, timeout: 3, maxRetries: 0)
@@ -498,7 +507,7 @@ class SourceService {
                 ]
             )
         }
-        
+
         // 搜索是聚合请求的一部分，不能沿用首页请求的长超时和重试策略。
         // 单个站点失败应尽快让位给其他站点，避免搜索页长期停留在“搜索中”。
         let jsonStr = try await getSearchString(from: url, sourceBean: sourceBean)
@@ -512,19 +521,42 @@ class SourceService {
 
     /// 将 KKT影视的播放器页地址尽量解析为 AVPlayer/VLC 可以直接打开的媒体地址。
     /// 普通 CMS 源保持原地址，不改变现有播放行为。
-    func resolvePlayableURL(sourceBean: SourceBean, url: String) async -> String {
+    func resolvePlayableURL(sourceBean: SourceBean, url: String) async throws -> String {
         let normalized = KktvsResponseNormalizer.normalizeMediaURL(url)
-        guard isKktvsSource(sourceBean) else { return normalized }
+        guard let validURL = Self.validPlayableURL(normalized) else {
+            throw SourceError.invalidPlayableURL(url)
+        }
+        guard isKktvsSource(sourceBean) else { return validURL }
         if KktvsResponseNormalizer.directMediaURL(normalized) != nil {
-            return normalized
+            return validURL
         }
 
-        guard let body = try? await getString(from: normalized, sourceBean: sourceBean) else {
-            return normalized
+        let body = try await getString(from: validURL, sourceBean: sourceBean)
+        guard let extracted = KktvsResponseNormalizer.extractMediaURL(from: body, baseURL: validURL),
+              let resolvedURL = Self.validPlayableURL(extracted) else {
+            throw SourceError.invalidPlayableURL(validURL)
         }
-        return KktvsResponseNormalizer.extractMediaURL(from: body, baseURL: normalized) ?? normalized
+        return resolvedURL
     }
-    
+
+    /// 只允许播放器可以处理的非空绝对地址进入播放状态。
+    static func validPlayableURL(_ value: String) -> String? {
+        let normalized = KktvsResponseNormalizer.normalizeMediaURL(value)
+        guard !normalized.isEmpty,
+              !normalized.contains(where: { $0.isWhitespace }),
+              let components = URLComponents(string: normalized),
+              let scheme = components.scheme?.lowercased(),
+              !scheme.isEmpty else {
+            return nil
+        }
+
+        let networkSchemes = ["http", "https", "rtsp", "rtmp", "mms"]
+        if networkSchemes.contains(scheme) {
+            guard let host = components.host, !host.isEmpty else { return nil }
+        }
+        return normalized
+    }
+
     /// 多源并发搜索。
     ///
     /// 站点数量较多时采用有限并发：同时请求过多会触发系统连接排队，
@@ -645,16 +677,16 @@ class SourceService {
             group.cancelAll()
         }
     }
-    
+
     /// 对源返回结果做本地关键词过滤，规避部分接口返回推荐/无关内容。
     private func filterSearchResults(_ videos: [Movie.Video], keyword: String) -> [Movie.Video] {
         let tokens = keyword
             .split(whereSeparator: \.isWhitespace)
             .map { normalizeSearchText(String($0)) }
             .filter { !$0.isEmpty }
-        
+
         guard !tokens.isEmpty else { return videos }
-        
+
         return videos.filter { video in
             guard !video.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return false
@@ -679,7 +711,7 @@ class SourceService {
         }
         return 45
     }
-    
+
     private func normalizeSearchText(_ text: String) -> String {
         let folded = text.folding(
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
@@ -692,9 +724,9 @@ class SourceService {
         }
         return String(String.UnicodeScalarView(scalars)).lowercased()
     }
-    
+
     // MARK: - Extend 解析
-    
+
     /// 解析 extend 参数（对应 Android 端 getFixUrl）
     /// 如果 extend 是 HTTP URL，则下载其内容作为 extend 值
     /// 如果 extend 是普通字符串，则直接返回
@@ -704,12 +736,12 @@ class SourceService {
         maxRetries: Int = NetworkManager.defaultMaxRetries
     ) async -> String {
         guard !extend.isEmpty else { return "" }
-        
+
         // 非 HTTP URL 直接返回
         guard extend.hasPrefix("http://") || extend.hasPrefix("https://") else {
             return extend
         }
-        
+
         // 从 HTTP URL 加载 extend 内容
         do {
             let content = try await network.getString(from: extend, timeout: timeout, maxRetries: maxRetries)
@@ -740,7 +772,8 @@ class SourceService {
         let response = try await network.getString(
             from: url,
             headers: sourceBean.headers,
-            timeout: sourceBean.timeout
+            timeout: min(max(sourceBean.timeout ?? 8, 3), 12),
+            maxRetries: 1
         )
         try validateResponse(response, sourceBean: sourceBean, expectation: expectation)
         return response
@@ -826,10 +859,10 @@ class SourceService {
         ) else {
             return nil
         }
-        
+
         let vodId = extractXMLTag("id", in: videoBlock)
         guard !vodId.isEmpty else { return nil }
-        
+
         var video = Movie.Video(id: vodId)
         video.name = extractXMLTag("name", in: videoBlock)
         video.pic = extractXMLTag("pic", in: videoBlock)
@@ -841,11 +874,11 @@ class SourceService {
         video.actor = extractXMLTag("actor", in: videoBlock)
         video.des = extractXMLTag("des", in: videoBlock)
         video.sourceKey = sourceKey
-        
+
         let ddNodes = extractXMLDDNodes(from: videoBlock)
         let playFrom: String
         let playUrl: String
-        
+
         if ddNodes.isEmpty {
             playFrom = "默认"
             playUrl = ""
@@ -853,10 +886,10 @@ class SourceService {
             playFrom = ddNodes.map { $0.flag }.joined(separator: "$$$")
             playUrl = ddNodes.map { $0.url }.joined(separator: "$$$")
         }
-        
+
         return VodInfo.from(video: video, playFrom: playFrom, playUrl: playUrl)
     }
-    
+
     private func extractXMLDDNodes(from block: String) -> [(flag: String, url: String)] {
         guard let regex = try? NSRegularExpression(
             pattern: #"<dd([^>]*)>([\s\S]*?)</dd>"#,
@@ -864,22 +897,22 @@ class SourceService {
         ) else {
             return []
         }
-        
+
         let nsRange = NSRange(block.startIndex..<block.endIndex, in: block)
         let matches = regex.matches(in: block, range: nsRange)
         var result: [(flag: String, url: String)] = []
-        
+
         for (index, match) in matches.enumerated() {
             guard match.numberOfRanges >= 3 else { continue }
             guard let attrRange = Range(match.range(at: 1), in: block),
                   let valueRange = Range(match.range(at: 2), in: block) else {
                 continue
             }
-            
+
             let attrs = String(block[attrRange])
             let rawUrl = decodeXMLText(String(block[valueRange]))
             guard !rawUrl.isEmpty else { continue }
-            
+
             let flag = firstMatch(
                 pattern: #"flag\s*=\s*["']([^"']+)["']"#,
                 in: attrs,
@@ -887,17 +920,17 @@ class SourceService {
             ) ?? "线路\(index + 1)"
             result.append((flag: decodeXMLText(flag), url: rawUrl))
         }
-        
+
         return result
     }
-    
+
     private func extractXMLTag(_ tag: String, in content: String) -> String {
         let escapedTag = NSRegularExpression.escapedPattern(for: tag)
         let pattern = "<\(escapedTag)>\\s*([\\s\\S]*?)\\s*</\(escapedTag)>"
         let value = firstMatch(pattern: pattern, in: content, captureGroup: 1) ?? ""
         return decodeXMLText(value)
     }
-    
+
     private func firstMatch(pattern: String, in content: String, captureGroup: Int = 0) -> String? {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return nil
@@ -910,7 +943,7 @@ class SourceService {
         }
         return String(content[subRange])
     }
-    
+
     private func decodeXMLText(_ raw: String) -> String {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.hasPrefix("<![CDATA["), value.hasSuffix("]]>"), value.count >= 12 {
@@ -924,17 +957,17 @@ class SourceService {
         value = value.replacingOccurrences(of: "&#39;", with: "'")
         return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    
+
     private func buildURL(base: String, queryItems: [URLQueryItem]) throws -> String {
         let trimmedBase = base.trimmingCharacters(in: .whitespacesAndNewlines)
         guard var components = URLComponents(string: trimmedBase) else {
             throw SourceError.invalidApiUrl(base)
         }
-        
+
         var mergedQueryItems = components.queryItems ?? []
         mergedQueryItems.append(contentsOf: queryItems)
         components.queryItems = mergedQueryItems
-        
+
         guard let url = components.url else {
             throw SourceError.invalidApiUrl(base)
         }
@@ -946,14 +979,16 @@ enum SourceError: LocalizedError {
     case emptyApi
     case parseError(String)
     case invalidResponse(String)
+    case invalidPlayableURL(String)
     case unsupportedType(String)
     case invalidApiUrl(String)
-    
+
     var errorDescription: String? {
         switch self {
         case .emptyApi: return "接口地址为空"
         case .parseError(let msg): return "数据解析错误: \(msg)"
         case .invalidResponse(let msg): return "站点响应无效: \(msg)"
+        case .invalidPlayableURL(let url): return "播放地址无效: \(url)"
         case .unsupportedType(let type): return "暂不支持 \(type) 类型的数据源，请切换其他源"
         case .invalidApiUrl(let url): return "无效的接口地址: \(url)"
         }

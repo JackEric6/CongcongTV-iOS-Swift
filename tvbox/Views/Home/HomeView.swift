@@ -211,7 +211,8 @@ struct HomeView: View {
                     Spacer()
                 }
             } else {
-                let videos = viewModel.selectedSort?.id == "home"
+                // 分类首屏尚未返回时先展示西瓜源首页，避免豆瓣增强或分类请求阻塞首屏。
+                let videos = viewModel.selectedSort?.id == "home" || viewModel.categoryVideos.isEmpty
                     ? viewModel.homeVideos
                     : viewModel.categoryVideos
                 
