@@ -79,6 +79,8 @@ class AppState: ObservableObject {
     @Published var configLoadError: String?
     /// 是否正在重试加载配置。
     @Published var isRetryingConfig = false
+    /// 配置重新验证成功后递增，供首页刷新当前源内容。
+    @Published private(set) var sourceRefreshVersion = 0
     
     #if os(macOS)
     /// macOS 三栏布局可见性（侧栏/内容/详情）。
@@ -91,6 +93,11 @@ class AppState: ObservableObject {
     private var lastVodUrl: String = ""
     private var lastLiveUrl: String = ""
     private var networkRestoredCancellable: AnyCancellable?
+    private var configLoadGeneration = UUID()
+    private var configLoadInFlight = false
+    private var foregroundRecoveryTask: Task<Void, Never>?
+    private var lastForegroundRecoveryDate: Date?
+    private let foregroundRecoveryDebounce: TimeInterval = 1.0
     
     init() {
         setupNetworkRestoredAutoRetry()
@@ -105,7 +112,7 @@ class AppState: ObservableObject {
     /// - Parameters:
     ///   - vodUrl: 点播配置地址
     ///   - liveUrl: 直播配置地址；为空时自动回退到点播地址
-    func loadConfig(vodUrl: String, liveUrl: String?) async {
+    func loadConfig(vodUrl: String, liveUrl: String?, refreshHomeOnSuccess: Bool = false) async {
         let trimmedVod = vodUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedLive = (liveUrl ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedVod.isEmpty else { return }
@@ -114,35 +121,75 @@ class AppState: ObservableObject {
         lastVodUrl = trimmedVod
         lastLiveUrl = resolvedLive
         configLoadError = nil
+        let loadGeneration = UUID()
+        configLoadGeneration = loadGeneration
+        configLoadInFlight = true
+        defer {
+            if configLoadGeneration == loadGeneration {
+                configLoadInFlight = false
+            }
+        }
         
         do {
             try await ApiConfig.shared.loadConfigs(vodApiUrl: trimmedVod, liveApiUrl: resolvedLive)
-            applyLoadedConfigState()
+            guard configLoadGeneration == loadGeneration, !Task.isCancelled else { return }
+            applyLoadedConfigState(refreshHome: refreshHomeOnSuccess)
         } catch {
+            guard configLoadGeneration == loadGeneration, !Task.isCancelled else { return }
             if !(error is CancellationError) {
                 configLoadError = error.localizedDescription
             }
         }
     }
+
+    /// 应用回到前台时重新验证当前配置，并在成功后通知首页刷新。
+    /// 只使用最近一次保存的点播/直播地址，不依赖当前是否已经成功加载过。
+    func recoverConfigOnForeground() {
+        guard !lastVodUrl.isEmpty else { return }
+        guard !configLoadInFlight else { return }
+
+        let now = Date()
+        if let lastForegroundRecoveryDate,
+           now.timeIntervalSince(lastForegroundRecoveryDate) < foregroundRecoveryDebounce {
+            return
+        }
+        lastForegroundRecoveryDate = now
+
+        foregroundRecoveryTask?.cancel()
+        foregroundRecoveryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 350_000_000)
+            } catch {
+                return
+            }
+
+            guard let self, !Task.isCancelled, !self.configLoadInFlight else { return }
+            let vodUrl = self.lastVodUrl
+            let liveUrl = self.lastLiveUrl
+            self.isRetryingConfig = true
+            await self.loadConfig(vodUrl: vodUrl, liveUrl: liveUrl, refreshHomeOnSuccess: true)
+            self.isRetryingConfig = false
+        }
+    }
     
     /// 将"配置已加载"的统一状态写回全局。
     /// 该方法会在设置页和启动自动加载两个入口中复用。
-    func applyLoadedConfigState() {
+    func applyLoadedConfigState(refreshHome: Bool = false) {
         isConfigLoaded = true
         configLoadError = nil
         currentSourceKey = ApiConfig.shared.homeSourceBean?.key ?? ""
+        if refreshHome {
+            sourceRefreshVersion &+= 1
+        }
     }
     
-    /// 网络恢复时，若配置未成功加载过，自动重试一次。
+    /// 网络恢复时复用前台恢复逻辑，避免重复实现导致并发加载。
     private func setupNetworkRestoredAutoRetry() {
         networkRestoredCancellable = NetworkMonitor.shared.networkRestoredPublisher
             .sink { [weak self] in
                 guard let self else { return }
                 Task { @MainActor [weak self] in
-                    guard let self, !self.isConfigLoaded, !self.lastVodUrl.isEmpty else { return }
-                    self.isRetryingConfig = true
-                    await self.loadConfig(vodUrl: self.lastVodUrl, liveUrl: self.lastLiveUrl)
-                    self.isRetryingConfig = false
+                    self?.recoverConfigOnForeground()
                 }
             }
     }

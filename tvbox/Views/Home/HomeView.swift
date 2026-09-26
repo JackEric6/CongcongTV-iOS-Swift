@@ -51,6 +51,12 @@ struct HomeView: View {
                 }
             }
         }
+        .onChange(of: appState.sourceRefreshVersion) { _, _ in
+            guard appState.isConfigLoaded else { return }
+            Task {
+                await viewModel.refresh()
+            }
+        }
     }
     
     // MARK: - 顶部栏

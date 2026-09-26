@@ -33,7 +33,7 @@ class SourceService {
         let rawJSON: String
         if sourceBean.type == 0 {
             // XML 接口
-            rawJSON = try await getString(from: api, sourceBean: sourceBean)
+            rawJSON = try await getString(from: api, sourceBean: sourceBean, expectation: .catalog)
         } else if sourceBean.type == 4 {
             // Type 4: 远程接口，需要 extend 和 filter 参数
             var queryItems: [URLQueryItem] = [
@@ -47,14 +47,14 @@ class SourceService {
                 }
             }
             let url = try buildURL(base: api, queryItems: queryItems)
-            rawJSON = try await getString(from: url, sourceBean: sourceBean)
+            rawJSON = try await getString(from: url, sourceBean: sourceBean, expectation: .catalog)
         } else {
             // JSON 接口 (type=1)
             let url = try buildURL(
                 base: api,
                 queryItems: [URLQueryItem(name: "ac", value: "class")]
             )
-            rawJSON = try await getString(from: url, sourceBean: sourceBean)
+            rawJSON = try await getString(from: url, sourceBean: sourceBean, expectation: .catalog)
         }
         
         let jsonStr = normalizedResponse(rawJSON, sourceBean: sourceBean)
@@ -89,7 +89,7 @@ class SourceService {
                     ]
                 )
             }
-            if let listStr = try? await getString(from: listUrl, sourceBean: sourceBean) {
+            if let listStr = try? await getString(from: listUrl, sourceBean: sourceBean, expectation: .catalog) {
                 let normalizedList = normalizedResponse(listStr, sourceBean: sourceBean)
                 let fallback = (try? parseVideoList(normalizedList, sourceKey: sourceBean.key, type: sourceBean.type)) ?? []
                 if !fallback.isEmpty {
@@ -111,33 +111,50 @@ class SourceService {
         
         if sourceBean.type == 0 {
             // XML 格式
+            let lowercased = jsonStr.lowercased()
+            guard lowercased.contains("<rss") || lowercased.contains("<root") ||
+                    lowercased.contains("<class") || lowercased.contains("<ty") ||
+                    lowercased.contains("<video") else {
+                throw SourceError.invalidResponse("XML 响应缺少分类或视频结构")
+            }
             sorts = parseXMLCategories(from: jsonStr)
         } else {
             // JSON 格式 (type=1, type=4)
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                // 解析分类
-                if let classList = json["class"] as? [[String: Any]] {
-                    for cls in classList {
-                        let id: String
-                        if let intId = cls["type_id"] as? Int {
-                            id = String(intId)
-                        } else {
-                            id = cls["type_id"] as? String ?? ""
-                        }
-                        let name = cls["type_name"] as? String ?? ""
-                        sorts.append(MovieSort.SortData(id: id, name: name))
-                    }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw SourceError.invalidResponse("JSON 响应格式无效")
+            }
+            guard json["class"] != nil || json["list"] != nil else {
+                throw SourceError.invalidResponse("JSON 响应缺少 class/list 结构")
+            }
+
+            // 解析分类
+            if let classValue = json["class"] {
+                guard let classList = classValue as? [[String: Any]] else {
+                    throw SourceError.invalidResponse("JSON 的 class 结构无效")
                 }
-                
-                // 解析首页推荐视频
-                if let list = json["list"] as? [[String: Any]] {
-                    for item in list {
-                        let decoder = JSONDecoder()
-                        if let itemData = try? JSONSerialization.data(withJSONObject: item),
-                           var video = try? decoder.decode(Movie.Video.self, from: itemData) {
-                            video.sourceKey = sourceBean.key
-                            homeVideos.append(video)
-                        }
+                for cls in classList {
+                    let id: String
+                    if let intId = cls["type_id"] as? Int {
+                        id = String(intId)
+                    } else {
+                        id = cls["type_id"] as? String ?? ""
+                    }
+                    let name = cls["type_name"] as? String ?? ""
+                    sorts.append(MovieSort.SortData(id: id, name: name))
+                }
+            }
+
+            // 解析首页推荐视频
+            if let listValue = json["list"] {
+                guard let list = listValue as? [[String: Any]] else {
+                    throw SourceError.invalidResponse("JSON 的 list 结构无效")
+                }
+                for item in list {
+                    let decoder = JSONDecoder()
+                    if let itemData = try? JSONSerialization.data(withJSONObject: item),
+                       var video = try? decoder.decode(Movie.Video.self, from: itemData) {
+                        video.sourceKey = sourceBean.key
+                        homeVideos.append(video)
                     }
                 }
             }
@@ -178,6 +195,8 @@ class SourceService {
            let childTypeIDs = xiguaChildTypeIDs(for: sortData.id) {
             var merged: [Movie.Video] = []
             var seen = Set<String>()
+            var successfulResponses = 0
+            var lastError: Error?
 
             // 西瓜的 1/2/3/4 是聚合父类，逐个请求 Android 端使用的子分类。
             for childTypeID in childTypeIDs {
@@ -192,22 +211,39 @@ class SourceService {
                     })
                 }
 
-                guard let childURL = try? buildURL(base: api, queryItems: queryItems),
-                      let childJSON = try? await getString(from: childURL, sourceBean: sourceBean) else {
+                guard let childURL = try? buildURL(base: api, queryItems: queryItems) else {
                     continue
                 }
 
-                let childVideos = (try? parseVideoList(
-                    normalizedResponse(childJSON, sourceBean: sourceBean),
-                    sourceKey: sourceBean.key,
-                    type: sourceBean.type
-                )) ?? []
+                let childJSON: String
+                do {
+                    childJSON = try await getString(from: childURL, sourceBean: sourceBean, expectation: .catalog)
+                } catch {
+                    lastError = error
+                    continue
+                }
+
+                let childVideos: [Movie.Video]
+                do {
+                    childVideos = try parseVideoList(
+                        normalizedResponse(childJSON, sourceBean: sourceBean),
+                        sourceKey: sourceBean.key,
+                        type: sourceBean.type
+                    )
+                } catch {
+                    lastError = error
+                    continue
+                }
+                successfulResponses += 1
                 for video in childVideos {
                     let deduplicationKey = video.id.isEmpty ? "name:\(video.name)" : "id:\(video.id)"
                     guard seen.insert(deduplicationKey).inserted else { continue }
                     merged.append(video)
                     if merged.count == 20 { return merged }
                 }
+            }
+            if successfulResponses == 0, let lastError {
+                throw lastError
             }
             return merged
         }
@@ -269,7 +305,7 @@ class SourceService {
             url = try buildURL(base: api, queryItems: queryItems)
         }
         
-        let jsonStr = try await getString(from: url, sourceBean: sourceBean)
+        let jsonStr = try await getString(from: url, sourceBean: sourceBean, expectation: .catalog)
         return try parseVideoList(
             normalizedResponse(jsonStr, sourceBean: sourceBean),
             sourceKey: sourceBean.key,
@@ -288,15 +324,18 @@ class SourceService {
             videos = parseXMLVideoList(from: jsonStr, sourceKey: sourceKey)
         } else {
             // JSON 格式 (type=1, type=4)
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let list = json["list"] as? [[String: Any]] {
-                let decoder = JSONDecoder()
-                for item in list {
-                    if let itemData = try? JSONSerialization.data(withJSONObject: item),
-                       var video = try? decoder.decode(Movie.Video.self, from: itemData) {
-                        video.sourceKey = sourceKey
-                        videos.append(video)
-                    }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw SourceError.invalidResponse("JSON 响应格式无效")
+            }
+            guard let list = json["list"] as? [[String: Any]] else {
+                throw SourceError.invalidResponse("JSON 响应缺少有效 list 结构")
+            }
+            let decoder = JSONDecoder()
+            for item in list {
+                if let itemData = try? JSONSerialization.data(withJSONObject: item),
+                   var video = try? decoder.decode(Movie.Video.self, from: itemData) {
+                    video.sourceKey = sourceKey
+                    videos.append(video)
                 }
             }
         }
@@ -367,7 +406,7 @@ class SourceService {
             )
         }
         
-        let jsonStr = try await getString(from: url, sourceBean: sourceBean)
+        let jsonStr = try await getString(from: url, sourceBean: sourceBean, expectation: .catalog)
         return try parseDetail(
             normalizedResponse(jsonStr, sourceBean: sourceBean),
             sourceKey: sourceBean.key,
@@ -384,18 +423,21 @@ class SourceService {
             throw SourceError.parseError("无法解析数据")
         }
         
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let list = json["list"] as? [[String: Any]],
-           let first = list.first {
-            
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw SourceError.invalidResponse("JSON 响应格式无效")
+        }
+        guard let list = json["list"] as? [[String: Any]] else {
+            throw SourceError.invalidResponse("JSON 响应缺少有效 list 结构")
+        }
+        if let first = list.first {
             let decoder = JSONDecoder()
             if let itemData = try? JSONSerialization.data(withJSONObject: first),
                var video = try? decoder.decode(Movie.Video.self, from: itemData) {
                 video.sourceKey = sourceKey
-                
+
                 let playFrom = first["vod_play_from"] as? String ?? ""
                 let playUrl = first["vod_play_url"] as? String ?? ""
-                
+
                 return VodInfo.from(video: video, playFrom: playFrom, playUrl: playUrl)
             }
         }
@@ -680,29 +722,77 @@ class SourceService {
         }
     }
 
+    private enum ResponseExpectation {
+        case any
+        case catalog
+    }
+
     private func normalizedResponse(_ response: String, sourceBean: SourceBean) -> String {
         guard isKktvsSource(sourceBean) else { return response }
         return KktvsResponseNormalizer.normalize(response)
     }
 
-    private func getString(from url: String, sourceBean: SourceBean) async throws -> String {
-        try await network.getString(
+    private func getString(
+        from url: String,
+        sourceBean: SourceBean,
+        expectation: ResponseExpectation = .any
+    ) async throws -> String {
+        let response = try await network.getString(
             from: url,
             headers: sourceBean.headers,
             timeout: sourceBean.timeout
         )
+        try validateResponse(response, sourceBean: sourceBean, expectation: expectation)
+        return response
     }
 
     /// 搜索专用请求策略：不重试，并将站点自报超时限制在合理范围内。
     private func getSearchString(from url: String, sourceBean: SourceBean) async throws -> String {
         let configuredTimeout = sourceBean.timeout ?? 6
         let timeout = min(max(configuredTimeout, 3), 6)
-        return try await network.getString(
+        let response = try await network.getString(
             from: url,
             headers: sourceBean.headers,
             timeout: timeout,
             maxRetries: 0
         )
+        try validateResponse(response, sourceBean: sourceBean, expectation: .catalog)
+        return response
+    }
+
+    private func validateResponse(
+        _ response: String,
+        sourceBean: SourceBean,
+        expectation: ResponseExpectation
+    ) throws {
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw SourceError.invalidResponse("站点返回空响应")
+        }
+
+        let lowercased = trimmed.lowercased()
+        let htmlMarkers = [
+            "<!doctype html", "<html", "<head", "<body", "cloudflare",
+            "access denied", "just a moment", "502 bad gateway", "404 not found"
+        ]
+        if htmlMarkers.contains(where: { lowercased.contains($0) }) {
+            throw SourceError.invalidResponse("站点返回了 HTML 或错误页面")
+        }
+
+        guard expectation == .catalog else { return }
+        if sourceBean.type == 0 {
+            guard lowercased.contains("<rss") || lowercased.contains("<root") ||
+                    lowercased.contains("<class") || lowercased.contains("<ty") ||
+                    lowercased.contains("<video") else {
+                throw SourceError.invalidResponse("XML 响应缺少影视数据结构")
+            }
+        } else {
+            guard let data = trimmed.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  object is [String: Any] else {
+                throw SourceError.invalidResponse("站点返回的不是有效 JSON")
+            }
+        }
     }
 
     private func isKktvsSource(_ sourceBean: SourceBean) -> Bool {
@@ -855,6 +945,7 @@ class SourceService {
 enum SourceError: LocalizedError {
     case emptyApi
     case parseError(String)
+    case invalidResponse(String)
     case unsupportedType(String)
     case invalidApiUrl(String)
     
@@ -862,6 +953,7 @@ enum SourceError: LocalizedError {
         switch self {
         case .emptyApi: return "接口地址为空"
         case .parseError(let msg): return "数据解析错误: \(msg)"
+        case .invalidResponse(let msg): return "站点响应无效: \(msg)"
         case .unsupportedType(let type): return "暂不支持 \(type) 类型的数据源，请切换其他源"
         case .invalidApiUrl(let url): return "无效的接口地址: \(url)"
         }

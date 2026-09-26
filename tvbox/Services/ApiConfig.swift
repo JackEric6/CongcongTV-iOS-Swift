@@ -618,6 +618,31 @@ class ApiConfig: ObservableObject {
     }
     
     /// 解析配置数据
+    private func makeSourceBean(from site: AppConfigData.SiteConfig) -> SourceBean {
+        SourceBean(
+            key: site.key ?? UUID().uuidString,
+            name: site.name ?? "未命名",
+            api: KktvsResponseNormalizer.normalizeSourceAPI(
+                site.api ?? "",
+                sourceKey: site.key ?? ""
+            ),
+            searchable: site.searchable?.value ?? 1,
+            filterable: site.filterable?.value ?? 1,
+            quickSearch: site.quickSearch?.value ?? 0,
+            playerType: site.playerType?.value ?? 0,
+            type: site.type?.value ?? 1,
+            ext: site.ext?.stringValue,
+            timeout: site.timeout?.value,
+            headers: site.headers?.compactMapValues(\.stringValue),
+            icon: site.icon,
+            changeable: site.changeable?.value ?? 1,
+            hidden: site.hidden ?? false,
+            disabled: site.disabled ?? false,
+            backupApi: site.backupApi ?? [],
+            backupDomain: site.backupDomain ?? []
+        )
+    }
+
     private func parseConfig(
         _ config: AppConfigData,
         apiUrl: String,
@@ -629,45 +654,31 @@ class ApiConfig: ObservableObject {
         
         if includeSources {
             // 解析站点列表
-            var sources: [SourceBean] = []
-            if let sites = config.sites {
-                for site in sites {
-                    let bean = SourceBean(
-                        key: site.key ?? UUID().uuidString,
-                        name: site.name ?? "未命名",
-                        api: KktvsResponseNormalizer.normalizeSourceAPI(
-                            site.api ?? "",
-                            sourceKey: site.key ?? ""
-                        ),
-                        searchable: site.searchable?.value ?? 1,
-                        filterable: site.filterable?.value ?? 1,
-                        quickSearch: site.quickSearch?.value ?? 0,
-                        playerType: site.playerType?.value ?? 0,
-                        type: site.type?.value ?? 1,
-                        ext: site.ext?.stringValue,
-                        timeout: site.timeout?.value,
-                        headers: site.headers?.compactMapValues(\.stringValue),
-                        icon: site.icon,
-                        changeable: site.changeable?.value ?? 1,
-                        hidden: site.hidden ?? false,
-                        disabled: site.disabled ?? false,
-                        backupApi: site.backupApi ?? [],
-                        backupDomain: site.backupDomain ?? []
-                    )
-                    sources.append(bean)
+            let sources = (config.sites ?? []).map { self.makeSourceBean(from: $0) }
+            // 远程配置偶发返回只有 lives/parses 的内容时，不能清空已经可用的视频源。
+            // 首次启动也保留打包的西瓜源，确保默认主页仍可进入。
+            if !sources.isEmpty {
+                self.sourceBeanList = sources
+            } else if self.sourceBeanList.isEmpty,
+                      let bundled = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+                      let bundledSites = bundled.sites {
+                let bundledSources = bundledSites.map { self.makeSourceBean(from: $0) }
+                if !bundledSources.isEmpty {
+                    self.sourceBeanList = bundledSources
                 }
             }
-            self.sourceBeanList = sources
-            
-            // 设置默认主页源：优先选择 Swift 支持的源
-            if let saved = UserDefaults.standard.string(forKey: HawkConfig.HOME_API),
-               let found = sources.first(where: { $0.key == saved && $0.isSelectable }) {
-                self.homeSourceBean = found
-            } else {
-                // 默认保持西瓜入口；隐藏/停用源只保留在配置列表中，不作为可切换主页源。
-                self.homeSourceBean = sources.first(where: { $0.key == "xgzy" && $0.isSelectable })
-                    ?? sources.first(where: { $0.isSelectable })
-                    ?? sources.first
+
+            if !self.sourceBeanList.isEmpty {
+                // 设置默认主页源：优先选择 Swift 支持的源
+                if let saved = UserDefaults.standard.string(forKey: HawkConfig.HOME_API),
+                   let found = self.sourceBeanList.first(where: { $0.key == saved && $0.isSelectable }) {
+                    self.homeSourceBean = found
+                } else {
+                    // 默认保持西瓜入口；隐藏/停用源只保留在配置列表中，不作为可切换主页源。
+                    self.homeSourceBean = self.sourceBeanList.first(where: { $0.key == "xgzy" && $0.isSelectable })
+                        ?? self.sourceBeanList.first(where: { $0.isSelectable })
+                        ?? self.sourceBeanList.first
+                }
             }
             
             // 解析解析器列表

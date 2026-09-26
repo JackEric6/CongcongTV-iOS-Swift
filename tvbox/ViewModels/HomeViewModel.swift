@@ -28,39 +28,71 @@ class HomeViewModel: ObservableObject {
     /// 标记上次加载是否因网络错误失败（用于网络恢复自动重试）。
     private var lastLoadFailedDueToNetwork = false
     private var networkRestoredCancellable: AnyCancellable?
+    /// 防止较早的刷新请求在较新的请求之后回写页面状态。
+    private var loadGeneration = 0
+    private var refreshGeneration = 0
     
     init() {
         setupNetworkRestoredAutoRetry()
     }
     
     /// 加载分类列表
-    func loadSorts() async {
+    @discardableResult
+    func loadSorts() async -> Bool {
+        loadGeneration &+= 1
+        let requestGeneration = loadGeneration
+
         guard let source = xiguaSource else {
             errorMessage = "未找到西瓜资源站配置"
-            return
+            return false
         }
         isLoading = true
         errorMessage = nil
+        defer {
+            if requestGeneration == loadGeneration {
+                isLoading = false
+            }
+        }
         
         do {
             let result = try await sourceService.getSort(sourceBean: source)
+            guard requestGeneration == loadGeneration else { return false }
             
             // 首页标签只展示源返回的子分类；不要把本地“推荐”或西瓜聚合父类混入标签。
             let allSorts = visibleChildSorts(result.sorts, source: source)
-            
-            self.sorts = allSorts
-            self.homeVideos = await loadDoubanRecommendations()
-            lastLoadFailedDueToNetwork = false
-            
-            if selectedSort == nil || !allSorts.contains(where: { $0.id == selectedSort?.id }) {
-                selectedSort = allSorts.first
+            // 异常的空响应不能覆盖已经可用的分类，允许后续刷新再次尝试。
+            if !allSorts.isEmpty || self.sorts.isEmpty {
+                self.sorts = allSorts
             }
+
+            let sourceHomeVideos = result.homeVideos
+            let recommendations = await loadDoubanRecommendations()
+            guard requestGeneration == loadGeneration else { return false }
+            // 豆瓣榜单只是海报增强层；为空或临时失败时保留源首页和既有内容。
+            if !recommendations.isEmpty {
+                self.homeVideos = recommendations
+            } else if !sourceHomeVideos.isEmpty {
+                self.homeVideos = sourceHomeVideos
+            }
+            lastLoadFailedDueToNetwork = false
+
+            let effectiveSorts = self.sorts
+            if selectedSort == nil || !effectiveSorts.contains(where: { $0.id == selectedSort?.id }) {
+                selectedSort = effectiveSorts.first
+            }
+            // 响应结构虽然合法，但完全没有可用分类或推荐时视为本次加载失败；
+            // 这样上层会保留旧内容，下一次刷新仍可重试。
+            if allSorts.isEmpty && recommendations.isEmpty && sourceHomeVideos.isEmpty {
+                errorMessage = "资源站暂时没有返回可用内容"
+                return false
+            }
+            return true
         } catch {
+            guard requestGeneration == loadGeneration else { return false }
             errorMessage = error.localizedDescription
             lastLoadFailedDueToNetwork = error.isNetworkConnectionError
+            return false
         }
-        
-        isLoading = false
     }
 
     /// 从豆瓣热门榜中筛出西瓜源确实存在的条目，避免推荐卡片无法播放。
@@ -70,29 +102,47 @@ class HomeViewModel: ObservableObject {
         guard !trending.isEmpty else { return [] }
 
         let indexedResults = await withTaskGroup(of: (Int, Movie.Video?).self, returning: [(Int, Movie.Video?)].self) { group in
-            for (index, item) in trending.enumerated() {
-                group.addTask { [sourceService] in
-                    guard let coverURL = URL(string: item.cover),
-                          let scheme = coverURL.scheme?.lowercased(),
-                          scheme == "http" || scheme == "https" else { return (index, nil) }
-                    guard let matches = try? await sourceService.search(sourceBean: xiguaSource, keyword: item.title) else {
-                        return (index, nil)
-                    }
-                    let target = Self.normalizedTitle(item.title)
-                    guard let match = matches.first(where: { Self.normalizedTitle($0.name) == target }) else {
-                        return (index, nil)
-                    }
-                    var video = match
-                    video.pic = item.cover
-                    video.sourceKey = xiguaSource.key
-                    video.doubanRating = Movie.Video.formatDoubanRating(item.rating)
-                    return (index, video)
+            var nextIndex = 0
+            let concurrency = min(4, trending.count)
+
+            func makeRecommendationResult(index: Int, item: DoubanTrendingItem) async -> (Int, Movie.Video?) {
+                guard let coverURL = URL(string: item.cover),
+                      let scheme = coverURL.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https" else { return (index, nil) }
+                guard let matches = try? await sourceService.search(sourceBean: xiguaSource, keyword: item.title) else {
+                    return (index, nil)
                 }
+                let target = Self.normalizedTitle(item.title)
+                guard let match = matches.first(where: { Self.normalizedTitle($0.name) == target }) else {
+                    return (index, nil)
+                }
+                var video = match
+                video.pic = item.cover
+                video.sourceKey = xiguaSource.key
+                video.doubanRating = Movie.Video.formatDoubanRating(item.rating)
+                return (index, video)
+            }
+
+            while nextIndex < concurrency {
+                let index = nextIndex
+                let item = trending[index]
+                group.addTask {
+                    await makeRecommendationResult(index: index, item: item)
+                }
+                nextIndex += 1
             }
 
             var results: [(Int, Movie.Video?)] = []
-            for await result in group {
+            while let result = await group.next() {
                 results.append(result)
+                if nextIndex < trending.count {
+                    let index = nextIndex
+                    let item = trending[index]
+                    group.addTask {
+                        await makeRecommendationResult(index: index, item: item)
+                    }
+                    nextIndex += 1
+                }
             }
             return results
         }
@@ -163,6 +213,10 @@ class HomeViewModel: ObservableObject {
             guard selectedSort?.id == sort.id else { return }
             
             if page == 1 {
+                if enrichedVideos.isEmpty && !categoryVideos.isEmpty {
+                    errorMessage = "资源站暂时没有返回分类内容，请稍后重试"
+                    return
+                }
                 categoryVideos = enrichedVideos
             } else {
                 categoryVideos.append(contentsOf: enrichedVideos)
@@ -195,18 +249,50 @@ class HomeViewModel: ObservableObject {
     
     /// 刷新
     func refresh() async {
-        // 全量刷新时重置分页与错误态，再重新拉分类与当前分类内容。
-        currentPage = 1
-        hasMore = true
-        categoryVideos = []
+        refreshGeneration &+= 1
+        let requestGeneration = refreshGeneration
+
+        // 刷新期间保留旧分类内容，等新分类和第一页列表都成功后再替换。
+        let previousSorts = sorts
+        let previousSelectedSort = selectedSort
+        let previousHomeVideos = homeVideos
+        let hadPreviousContent = !previousSorts.isEmpty || !previousHomeVideos.isEmpty || !categoryVideos.isEmpty
         errorMessage = nil
-        await loadSorts()
+        let sortsLoaded = await loadSorts()
+        guard requestGeneration == refreshGeneration, sortsLoaded else { return }
         
         // 切换资源源后始终回到排序后的第一个子分类（国产剧优先），
         // 避免沿用上一个源的分类 id 导致空列表或停留在错误标签。
         guard let firstCategory = sorts.first else { return }
-        selectedSort = firstCategory
-        await loadCategoryVideos(page: 1, sort: firstCategory)
+        guard let source = xiguaSource else { return }
+
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let videos = try await sourceService.getList(sourceBean: source, sortData: firstCategory, page: 1)
+            let enrichedVideos = await PosterCache.shared.fill(videos)
+            guard requestGeneration == refreshGeneration else { return }
+
+            if enrichedVideos.isEmpty && !categoryVideos.isEmpty {
+                errorMessage = "资源站暂时没有返回分类内容，请稍后重试"
+                return
+            }
+
+            selectedSort = firstCategory
+            categoryVideos = enrichedVideos
+            currentPage = 1
+            hasMore = !enrichedVideos.isEmpty
+        } catch {
+            guard requestGeneration == refreshGeneration else { return }
+            if hadPreviousContent {
+                // 分类请求成功但第一页列表失败时，回滚本轮临时分类/推荐，避免旧列表
+                // 与新分类错配；已有页面内容继续可用，下一次刷新可以重试。
+                sorts = previousSorts
+                selectedSort = previousSelectedSort
+                homeVideos = previousHomeVideos
+            }
+            errorMessage = error.localizedDescription
+        }
     }
 
     /// 过滤明显的父分类并按安卓版规则稳定排序。

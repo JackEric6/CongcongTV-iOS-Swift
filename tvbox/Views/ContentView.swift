@@ -6,6 +6,8 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     /// 网络连接状态。
     @EnvironmentObject var networkMonitor: NetworkMonitor
+    /// 用于在应用回到前台时重新验证资源站配置。
+    @Environment(\.scenePhase) private var scenePhase
     /// 当前主标签索引。
     @State private var selectedTab = 0
     
@@ -34,6 +36,10 @@ struct ContentView: View {
                     await appState.loadConfig(vodUrl: savedVodUrl, liveUrl: savedLiveUrl)
                 }
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            appState.recoverConfigOnForeground()
         }
     }
     
