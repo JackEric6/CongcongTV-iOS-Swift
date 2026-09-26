@@ -140,9 +140,17 @@ final class DownloadManager: NSObject, ObservableObject {
         configuration.waitsForConnectivity = true
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
 
-        let assetConfiguration = URLSessionConfiguration.default
+        // AVAssetDownloadURLSession requires a background configuration on
+        // iOS. Creating it with `.default` raises an Objective-C exception at
+        // runtime, which used to make entering the detail/player page crash
+        // as soon as `DownloadManager.shared` was initialized.
+        let assetConfiguration = URLSessionConfiguration.background(
+            withIdentifier: "com.congcong.tv.xgzy.asset-downloads"
+        )
         assetConfiguration.timeoutIntervalForRequest = 60
         assetConfiguration.timeoutIntervalForResource = 24 * 60 * 60
+        assetConfiguration.isDiscretionary = false
+        assetConfiguration.sessionSendsLaunchEvents = true
         assetConfiguration.waitsForConnectivity = true
         assetSession = AVAssetDownloadURLSession(
             configuration: assetConfiguration,
