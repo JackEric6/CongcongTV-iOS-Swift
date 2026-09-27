@@ -758,7 +758,7 @@ class SourceService {
             headers[key] = value
         }
 
-        try await network.getString(
+        return try await network.getString(
             from: url,
             headers: headers,
             timeout: min(max(sourceBean.timeout ?? 8, 5), 15),
