@@ -28,8 +28,8 @@ struct DetailView: View {
     @State private var showEpisodePicker = false
     @State private var showDownloadEpisodePicker = false
     @State private var selectedDownloadEpisodes: Set<Int> = []
-    @State private var showDownloadAlert = false
-    @State private var downloadAlertMessage = ""
+    @State private var downloadToastMessage: String?
+    @State private var downloadToastToken = UUID()
     #if os(iOS)
     @State private var isDescriptionExpanded = false
     #endif
@@ -82,10 +82,19 @@ struct DetailView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .alert("影片下载", isPresented: $showDownloadAlert) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(downloadAlertMessage)
+        .overlay(alignment: .bottom) {
+            if let downloadToastMessage {
+                Text(downloadToastMessage)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.black.opacity(0.82), in: Capsule())
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 22)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .sheet(isPresented: $showEpisodePicker) {
             EpisodePickerSheet(
@@ -573,14 +582,12 @@ struct DetailView: View {
 
     private func requestDownload() {
         guard !viewModel.currentEpisodes.isEmpty else {
-            downloadAlertMessage = "当前线路没有可下载的剧集"
-            showDownloadAlert = true
+            showDownloadToast("当前线路没有可下载的剧集")
             return
         }
         if downloadManager.item(identifier: currentDownloadIdentifier)?.status == .paused {
             downloadManager.resume(identifier: currentDownloadIdentifier)
-            downloadAlertMessage = "已加入下载队列"
-            showDownloadAlert = true
+            showDownloadToast("已加入下载队列")
             return
         }
         if viewModel.currentEpisodes.count > 1 {
@@ -593,8 +600,7 @@ struct DetailView: View {
 
     private func startDownload(episodeIndex: Int) {
         guard viewModel.currentEpisodes.indices.contains(episodeIndex) else {
-            downloadAlertMessage = "选择的剧集不存在"
-            showDownloadAlert = true
+            showDownloadToast("选择的剧集不存在")
             return
         }
 
@@ -617,8 +623,7 @@ struct DetailView: View {
             guard let rawURL,
                   let url = URL(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines)),
                   ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-                downloadAlertMessage = "该集没有解析到可下载地址，请先切换到可播放线路后重试"
-                showDownloadAlert = true
+                showDownloadToast("该集没有解析到可下载地址，请先切换到可播放线路后重试")
                 return
             }
 
@@ -640,11 +645,25 @@ struct DetailView: View {
 
             do {
                 _ = try downloadManager.start(request)
-                downloadAlertMessage = "已加入下载队列"
-                showDownloadAlert = true
+                showDownloadToast("已加入下载队列")
             } catch {
-                downloadAlertMessage = error.localizedDescription
-                showDownloadAlert = true
+                showDownloadToast(error.localizedDescription)
+            }
+        }
+    }
+
+    /// 下载操作使用短暂提示，避免系统弹窗打断详情页操作。
+    private func showDownloadToast(_ message: String) {
+        let token = UUID()
+        downloadToastToken = token
+        withAnimation(.easeInOut(duration: 0.2)) {
+            downloadToastMessage = message
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            guard downloadToastToken == token else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                downloadToastMessage = nil
             }
         }
     }
