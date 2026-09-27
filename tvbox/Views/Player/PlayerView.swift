@@ -127,6 +127,10 @@ struct PlayerView: View {
     var onSelectEpisode: (() -> Void)? = nil
     var onMarkIntro: (() -> Void)? = nil
     var onMarkOutro: (() -> Void)? = nil
+    var onResetIntro: (() -> Void)? = nil
+    var onResetOutro: (() -> Void)? = nil
+    var introLabel: String = "片头"
+    var outroLabel: String = "片尾"
     var danmakuTitle: String = ""
     var danmakuEpisode: String = ""
     var onFullScreenChanged: ((Bool) -> Void)? = nil
@@ -176,6 +180,10 @@ struct PlayerView: View {
                 onSelectEpisode: onSelectEpisode,
                 onMarkIntro: onMarkIntro,
                 onMarkOutro: onMarkOutro,
+                onResetIntro: onResetIntro,
+                onResetOutro: onResetOutro,
+                introLabel: introLabel,
+                outroLabel: outroLabel,
                 danmakuTitle: danmakuTitle,
                 danmakuEpisode: danmakuEpisode
             )

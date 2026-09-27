@@ -25,6 +25,7 @@ struct DetailView: View {
     @State private var lastPersistedProgress: Double = 0
     @State private var playbackSessionToken = UUID()
     @State private var didSkipOutroForEpisode = false
+    @State private var markerRevision = 0
     @State private var isCollected = false
     @State private var showEpisodePicker = false
     @State private var showDownloadEpisodePicker = false
@@ -251,6 +252,10 @@ struct DetailView: View {
                     onSelectEpisode: handlePlayerEpisodeSelection,
                     onMarkIntro: markIntro,
                     onMarkOutro: markOutro,
+                    onResetIntro: resetIntro,
+                    onResetOutro: resetOutro,
+                    introLabel: introMarkerLabel,
+                    outroLabel: outroMarkerLabel,
                     danmakuTitle: viewModel.vodInfo?.name ?? video.name,
                     danmakuEpisode: currentDanmakuEpisode,
                     onFullScreenChanged: { showFullScreen = $0 },
@@ -891,8 +896,18 @@ struct DetailView: View {
         UserDefaults.standard.double(forKey: "congcong.playback.intro.\(playbackMarkerKey)")
     }
 
+    private var introMarkerLabel: String {
+        _ = markerRevision
+        return introMarker > 0 ? "片头 \(Int(introMarker).durationString)" : "片头"
+    }
+
     private var outroMarker: Double {
         UserDefaults.standard.double(forKey: "congcong.playback.outro.\(playbackMarkerKey)")
+    }
+
+    private var outroMarkerLabel: String {
+        _ = markerRevision
+        return outroMarker > 0 ? "片尾 \(Int(outroMarker).durationString)" : "片尾"
     }
 
     private var effectiveStartPosition: Double {
@@ -905,6 +920,7 @@ struct DetailView: View {
         let position = max(viewModel.currentPlaybackSeconds(), 0)
         guard position.isFinite else { return }
         UserDefaults.standard.set(position, forKey: "congcong.playback.intro.\(playbackMarkerKey)")
+        markerRevision += 1
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
@@ -912,8 +928,22 @@ struct DetailView: View {
         let position = max(viewModel.currentPlaybackSeconds(), 0)
         guard position.isFinite, position > 0 else { return }
         UserDefaults.standard.set(position, forKey: "congcong.playback.outro.\(playbackMarkerKey)")
+        markerRevision += 1
         // 标记动作发生在片尾起点，不应立刻触发自动切集。
         didSkipOutroForEpisode = true
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func resetIntro() {
+        UserDefaults.standard.removeObject(forKey: "congcong.playback.intro.\(playbackMarkerKey)")
+        markerRevision += 1
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func resetOutro() {
+        UserDefaults.standard.removeObject(forKey: "congcong.playback.outro.\(playbackMarkerKey)")
+        markerRevision += 1
+        didSkipOutroForEpisode = false
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 

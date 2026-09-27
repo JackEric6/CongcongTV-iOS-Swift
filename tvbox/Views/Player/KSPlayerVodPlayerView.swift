@@ -21,6 +21,10 @@ struct KSPlayerVodPlayerView: View {
     var onSelectEpisode: (() -> Void)? = nil
     var onMarkIntro: (() -> Void)? = nil
     var onMarkOutro: (() -> Void)? = nil
+    var onResetIntro: (() -> Void)? = nil
+    var onResetOutro: (() -> Void)? = nil
+    var introLabel: String = "片头"
+    var outroLabel: String = "片尾"
     var danmakuTitle: String = ""
     var danmakuEpisode: String = ""
     /// Forwards native toolbar actions to the host without replacing KSPlayer's handling.
@@ -43,6 +47,10 @@ struct KSPlayerVodPlayerView: View {
                 onSelectEpisode: onSelectEpisode,
                 onMarkIntro: onMarkIntro,
                 onMarkOutro: onMarkOutro,
+                onResetIntro: onResetIntro,
+                onResetOutro: onResetOutro,
+                introLabel: introLabel,
+                outroLabel: outroLabel,
                 danmakuTitle: danmakuTitle,
                 danmakuEpisode: danmakuEpisode
             )
@@ -745,6 +753,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
     let onSelectEpisode: (() -> Void)?
     let onMarkIntro: (() -> Void)?
     let onMarkOutro: (() -> Void)?
+    let onResetIntro: (() -> Void)?
+    let onResetOutro: (() -> Void)?
+    let introLabel: String
+    let outroLabel: String
     let danmakuTitle: String
     let danmakuEpisode: String
 
@@ -762,6 +774,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
             onSelectEpisode: onSelectEpisode,
             onMarkIntro: onMarkIntro,
             onMarkOutro: onMarkOutro,
+            onResetIntro: onResetIntro,
+            onResetOutro: onResetOutro,
+            introLabel: introLabel,
+            outroLabel: outroLabel,
             danmakuTitle: danmakuTitle,
             danmakuEpisode: danmakuEpisode
         )
@@ -795,6 +811,11 @@ private struct KSPlayerUIView: UIViewRepresentable {
         context.coordinator.onPlayPrevious = onPlayPrevious
         context.coordinator.onPlayNext = onPlayNext
         context.coordinator.onSelectEpisode = onSelectEpisode
+        context.coordinator.onMarkIntro = onMarkIntro
+        context.coordinator.onMarkOutro = onMarkOutro
+        context.coordinator.onResetIntro = onResetIntro
+        context.coordinator.onResetOutro = onResetOutro
+        context.coordinator.updateMarkerLabels(intro: introLabel, outro: outroLabel)
         context.coordinator.updateDanmakuMetadata(title: danmakuTitle, episode: danmakuEpisode)
         context.coordinator.updateActionButtons(
             canPlayPrevious: canPlayPrevious,
@@ -901,6 +922,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
         var onSelectEpisode: (() -> Void)?
         var onMarkIntro: (() -> Void)?
         var onMarkOutro: (() -> Void)?
+        var onResetIntro: (() -> Void)?
+        var onResetOutro: (() -> Void)?
         private var danmakuTitle: String
         private var danmakuEpisode: String
         private weak var danmakuView: DanmakuOverlayView?
@@ -918,6 +941,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private let episodeButton = UIButton(type: .system)
         private let introButton = UIButton(type: .system)
         private let outroButton = UIButton(type: .system)
+        private var introLabel = "片头"
+        private var outroLabel = "片尾"
         /// Strongly retain the native view across SwiftUI's transient
         /// dismantle/re-make cycle during KSPlayer full-screen transitions.
         /// The view's delegate and callbacks are weak, so this does not form
@@ -944,6 +969,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
             onSelectEpisode: (() -> Void)?,
             onMarkIntro: (() -> Void)?,
             onMarkOutro: (() -> Void)?,
+            onResetIntro: (() -> Void)?,
+            onResetOutro: (() -> Void)?,
+            introLabel: String,
+            outroLabel: String,
             danmakuTitle: String,
             danmakuEpisode: String
         ) {
@@ -956,6 +985,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
             self.onSelectEpisode = onSelectEpisode
             self.onMarkIntro = onMarkIntro
             self.onMarkOutro = onMarkOutro
+            self.onResetIntro = onResetIntro
+            self.onResetOutro = onResetOutro
+            self.introLabel = introLabel
+            self.outroLabel = outroLabel
             self.danmakuTitle = danmakuTitle
             self.danmakuEpisode = danmakuEpisode
         }
@@ -1051,8 +1084,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             configureButton(verticalForwardButton, imageName: "goforward.15", label: "前进15秒", action: #selector(forwardPressed))
             configureButton(volumeButton, imageName: "speaker.wave.2.fill", label: "音量", action: #selector(volumePressed))
             configureButton(episodeButton, imageName: "list.bullet", label: "选集", action: #selector(selectEpisodePressed))
-            configureButton(introButton, imageName: "arrow.down.to.line.compact", label: "标记片头", action: #selector(markIntroPressed))
-            configureButton(outroButton, imageName: "arrow.up.to.line.compact", label: "标记片尾", action: #selector(markOutroPressed))
+            configureMarkerButton(introButton, title: introLabel, label: "标记片头", action: #selector(markIntroPressed), resetAction: #selector(resetIntroPressed))
+            configureMarkerButton(outroButton, title: outroLabel, label: "标记片尾", action: #selector(markOutroPressed), resetAction: #selector(resetOutroPressed))
 
             verticalSeekStack.axis = .vertical
             verticalSeekStack.alignment = .center
@@ -1113,6 +1146,13 @@ private struct KSPlayerUIView: UIViewRepresentable {
             updateActionButtonsLayout(isLandscape: isLandscape)
         }
 
+        func updateMarkerLabels(intro: String, outro: String) {
+            introLabel = intro
+            outroLabel = outro
+            introButton.setTitle(intro, for: .normal)
+            outroButton.setTitle(outro, for: .normal)
+        }
+
         func updateActionButtonsLayout(isLandscape: Bool) {
             self.isLandscape = isLandscape
             // 剧集导航只在横屏显示；横屏固定占位，避免集数变化时控制栏横向跳动。
@@ -1171,6 +1211,28 @@ private struct KSPlayerUIView: UIViewRepresentable {
             button.addTarget(self, action: action, for: .primaryActionTriggered)
         }
 
+        private func configureMarkerButton(_ button: UIButton, title: String, label: String, action: Selector, resetAction: Selector) {
+            button.setTitle(title, for: .normal)
+            button.setTitleColor(.white, for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+            button.accessibilityLabel = label
+            button.accessibilityHint = "轻点设置当前时间，长按清除标记"
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 54).isActive = true
+            button.backgroundColor = .clear
+            button.layer.backgroundColor = UIColor.clear.cgColor
+            button.layer.shadowColor = UIColor.clear.cgColor
+            button.layer.shadowOpacity = 0
+            button.layer.shadowRadius = 0
+            button.layer.shadowOffset = .zero
+            button.layer.cornerRadius = 0
+            button.clipsToBounds = false
+            button.addTarget(self, action: action, for: .primaryActionTriggered)
+            let longPress = UILongPressGestureRecognizer(target: self, action: resetAction)
+            longPress.minimumPressDuration = 0.65
+            button.addGestureRecognizer(longPress)
+        }
+
         @objc private func previousPressed() {
             guard canPlayPrevious else { return }
             onPlayPrevious?()
@@ -1206,6 +1268,16 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
         @objc private func markOutroPressed() {
             onMarkOutro?()
+        }
+
+        @objc private func resetIntroPressed(_ gesture: UILongPressGestureRecognizer) {
+            guard gesture.state == .began else { return }
+            onResetIntro?()
+        }
+
+        @objc private func resetOutroPressed(_ gesture: UILongPressGestureRecognizer) {
+            guard gesture.state == .began else { return }
+            onResetOutro?()
         }
 
         @objc private func volumePressed() {
