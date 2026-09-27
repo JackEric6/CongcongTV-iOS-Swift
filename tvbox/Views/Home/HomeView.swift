@@ -39,6 +39,9 @@ struct HomeView: View {
                 viewModel.selectSort(first)
             }
         }
+        .onAppear {
+            viewModel.handleHomeAppearance()
+        }
         // 去掉了首启配置页后，主页可能先于配置加载完成出现；
         // 配置就绪后自动拉取分类与首页数据。
         .onChange(of: appState.isConfigLoaded) { _, loaded in

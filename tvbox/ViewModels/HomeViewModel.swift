@@ -35,6 +35,10 @@ class HomeViewModel: ObservableObject {
     private var sortsLoadInFlight = false
     private var refreshInFlight = false
     private var recommendationTask: Task<Void, Never>?
+    private var loadingOperationCount = 0
+    private var categoryRequestsInFlight = Set<String>()
+    private var lastHomeAppearanceReload = Date.distantPast
+    private var homeAppearanceTask: Task<Void, Never>?
     
     init() {
         setupNetworkRestoredAutoRetry()
@@ -44,7 +48,8 @@ class HomeViewModel: ObservableObject {
     @discardableResult
     func loadSorts() async -> Bool {
         guard !sortsLoadInFlight else {
-            return false
+            // 页面返回时可能与首次加载重叠；保留现有内容，避免刷新被静默判定为失败。
+            return !sorts.isEmpty || !homeVideos.isEmpty
         }
         loadGeneration &+= 1
         let requestGeneration = loadGeneration
@@ -54,12 +59,13 @@ class HomeViewModel: ObservableObject {
             return false
         }
         sortsLoadInFlight = true
-        isLoading = true
+        beginLoading()
         errorMessage = nil
         defer {
             sortsLoadInFlight = false
+            endLoading()
             if requestGeneration == loadGeneration {
-                isLoading = false
+                isLoading = loadingOperationCount > 0
             }
         }
         
@@ -223,11 +229,14 @@ class HomeViewModel: ObservableObject {
     private func loadCategoryVideos(page: Int, sort: MovieSort.SortData) async {
         guard sort.id != "home" else { return }
         guard let source = xiguaSource else { return }
-        // 防重复并发加载，避免分页错序。
-        guard !isLoading else { return }
-        
-        isLoading = true
-        defer { isLoading = false }
+        // 只去重同一分类、同一页的请求；首页恢复不能被其他加载任务静默吞掉。
+        let requestKey = "\(source.key)|\(sort.id)|\(page)"
+        guard categoryRequestsInFlight.insert(requestKey).inserted else { return }
+        beginLoading()
+        defer {
+            categoryRequestsInFlight.remove(requestKey)
+            endLoading()
+        }
         
         do {
             let videos = try await sourceService.getList(sourceBean: source, sortData: sort, page: page)
@@ -295,8 +304,8 @@ class HomeViewModel: ObservableObject {
         guard let firstCategory = sorts.first else { return }
         guard let source = xiguaSource else { return }
 
-        isLoading = true
-        defer { isLoading = false }
+        beginLoading()
+        defer { endLoading() }
         do {
             let videos = try await sourceService.getList(sourceBean: source, sortData: firstCategory, page: 1)
             let filteredVideos = strictCategoryVideos(videos, for: firstCategory, source: source)
@@ -323,6 +332,36 @@ class HomeViewModel: ObservableObject {
             }
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// 首页重新出现时轻量恢复当前西瓜分类。短时间内重复 appear 只保留一次，
+    /// 不常驻轮询，避免播放器返回后首页沿用已结束或被取消的请求状态。
+    func handleHomeAppearance() {
+        guard homeAppearanceTask == nil else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastHomeAppearanceReload) >= 1.5 else { return }
+        lastHomeAppearanceReload = now
+        homeAppearanceTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.homeAppearanceTask = nil }
+            if self.sorts.isEmpty || self.homeVideos.isEmpty {
+                _ = await self.loadSorts()
+            }
+            guard let sort = self.selectedSort,
+                  sort.id != "home",
+                  !Task.isCancelled else { return }
+            await self.loadCategoryVideos(page: 1, sort: sort)
+        }
+    }
+
+    private func beginLoading() {
+        loadingOperationCount += 1
+        isLoading = true
+    }
+
+    private func endLoading() {
+        loadingOperationCount = max(0, loadingOperationCount - 1)
+        isLoading = loadingOperationCount > 0
     }
 
     /// 过滤父分类并按安卓版规则稳定排序，只保留首页可直接请求的子分类。
