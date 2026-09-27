@@ -70,7 +70,8 @@ enum KktvsResponseNormalizer {
     static func extractMediaURL(from body: String, baseURL: String) -> String? {
         let content = unescape(body)
         let patterns = [
-            #"(?i)[\"'](?:url|playurl|play_url|file|src|video)[\"']\s*:\s*[\"']([^\"']+)[\"']"#,
+            #"(?i)[\"'](?:url|playurl|play_url|file|src|video|videoUrl|vid|source|main|playlist|hls|m3u8|mp4|media)[\"']\s*:\s*[\"']([^\"']+)[\"']"#,
+            #"(?i)\b(?:url|playurl|play_url|file|src|video|videoUrl|vid|source|main|playlist|hls|m3u8|mp4|media)\s*[:=]\s*[\"']([^\"']+)[\"']"#,
             #"(?i)(?:https?:)?//[^\s\"'<>\\]+(?:\.m3u8|\.mp4|\.flv|\.mkv|\.webm|\.mov|\.ts)(?:\?[^\s\"'<>\\]*)?"#
         ]
 
@@ -78,14 +79,21 @@ enum KktvsResponseNormalizer {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
             let range = NSRange(content.startIndex..<content.endIndex, in: content)
             for match in regex.matches(in: content, range: range) {
-                let valueRange = match.numberOfRanges > 1 && index == 0
+                let valueRange = match.numberOfRanges > 1 && index < 2
                     ? match.range(at: 1)
                     : match.range(at: 0)
                 guard let swiftRange = Range(valueRange, in: content) else { continue }
                 var candidate = String(content[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if let decoded = candidate.removingPercentEncoding {
+                    candidate = decoded
+                }
                 if candidate.hasPrefix("//") {
                     candidate = "https:" + candidate
                 } else if candidate.hasPrefix("/"),
+                          let base = URL(string: baseURL),
+                          let resolved = URL(string: candidate, relativeTo: base)?.absoluteURL {
+                    candidate = resolved.absoluteString
+                } else if !isHTTPURL(candidate),
                           let base = URL(string: baseURL),
                           let resolved = URL(string: candidate, relativeTo: base)?.absoluteURL {
                     candidate = resolved.absoluteString

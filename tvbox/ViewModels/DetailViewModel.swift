@@ -225,11 +225,7 @@ class DetailViewModel: ObservableObject {
                     )
                     if SourceService.validPlayableURL(normalizedURL) != nil {
                         updateQualityOptions(for: normalizedURL, resetSelection: true)
-                        playUrl = selectedPlayableURL(fallback: normalizedURL)
-                        isPlaying = playUrl != nil
-                        if isPlaying {
-                            resolvePlayableURLIfNeeded(normalizedURL)
-                        }
+                        resolvePlayableURLIfNeeded(normalizedURL)
                     }
                 }
             }
@@ -453,6 +449,7 @@ class DetailViewModel: ObservableObject {
     /// 选择线路
     func selectFlag(_ flag: String) {
         guard selectedFlag != flag else { return }
+        let shouldContinuePlayback = isPlaying || playableResolveTask != nil
         let currentIndex = selectedEpisodeIndex
 
         selectedFlag = flag
@@ -480,8 +477,7 @@ class DetailViewModel: ObservableObject {
         updateQualityOptions(for: normalizedURL, resetSelection: true)
 
         // 播放中切线路时，立即切换到新线路对应剧集
-        if isPlaying {
-            playUrl = selectedPlayableURL(fallback: normalizedURL)
+        if shouldContinuePlayback {
             resolvePlayableURLIfNeeded(normalizedURL)
         }
     }
@@ -508,9 +504,7 @@ class DetailViewModel: ObservableObject {
             // 仅当剧集 URL 变化时重置清晰度选择。
             let shouldResetQuality = qualityBaseEpisodeURL != normalizedURL
             updateQualityOptions(for: normalizedURL, resetSelection: shouldResetQuality)
-            playUrl = selectedPlayableURL(fallback: normalizedURL)
             resolvePlayableURLIfNeeded(normalizedURL)
-            isPlaying = true
         }
     }
 
@@ -546,9 +540,7 @@ class DetailViewModel: ObservableObject {
             return
         }
         updateQualityOptions(for: episodeURL, resetSelection: true)
-        playUrl = selectedPlayableURL(fallback: episodeURL)
         resolvePlayableURLIfNeeded(episodeURL)
-        isPlaying = true
     }
 
     /// 选择清晰度
@@ -637,7 +629,8 @@ class DetailViewModel: ObservableObject {
         return SourceService.validPlayableURL(fallback)
     }
 
-    /// KKT影视的部分线路是播放器页，先保留原地址，再异步替换为真实媒体地址。
+    /// 直链立即交给播放器；网页型播放地址先解析，解析完成后才创建播放器。
+    /// 解析请求绑定当前源、线路、剧集和令牌，避免旧任务回写新集。
     private func resolvePlayableURLIfNeeded(_ episodeURL: String) {
         guard let source = currentSource else { return }
         let normalized = KktvsResponseNormalizer.normalizeMediaURL(episodeURL)
@@ -647,15 +640,26 @@ class DetailViewModel: ObservableObject {
             errorMessage = SourceError.invalidPlayableURL(episodeURL).localizedDescription
             return
         }
+
+        playableResolveTask?.cancel()
+        playableResolveTask = nil
+        let token = UUID()
+        playableResolveToken = token
+        let requestSourceKey = source.key
+        let requestFlag = selectedFlag
+        let requestEpisodeIndex = selectedEpisodeIndex
+
         guard KktvsResponseNormalizer.directMediaURL(normalized) == nil else {
             playUrl = selectedPlayableURL(fallback: normalized)
+            isPlaying = playUrl != nil
             return
         }
 
-        playableResolveTask?.cancel()
-        let token = UUID()
-        playableResolveToken = token
-        playableResolveTask = Task { [weak self, source, normalized, token] in
+        // 非直链地址可能是 /play/、/share/ 等 HTML 页面，绝不能先交给
+        // KSPlayer；否则会出现先创建错误播放器、随后重复创建真实播放器。
+        playUrl = nil
+        isPlaying = false
+        playableResolveTask = Task { [weak self, source, normalized, token, requestSourceKey, requestFlag, requestEpisodeIndex] in
             guard let self else { return }
             let resolved: String
             do {
@@ -663,15 +667,22 @@ class DetailViewModel: ObservableObject {
             } catch {
                 guard !Task.isCancelled,
                       self.playableResolveToken == token,
-                      self.qualityBaseEpisodeURL == normalized else { return }
+                      self.qualityBaseEpisodeURL == normalized,
+                      self.currentSource?.key == requestSourceKey,
+                      self.selectedFlag == requestFlag,
+                      self.selectedEpisodeIndex == requestEpisodeIndex else { return }
                 self.playUrl = nil
                 self.isPlaying = false
                 self.errorMessage = error.localizedDescription
+                self.shouldRetryAfterNetworkRecovery = error.isNetworkConnectionError
                 return
             }
             guard !Task.isCancelled else { return }
-            guard self.playableResolveToken == token else { return }
-            guard self.qualityBaseEpisodeURL == normalized else { return }
+            guard self.playableResolveToken == token,
+                  self.qualityBaseEpisodeURL == normalized,
+                  self.currentSource?.key == requestSourceKey,
+                  self.selectedFlag == requestFlag,
+                  self.selectedEpisodeIndex == requestEpisodeIndex else { return }
 
             let finalURL = KktvsResponseNormalizer.normalizeMediaURL(resolved)
             guard let validURL = SourceService.validPlayableURL(finalURL) else {
@@ -682,6 +693,8 @@ class DetailViewModel: ObservableObject {
             }
             self.updateQualityOptions(for: validURL, resetSelection: true)
             self.playUrl = validURL
+            self.isPlaying = true
+            self.errorMessage = nil
         }
     }
 

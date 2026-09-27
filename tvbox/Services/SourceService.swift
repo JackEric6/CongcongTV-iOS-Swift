@@ -472,18 +472,20 @@ class SourceService {
     }
 
     /// 将 KKT影视的播放器页地址尽量解析为 AVPlayer/VLC 可以直接打开的媒体地址。
-    /// 普通 CMS 源保持原地址，不改变现有播放行为。
+    /// 普通 CMS 源也可能返回播放器页（例如 `/play/...`），统一尝试提取
+    /// 页面中的真实媒体地址；已经是 m3u8/mp4 等直链时保持原值。
     func resolvePlayableURL(sourceBean: SourceBean, url: String) async throws -> String {
         let normalized = KktvsResponseNormalizer.normalizeMediaURL(url)
         guard let validURL = Self.validPlayableURL(normalized) else {
             throw SourceError.invalidPlayableURL(url)
         }
-        guard isKktvsSource(sourceBean) else { return validURL }
         if KktvsResponseNormalizer.directMediaURL(normalized) != nil {
             return validURL
         }
 
-        let body = try await getString(from: validURL, sourceBean: sourceBean)
+        // 播放页通常是 HTML，不能复用 CMS 响应校验（该校验会把 HTML
+        // 视为错误页）。保留源请求头，兼容需要 Referer/User-Agent 的站点。
+        let body = try await getPlaybackPage(from: validURL, sourceBean: sourceBean)
         guard let extracted = KktvsResponseNormalizer.extractMediaURL(from: body, baseURL: validURL),
               let resolvedURL = Self.validPlayableURL(extracted) else {
             throw SourceError.invalidPlayableURL(validURL)
@@ -745,6 +747,47 @@ class SourceService {
         return response
     }
 
+    private func getPlaybackPage(from url: String, sourceBean: SourceBean) async throws -> String {
+        var headers = defaultPlaybackHeaders(for: url)
+        // URLRequest 的请求头不区分大小写，但 Swift Dictionary 区分；
+        // 先移除同名的默认项，确保配置中的自定义值稳定覆盖默认值。
+        sourceBean.headers?.forEach { key, value in
+            headers.keys
+                .filter { $0.caseInsensitiveCompare(key) == .orderedSame }
+                .forEach { headers.removeValue(forKey: $0) }
+            headers[key] = value
+        }
+
+        try await network.getString(
+            from: url,
+            headers: headers,
+            timeout: min(max(sourceBean.timeout ?? 8, 5), 15),
+            maxRetries: 1
+        )
+    }
+
+    private func defaultPlaybackHeaders(for url: String) -> [String: String] {
+        var headers = [
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        ]
+
+        guard let components = URLComponents(string: url),
+              let scheme = components.scheme,
+              let host = components.host,
+              !scheme.isEmpty,
+              !host.isEmpty else {
+            return headers
+        }
+
+        var origin = "\(scheme)://\(host)"
+        if let port = components.port {
+            origin += ":\(port)"
+        }
+        headers["Referer"] = origin + "/"
+        return headers
+    }
+
     private func validateResponse(
         _ response: String,
         sourceBean: SourceBean,
@@ -805,18 +848,70 @@ class SourceService {
         playUrl: String,
         sourceBean: SourceBean
     ) -> (playFrom: String, playUrl: String) {
-        guard isDyttSource(sourceBean) else {
-            return (playFrom, playUrl)
-        }
-
         let flags = playFrom.components(separatedBy: "$$$")
         let urls = playUrl.components(separatedBy: "$$$")
-        guard let index = flags.firstIndex(where: {
+
+        // 某些 CMS 将解析页线路放在第一条、直链 m3u8 放在后面。
+        // 先稳定地把可直接播放或可提取媒体的线路排前，避免详情页默认
+        // 选择一个只能在网页中播放的地址。相同优先级保持源站顺序。
+        var paired = flags.indices.compactMap { index -> (flag: String, url: String, index: Int)? in
+            guard urls.indices.contains(index) else { return nil }
+            let flag = flags[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            let url = urls[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !flag.isEmpty, !url.isEmpty else { return nil }
+            return (flag, url, index)
+        }
+
+        // 这些源同时返回网页解析线路和 m3u8 线路。点播端按安卓配置只保留
+        // 指定的稳定线路，并始终从同一条记录取 flag 与 URL，避免串线。
+        if let requiredFlag = requiredPlaybackFlag(for: sourceBean) {
+            paired = paired.filter {
+                $0.flag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == requiredFlag
+            }
+            guard !paired.isEmpty else { return ("", "") }
+        }
+        let ordered = paired.sorted { lhs, rhs in
+            let leftPriority = playbackLinePriority(lhs.url)
+            let rightPriority = playbackLinePriority(rhs.url)
+            if leftPriority != rightPriority { return leftPriority < rightPriority }
+            return lhs.index < rhs.index
+        }
+
+        let orderedFlags = ordered.map(\.flag)
+        let orderedURLs = ordered.map(\.url)
+        let normalizedPlayFrom = orderedFlags.isEmpty ? playFrom : orderedFlags.joined(separator: "$$$")
+        let normalizedPlayUrl = orderedURLs.isEmpty ? playUrl : orderedURLs.joined(separator: "$$$")
+
+        guard isDyttSource(sourceBean) else {
+            return (normalizedPlayFrom, normalizedPlayUrl)
+        }
+
+        let filteredFlags = normalizedPlayFrom.components(separatedBy: "$$$")
+        let filteredURLs = normalizedPlayUrl.components(separatedBy: "$$$")
+        guard let index = filteredFlags.firstIndex(where: {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "dyttm3u8"
-        }), urls.indices.contains(index) else {
+        }), filteredURLs.indices.contains(index) else {
             return ("", "")
         }
-        return ("dyttm3u8", urls[index])
+        return ("dyttm3u8", filteredURLs[index])
+    }
+
+    private func playbackLinePriority(_ rawURL: String) -> Int {
+        let normalized = KktvsResponseNormalizer.normalizeMediaURL(rawURL)
+        if KktvsResponseNormalizer.directMediaURL(normalized) != nil { return 0 }
+        let lowercased = normalized.lowercased()
+        if lowercased.contains("/play/") || lowercased.contains("player") || lowercased.contains("parse") {
+            return 1
+        }
+        return 2
+    }
+
+    private func requiredPlaybackFlag(for sourceBean: SourceBean) -> String? {
+        let identity = "\(sourceBean.key) \(sourceBean.name) \(sourceBean.api)".lowercased()
+        if identity.contains("subo") || identity.contains("速播") { return "subm3u8" }
+        if identity.contains("juliang") || identity.contains("巨量") { return "jlm3u8" }
+        if identity.contains("uku") || identity.contains("u酷") { return "ukm3u8" }
+        return nil
     }
 
     private func parseXMLDetail(_ xml: String, sourceKey: String) -> VodInfo? {

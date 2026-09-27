@@ -152,6 +152,31 @@ class SearchViewModel: ObservableObject {
             guard pendingResultKeys.insert(identity).inserted else { continue }
             pendingResults.append(video)
         }
+        // 搜索源按稳定优先级展示。只有实际返回了有效结果的源才会进入列表，
+        // 因此西瓜无结果时不会制造空占位，后续有效源会自然补位。
+        // Swift 的 sort 不保证稳定性，显式保留原始索引，避免同优先级源的结果乱序。
+        pendingResults = pendingResults.enumerated().sorted { lhs, rhs in
+            let leftPriority = sourcePriority(for: lhs.element.sourceKey)
+            let rightPriority = sourcePriority(for: rhs.element.sourceKey)
+            if leftPriority != rightPriority { return leftPriority < rightPriority }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+
+    /// 搜索页顶部优先展示稳定性较好的四个源；未列出的源保持并发回调的相对顺序。
+    private func sourcePriority(for sourceKey: String) -> Int {
+        let key = sourceKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+
+        switch key {
+        case "xgzy", "xigua", "xiguazy": return 0
+        case "ffzy", "feifan", "feifazy": return 1
+        case "lzi", "liangzi", "liangzizy": return 2
+        case "modu", "moduzy": return 3
+        default: return 100
+        }
     }
 
     /// 取消当前搜索并结束加载状态。
