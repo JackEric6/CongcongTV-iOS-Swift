@@ -80,6 +80,9 @@ struct HistoryView: View {
                 }
             }
         }
+        .task {
+            CacheStore.shared.deduplicateHistory(context: modelContext)
+        }
     }
     
     /// 无历史时的占位视图。
