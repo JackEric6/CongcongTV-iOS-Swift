@@ -653,8 +653,15 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         _ gestureRecognizer: UIGestureRecognizer,
         shouldReceive touch: UITouch
     ) -> Bool {
+        let touchPoint = touch.location(in: self)
+        // 控制栏（进度条及其下方区域）只交给原生按钮和滑块处理，
+        // 禁止左右调速/调进度以及 KSPlayer 长按 2x 手势抢占触摸。
+        if (gestureRecognizer === panGesture || gestureRecognizer === longPressGesture),
+           isControlBarTouchArea(touchPoint) {
+            return false
+        }
         guard gestureRecognizer === panGesture else { return true }
-        panStartPoint = touch.location(in: self)
+        panStartPoint = touchPoint
         return true
     }
 
@@ -704,6 +711,13 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
             height: 56
         )
         return rowFrame.contains(point)
+    }
+
+    private func isControlBarTouchArea(_ point: CGPoint) -> Bool {
+        guard !toolBar.isHidden else { return false }
+        var toolbarFrame = toolBar.convert(toolBar.bounds, to: self)
+        toolbarFrame = toolbarFrame.insetBy(dx: -18, dy: -24)
+        return toolbarFrame.contains(point) || isProgressSliderTouchArea(point)
     }
 
     override func panGestureBegan(location point: CGPoint, direction: KSPanDirection) {
