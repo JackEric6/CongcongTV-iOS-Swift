@@ -675,24 +675,19 @@ class ApiConfig: ObservableObject {
             }
 
             if !self.sourceBeanList.isEmpty {
-                // 设置默认主页源：优先选择 Swift 支持的源
-                if Self.isM766Unlocked, self.homeSourceBean?.key == "m766",
-                   let unlockedSource = self.sourceBeanList.first(where: { $0.key == "m766" && $0.isSelectable }) {
-                    self.homeSourceBean = unlockedSource
-                } else if UserDefaults.standard.string(forKey: HawkConfig.HOME_API) == "m766",
-                          Self.isM766Unlocked,
-                          let xigua = self.sourceBeanList.first(where: { $0.key == "xgzy" && $0.isSelectable }) {
-                    // A cold launch always starts from Xigua; the unlocked source is session-only.
-                    self.homeSourceBean = xigua
-                    UserDefaults.standard.set(xigua.key, forKey: HawkConfig.HOME_API)
-                } else if let saved = UserDefaults.standard.string(forKey: HawkConfig.HOME_API),
-                   let found = self.sourceBeanList.first(where: { $0.key == saved && $0.isSelectable }) {
-                    self.homeSourceBean = found
+                // 保留当前会话中主动选择的源；新会话没有内存选项，始终从西瓜开始。
+                if let selectedKey = self.homeSourceBean?.key,
+                   let selectedSource = self.sourceBeanList.first(where: { $0.key == selectedKey && $0.isSelectable }) {
+                    self.homeSourceBean = selectedSource
                 } else {
                     // 默认保持西瓜入口；隐藏/停用源只保留在配置列表中，不作为可切换主页源。
-                    self.homeSourceBean = self.sourceBeanList.first(where: { $0.key == "xgzy" && $0.isSelectable })
+                    let xigua = self.sourceBeanList.first(where: { $0.key == "xgzy" && $0.isSelectable })
                         ?? self.sourceBeanList.first(where: { $0.isSelectable })
                         ?? self.sourceBeanList.first
+                    self.homeSourceBean = xigua
+                    if let xigua {
+                        UserDefaults.standard.set(xigua.key, forKey: HawkConfig.HOME_API)
+                    }
                 }
             }
 
