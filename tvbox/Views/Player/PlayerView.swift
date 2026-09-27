@@ -125,6 +125,8 @@ struct PlayerView: View {
     var onPlayNext: (() -> Void)? = nil
     var canSelectEpisode: Bool = false
     var onSelectEpisode: (() -> Void)? = nil
+    var onMarkIntro: (() -> Void)? = nil
+    var onMarkOutro: (() -> Void)? = nil
     var danmakuTitle: String = ""
     var danmakuEpisode: String = ""
     var onFullScreenChanged: ((Bool) -> Void)? = nil
@@ -172,6 +174,8 @@ struct PlayerView: View {
                 onPlayNext: onPlayNext,
                 canSelectEpisode: canSelectEpisode,
                 onSelectEpisode: onSelectEpisode,
+                onMarkIntro: onMarkIntro,
+                onMarkOutro: onMarkOutro,
                 danmakuTitle: danmakuTitle,
                 danmakuEpisode: danmakuEpisode
             )

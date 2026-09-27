@@ -19,6 +19,8 @@ struct KSPlayerVodPlayerView: View {
     var onPlayNext: (() -> Void)? = nil
     var canSelectEpisode: Bool = false
     var onSelectEpisode: (() -> Void)? = nil
+    var onMarkIntro: (() -> Void)? = nil
+    var onMarkOutro: (() -> Void)? = nil
     var danmakuTitle: String = ""
     var danmakuEpisode: String = ""
     /// Forwards native toolbar actions to the host without replacing KSPlayer's handling.
@@ -39,6 +41,8 @@ struct KSPlayerVodPlayerView: View {
                 onPlayNext: onPlayNext,
                 canSelectEpisode: canSelectEpisode,
                 onSelectEpisode: onSelectEpisode,
+                onMarkIntro: onMarkIntro,
+                onMarkOutro: onMarkOutro,
                 danmakuTitle: danmakuTitle,
                 danmakuEpisode: danmakuEpisode
             )
@@ -739,6 +743,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
     let onPlayNext: (() -> Void)?
     let canSelectEpisode: Bool
     let onSelectEpisode: (() -> Void)?
+    let onMarkIntro: (() -> Void)?
+    let onMarkOutro: (() -> Void)?
     let danmakuTitle: String
     let danmakuEpisode: String
 
@@ -754,6 +760,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             onPlayPrevious: onPlayPrevious,
             onPlayNext: onPlayNext,
             onSelectEpisode: onSelectEpisode,
+            onMarkIntro: onMarkIntro,
+            onMarkOutro: onMarkOutro,
             danmakuTitle: danmakuTitle,
             danmakuEpisode: danmakuEpisode
         )
@@ -891,6 +899,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
         var onPlayPrevious: (() -> Void)?
         var onPlayNext: (() -> Void)?
         var onSelectEpisode: (() -> Void)?
+        var onMarkIntro: (() -> Void)?
+        var onMarkOutro: (() -> Void)?
         private var danmakuTitle: String
         private var danmakuEpisode: String
         private weak var danmakuView: DanmakuOverlayView?
@@ -906,6 +916,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private let verticalSeekStack = UIStackView()
         private let volumeButton = UIButton(type: .system)
         private let episodeButton = UIButton(type: .system)
+        private let introButton = UIButton(type: .system)
+        private let outroButton = UIButton(type: .system)
         /// Strongly retain the native view across SwiftUI's transient
         /// dismantle/re-make cycle during KSPlayer full-screen transitions.
         /// The view's delegate and callbacks are weak, so this does not form
@@ -930,6 +942,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             onPlayPrevious: (() -> Void)?,
             onPlayNext: (() -> Void)?,
             onSelectEpisode: (() -> Void)?,
+            onMarkIntro: (() -> Void)?,
+            onMarkOutro: (() -> Void)?,
             danmakuTitle: String,
             danmakuEpisode: String
         ) {
@@ -940,6 +954,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             self.onPlayPrevious = onPlayPrevious
             self.onPlayNext = onPlayNext
             self.onSelectEpisode = onSelectEpisode
+            self.onMarkIntro = onMarkIntro
+            self.onMarkOutro = onMarkOutro
             self.danmakuTitle = danmakuTitle
             self.danmakuEpisode = danmakuEpisode
         }
@@ -1035,6 +1051,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             configureButton(verticalForwardButton, imageName: "goforward.15", label: "前进15秒", action: #selector(forwardPressed))
             configureButton(volumeButton, imageName: "speaker.wave.2.fill", label: "音量", action: #selector(volumePressed))
             configureButton(episodeButton, imageName: "list.bullet", label: "选集", action: #selector(selectEpisodePressed))
+            configureButton(introButton, imageName: "arrow.down.to.line.compact", label: "标记片头", action: #selector(markIntroPressed))
+            configureButton(outroButton, imageName: "arrow.up.to.line.compact", label: "标记片尾", action: #selector(markOutroPressed))
 
             verticalSeekStack.axis = .vertical
             verticalSeekStack.alignment = .center
@@ -1066,6 +1084,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 volumeButton,
                 toolbar.playbackRateButton,
                 episodeButton,
+                introButton,
+                outroButton,
                 view.landscapeButton
             ]
             for arranged in toolbar.arrangedSubviews {
@@ -1103,6 +1123,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             previousButton.alpha = canPlayPrevious ? 1 : 0.45
             nextButton.alpha = canPlayNext ? 1 : 0.45
             episodeButton.isHidden = !isLandscape || !canSelectEpisode
+            introButton.isHidden = false
+            outroButton.isHidden = false
             rewindButton.isHidden = !isLandscape
             forwardButton.isHidden = !isLandscape
             verticalSeekStack.isHidden = isLandscape
@@ -1125,6 +1147,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 self.playerView?.routeButton.isHidden = !self.controlsVisible
                 self.playerView?.toolBar.playbackRateButton.alpha = alpha
                 self.playerView?.toolBar.playbackRateButton.isHidden = !self.controlsVisible
+                self.introButton.alpha = alpha
+                self.outroButton.alpha = alpha
+                self.introButton.isHidden = !self.controlsVisible
+                self.outroButton.isHidden = !self.controlsVisible
             }
         }
 
@@ -1172,6 +1198,14 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
         @objc private func selectEpisodePressed() {
             onSelectEpisode?()
+        }
+
+        @objc private func markIntroPressed() {
+            onMarkIntro?()
+        }
+
+        @objc private func markOutroPressed() {
+            onMarkOutro?()
         }
 
         @objc private func volumePressed() {

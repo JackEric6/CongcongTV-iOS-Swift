@@ -24,6 +24,7 @@ struct DetailView: View {
     #endif
     @State private var lastPersistedProgress: Double = 0
     @State private var playbackSessionToken = UUID()
+    @State private var didSkipOutroForEpisode = false
     @State private var isCollected = false
     @State private var showEpisodePicker = false
     @State private var showDownloadEpisodePicker = false
@@ -235,7 +236,7 @@ struct DetailView: View {
                 // 全屏时 KSPlayer 只移动内部 UIView，继续复用同一个播放会话。
                 PlayerView(
                     urlString: url,
-                    startPosition: viewModel.currentPlaybackSeconds(),
+                    startPosition: effectiveStartPosition,
                     onProgressChanged: { [playbackSessionToken] seconds, _ in
                         handlePlaybackProgress(seconds, sessionToken: playbackSessionToken)
                     },
@@ -248,6 +249,8 @@ struct DetailView: View {
                     onPlayNext: playNextEpisodeIfNeeded,
                     canSelectEpisode: viewModel.currentEpisodes.count > 1,
                     onSelectEpisode: handlePlayerEpisodeSelection,
+                    onMarkIntro: markIntro,
+                    onMarkOutro: markOutro,
                     danmakuTitle: viewModel.vodInfo?.name ?? video.name,
                     danmakuEpisode: currentDanmakuEpisode,
                     onFullScreenChanged: { showFullScreen = $0 },
@@ -875,6 +878,45 @@ struct DetailView: View {
         viewModel.selectedEpisodeIndex + 1 < viewModel.currentEpisodes.count
     }
 
+    private var playbackMarkerKey: String {
+        let title = (viewModel.vodInfo?.name ?? video.name)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+        let normalized = title.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.map(String.init).joined()
+        return normalized.isEmpty ? video.id : normalized
+    }
+
+    private var introMarker: Double {
+        UserDefaults.standard.double(forKey: "congcong.playback.intro.\(playbackMarkerKey)")
+    }
+
+    private var outroMarker: Double {
+        UserDefaults.standard.double(forKey: "congcong.playback.outro.\(playbackMarkerKey)")
+    }
+
+    private var effectiveStartPosition: Double {
+        let saved = max(viewModel.currentPlaybackSeconds(), 0)
+        guard saved <= 0.5 else { return saved }
+        return max(0, introMarker)
+    }
+
+    private func markIntro() {
+        let position = max(viewModel.currentPlaybackSeconds(), 0)
+        guard position.isFinite else { return }
+        UserDefaults.standard.set(position, forKey: "congcong.playback.intro.\(playbackMarkerKey)")
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func markOutro() {
+        let position = max(viewModel.currentPlaybackSeconds(), 0)
+        guard position.isFinite, position > 0 else { return }
+        UserDefaults.standard.set(position, forKey: "congcong.playback.outro.\(playbackMarkerKey)")
+        // 标记动作发生在片尾起点，不应立刻触发自动切集。
+        didSkipOutroForEpisode = true
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
     private var currentDanmakuEpisode: String {
         guard viewModel.selectedEpisodeIndex >= 0,
               viewModel.selectedEpisodeIndex < viewModel.currentEpisodes.count else {
@@ -912,6 +954,16 @@ struct DetailView: View {
             return
         }
         viewModel.updatePlaybackProgress(seconds: seconds)
+        if !didSkipOutroForEpisode,
+           outroMarker > 0,
+           seconds >= outroMarker,
+           canPlayNextEpisode {
+            didSkipOutroForEpisode = true
+            flushPlaybackHistoryBeforeSwitch()
+            beginPlaybackSession()
+            viewModel.selectEpisode(index: viewModel.selectedEpisodeIndex + 1)
+            return
+        }
         // 使用 ViewModel 接受后的进度保存。播放器启动续播时可能先回调 0，
         // 此时 ViewModel 会暂时保留已恢复位置，不能把原记录覆盖成 0。
         persistHistoryIfNeeded(force: false, currentProgress: viewModel.currentPlaybackSeconds())
@@ -936,6 +988,7 @@ struct DetailView: View {
     private func beginPlaybackSession() {
         playbackSessionToken = UUID()
         lastPersistedProgress = 0
+        didSkipOutroForEpisode = false
     }
 
     /// 在切换线路或剧集前，先把旧播放器会话的最新位置落盘，避免短会话丢失进度。
