@@ -12,7 +12,7 @@ struct SourceBean: Codable, Identifiable, Hashable {
     /// 源接口地址。
     let api: String
     /// 搜索开关：0 关闭，1 开启。
-    let searchable: Int
+    var searchable: Int
     /// 是否允许出现在首页分类：0 不可选，1 可选。
     let filterable: Int
     /// 快速搜索开关：0 关闭，1 开启（主要用于 remote 源 quick 参数）。
@@ -30,11 +30,11 @@ struct SourceBean: Codable, Identifiable, Hashable {
     /// 源图标。
     let icon: String?
     /// 是否允许切换。
-    let changeable: Int
+    var changeable: Int
     /// 是否隐藏。
-    let hidden: Bool
+    var hidden: Bool
     /// 是否停用。
-    let disabled: Bool
+    var disabled: Bool
     /// 备用 CMS 接口。
     let backupApi: [String]
     /// 备用站点域名。

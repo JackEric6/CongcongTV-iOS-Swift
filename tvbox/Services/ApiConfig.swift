@@ -5,6 +5,7 @@ import Foundation
 @MainActor
 class ApiConfig: ObservableObject {
     static let shared = ApiConfig()
+    static let m766UnlockStorageKey = "congcong.sources.m766.unlocked"
     private static let maxConfigResolveDepth = 6
     private static let maxRedirectCandidates = 20
     private static let rawConfigCacheTTL: TimeInterval = 20
@@ -626,7 +627,7 @@ class ApiConfig: ObservableObject {
                 site.api ?? "",
                 sourceKey: site.key ?? ""
             ),
-            searchable: site.searchable?.value ?? 1,
+            searchable: site.key == "m766" && Self.isM766Unlocked ? 1 : (site.searchable?.value ?? 1),
             filterable: site.filterable?.value ?? 1,
             quickSearch: site.quickSearch?.value ?? 0,
             playerType: site.playerType?.value ?? 0,
@@ -635,9 +636,9 @@ class ApiConfig: ObservableObject {
             timeout: site.timeout?.value,
             headers: site.headers?.compactMapValues(\.stringValue),
             icon: site.icon,
-            changeable: site.changeable?.value ?? 1,
-            hidden: site.hidden ?? false,
-            disabled: site.disabled ?? false,
+            changeable: site.key == "m766" && Self.isM766Unlocked ? 1 : (site.changeable?.value ?? 1),
+            hidden: site.key == "m766" && Self.isM766Unlocked ? false : (site.hidden ?? false),
+            disabled: site.key == "m766" && Self.isM766Unlocked ? false : (site.disabled ?? false),
             backupApi: site.backupApi ?? [],
             backupDomain: site.backupDomain ?? []
         )
@@ -654,7 +655,12 @@ class ApiConfig: ObservableObject {
 
         if includeSources {
             // 解析站点列表
-            let sources = (config.sites ?? []).map { self.makeSourceBean(from: $0) }
+            var sources = (config.sites ?? []).map { self.makeSourceBean(from: $0) }
+            if Self.isM766Unlocked, !sources.contains(where: { $0.key == "m766" }),
+               let m766Config = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+               let m766Site = m766Config.sites?.first(where: { $0.key == "m766" }) {
+                sources.append(self.makeSourceBean(from: m766Site))
+            }
             // 远程配置偶发返回只有 lives/parses 的内容时，不能清空已经可用的视频源。
             // 首次启动也保留打包的西瓜源，确保默认主页仍可进入。
             if !sources.isEmpty {
@@ -670,7 +676,16 @@ class ApiConfig: ObservableObject {
 
             if !self.sourceBeanList.isEmpty {
                 // 设置默认主页源：优先选择 Swift 支持的源
-                if let saved = UserDefaults.standard.string(forKey: HawkConfig.HOME_API),
+                if Self.isM766Unlocked, self.homeSourceBean?.key == "m766",
+                   let unlockedSource = self.sourceBeanList.first(where: { $0.key == "m766" && $0.isSelectable }) {
+                    self.homeSourceBean = unlockedSource
+                } else if UserDefaults.standard.string(forKey: HawkConfig.HOME_API) == "m766",
+                          Self.isM766Unlocked,
+                          let xigua = self.sourceBeanList.first(where: { $0.key == "xgzy" && $0.isSelectable }) {
+                    // A cold launch always starts from Xigua; the unlocked source is session-only.
+                    self.homeSourceBean = xigua
+                    UserDefaults.standard.set(xigua.key, forKey: HawkConfig.HOME_API)
+                } else if let saved = UserDefaults.standard.string(forKey: HawkConfig.HOME_API),
                    let found = self.sourceBeanList.first(where: { $0.key == saved && $0.isSelectable }) {
                     self.homeSourceBean = found
                 } else {
@@ -1012,6 +1027,30 @@ class ApiConfig: ObservableObject {
     func setHomeSource(_ source: SourceBean) {
         self.homeSourceBean = source
         UserDefaults.standard.set(source.key, forKey: HawkConfig.HOME_API)
+    }
+
+    static var isM766Unlocked: Bool {
+        UserDefaults.standard.bool(forKey: m766UnlockStorageKey)
+    }
+
+    @discardableResult
+    func unlockM766Source() -> Bool {
+        UserDefaults.standard.set(true, forKey: Self.m766UnlockStorageKey)
+        if let index = sourceBeanList.firstIndex(where: { $0.key == "m766" }) {
+            sourceBeanList[index].searchable = 1
+            sourceBeanList[index].changeable = 1
+            sourceBeanList[index].hidden = false
+            sourceBeanList[index].disabled = false
+        } else if let config = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+                  let site = config.sites?.first(where: { $0.key == "m766" }) {
+            sourceBeanList.append(makeSourceBean(from: site))
+        }
+        guard let source = sourceBeanList.first(where: { $0.key == "m766" && $0.isSelectable }) else {
+            return false
+        }
+        homeSourceBean = source
+        UserDefaults.standard.set("xgzy", forKey: HawkConfig.HOME_API)
+        return true
     }
 }
 

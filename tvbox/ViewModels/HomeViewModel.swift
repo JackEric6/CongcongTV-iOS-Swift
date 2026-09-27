@@ -54,7 +54,7 @@ class HomeViewModel: ObservableObject {
         loadGeneration &+= 1
         let requestGeneration = loadGeneration
 
-        guard let source = xiguaSource else {
+        guard let source = homeSource else {
             errorMessage = "未找到西瓜资源站配置"
             return false
         }
@@ -100,15 +100,19 @@ class HomeViewModel: ObservableObject {
 
             let sourceKey = source.key
             recommendationTask?.cancel()
-            recommendationTask = Task { [weak self] in
-                guard let self else { return }
-                let recommendations = await self.loadDoubanRecommendations()
-                guard self.loadGeneration == requestGeneration,
-                      self.xiguaSource?.key == sourceKey else { return }
-                // 豆瓣榜单为空或临时失败时保留西瓜源首页和已有内容。
-                if !recommendations.isEmpty {
-                    self.homeVideos = recommendations
+            if isXiguaSource(source) {
+                recommendationTask = Task { [weak self] in
+                    guard let self else { return }
+                    let recommendations = await self.loadDoubanRecommendations()
+                    guard self.loadGeneration == requestGeneration,
+                          self.homeSource?.key == sourceKey else { return }
+                    // 豆瓣榜单为空或临时失败时保留西瓜源首页和已有内容。
+                    if !recommendations.isEmpty {
+                        self.homeVideos = recommendations
+                    }
                 }
+            } else {
+                recommendationTask = nil
             }
             return true
         } catch {
@@ -228,7 +232,7 @@ class HomeViewModel: ObservableObject {
     /// 加载分类视频列表
     private func loadCategoryVideos(page: Int, sort: MovieSort.SortData) async {
         guard sort.id != "home" else { return }
-        guard let source = xiguaSource else { return }
+        guard let source = homeSource else { return }
         // 只去重同一分类、同一页的请求；首页恢复不能被其他加载任务静默吞掉。
         let requestKey = "\(source.key)|\(sort.id)|\(page)"
         guard categoryRequestsInFlight.insert(requestKey).inserted else { return }
@@ -302,7 +306,7 @@ class HomeViewModel: ObservableObject {
         // 切换资源源后始终回到排序后的第一个子分类（国产剧优先），
         // 避免沿用上一个源的分类 id 导致空列表或停留在错误标签。
         guard let firstCategory = sorts.first else { return }
-        guard let source = xiguaSource else { return }
+        guard let source = homeSource else { return }
 
         beginLoading()
         defer { endLoading() }
@@ -396,9 +400,13 @@ class HomeViewModel: ObservableObject {
             .map(\.element)
     }
 
-    /// 首页固定使用西瓜源；设置页仍可独立切换用户的默认源。
-    private var xiguaSource: SourceBean? {
-        ApiConfig.shared.sourceBeanList.first(where: isXiguaSource)
+    /// 首页默认使用西瓜；通过反馈码解锁并选择黄道长后切到该源。
+    private var homeSource: SourceBean? {
+        let config = ApiConfig.shared
+        if ApiConfig.isM766Unlocked, config.homeSourceBean?.key == "m766" {
+            return config.homeSourceBean
+        }
+        return config.sourceBeanList.first(where: isXiguaSource)
     }
 
     private var obviousParentCategoryNames: Set<String> {
