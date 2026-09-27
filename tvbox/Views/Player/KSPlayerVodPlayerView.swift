@@ -616,6 +616,14 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         if panGesture.delegate == nil || panGesture.delegate === self {
             panGesture.delegate = self
         }
+        // KSPlayer's 2x long-press recognizer has its own delegate. The
+        // control-area exclusion in gestureRecognizer(_:shouldReceive:) only
+        // works for recognizers whose delegate is this view; previously only
+        // panGesture was wired, so long presses below the progress bar still
+        // reached KSPlayer and enabled 2x playback.
+        if longPressGesture.delegate == nil || longPressGesture.delegate === self {
+            longPressGesture.delegate = self
+        }
         panGesture.cancelsTouchesInView = false
         guard let navigationController = owningNavigationController,
               let popGesture = navigationController.interactivePopGestureRecognizer else {
@@ -717,7 +725,23 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         guard !toolBar.isHidden else { return false }
         var toolbarFrame = toolBar.convert(toolBar.bounds, to: self)
         toolbarFrame = toolbarFrame.insetBy(dx: -18, dy: -24)
-        return toolbarFrame.contains(point) || isProgressSliderTouchArea(point)
+        guard !toolBar.timeSlider.isHidden,
+              toolBar.timeSlider.bounds.width > 0,
+              toolBar.timeSlider.bounds.height > 0 else {
+            return toolbarFrame.contains(point)
+        }
+
+        let sliderFrame = toolBar.timeSlider.convert(toolBar.timeSlider.bounds, to: self)
+        let controlsBounds = controllerView.convert(controllerView.bounds, to: self)
+        let areaBelowProgress = CGRect(
+            x: controlsBounds.minX,
+            y: sliderFrame.maxY,
+            width: controlsBounds.width,
+            height: max(0, controlsBounds.maxY - sliderFrame.maxY)
+        )
+        return toolbarFrame.contains(point)
+            || isProgressSliderTouchArea(point)
+            || areaBelowProgress.contains(point)
     }
 
     override func panGestureBegan(location point: CGPoint, direction: KSPanDirection) {
