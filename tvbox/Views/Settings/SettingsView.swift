@@ -24,7 +24,6 @@ struct SettingsView: View {
     @State private var showApiInput = false
     @State private var editingApiType: ApiInputType = .vod
     @State private var showAbout = false
-    @State private var sourceSearchText = ""
     @State private var showingPicker: PickerType = .none
     
     enum PickerType {
@@ -48,14 +47,6 @@ struct SettingsView: View {
                         ) {
                             editingApiType = .vod
                             showApiInput = true
-                        }
-                        Divider().background(Color.white.opacity(0.1))
-                        if !apiConfig.sourceBeanList.isEmpty {
-                            NavigationLink {
-                                sourcePickerView
-                            } label: {
-                                SettingsRow(icon: "server.rack", title: "主页数据源", value: apiConfig.homeSourceBean?.name ?? "", action: nil)
-                            }
                         }
                     }
                     
@@ -98,6 +89,12 @@ struct SettingsView: View {
                             FavoritesView()
                         } label: {
                             SettingsRow(icon: "heart", title: "我的收藏", value: "", action: nil)
+                        }
+                        Divider().background(Color.white.opacity(0.1))
+                        NavigationLink {
+                            FeedbackSuggestionView()
+                        } label: {
+                            SettingsRow(icon: "bubble.left.and.bubble.right", title: "反馈建议", value: "", action: nil)
                         }
                     }
                     
@@ -359,122 +356,78 @@ struct SettingsView: View {
         #endif
     }
     
-    // MARK: - 源选择
-    
-    private var filteredSources: [SourceBean] {
-        let sources = apiConfig.sourceBeanList.filter { $0.isSelectable }
-        if sourceSearchText.isEmpty {
-            return sources
-        } else {
-            return sources.filter { $0.name.localizedCaseInsensitiveContains(sourceSearchText) || $0.api.localizedCaseInsensitiveContains(sourceSearchText) }
-        }
+}
+
+private struct FeedbackSuggestionView: View {
+    @State private var feedback = ""
+    @State private var showSavedConfirmation = false
+
+    private let feedbackStorageKey = "congcong.feedback.records"
+
+    private var trimmedFeedback: String {
+        feedback.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var sourcePickerView: some View {
-        VStack(spacing: 0) {
-            // 搜索栏
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
-                TextField("搜索数据源", text: $sourceSearchText)
-                    .textFieldStyle(.plain)
-                if !sourceSearchText.isEmpty {
-                    Button(action: { sourceSearchText = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("反馈仅保存在本机，不会联网发送。")
+                .font(.subheadline)
+                .foregroundColor(.white.opacity(0.7))
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $feedback)
+                    .scrollContentBackground(.hidden)
+                    .foregroundColor(.white)
+                    .padding(8)
+                    .frame(minHeight: 220)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                if feedback.isEmpty {
+                    Text("请描述你遇到的问题或建议…")
+                        .foregroundColor(.white.opacity(0.4))
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 16)
+                        .allowsHitTesting(false)
                 }
             }
-            .padding(12)
-            .glassCard(cornerRadius: 12)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(filteredSources) { source in
-                        Button {
-                            apiConfig.setHomeSource(source)
-                            appState.currentSourceKey = source.key
-                        } label: {
-                            HStack(alignment: .center, spacing: 16) {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack(spacing: 8) {
-                                        Text(source.name)
-                                            .font(.system(size: 16, weight: .semibold))
-                                            .foregroundColor(source.isSupportedInSwift ? .white : .white.opacity(0.5))
-                                        
-                                        // 类型标签
-                                        Text(source.typeDescription)
-                                            .font(.system(size: 10, weight: .bold))
-                                            .foregroundColor(source.isSupportedInSwift ? .orange : .gray)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 3)
-                                            .background(
-                                                Capsule().fill(
-                                                    source.isSupportedInSwift ? Color.orange.opacity(0.2) : Color.gray.opacity(0.2)
-                                                )
-                                            )
-                                        
-                                        if !source.isSupportedInSwift {
-                                            Text("暂不支持")
-                                                .font(.system(size: 10, weight: .medium))
-                                                .foregroundColor(.red.opacity(0.8))
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 3)
-                                                .background(Capsule().fill(Color.red.opacity(0.15)))
-                                        }
-                                    }
-                                    
-                                    Text(source.api)
-                                        .font(.system(size: 12))
-                                        .foregroundColor(.white.opacity(0.5))
-                                        .lineLimit(1)
-                                }
-                                
-                                Spacer()
-                                
-                                HStack(spacing: 12) {
-                                    if source.isSearchable {
-                                        Image(systemName: "magnifyingglass")
-                                            .font(.system(size: 14, weight: .medium))
-                                            .foregroundColor(.green.opacity(0.8))
-                                    }
-                                    
-                                    if source.key == apiConfig.homeSourceBean?.key {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.system(size: 20))
-                                            .foregroundColor(.orange)
-                                    } else {
-                                        Circle()
-                                            .strokeBorder(Color.white.opacity(0.2), lineWidth: 1)
-                                            .frame(width: 20, height: 20)
-                                    }
-                                }
-                            }
-                            .padding(16)
-                            .glassCard(cornerRadius: 16)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .stroke(
-                                        source.key == apiConfig.homeSourceBean?.key ? Color.orange.opacity(0.5) : Color.clear,
-                                        lineWidth: 1
-                                    )
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 24)
+
+            Button(action: saveFeedback) {
+                Label("提交", systemImage: "checkmark")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(trimmedFeedback.isEmpty ? Color.gray.opacity(0.35) : Color.orange)
+                    .foregroundColor(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
             }
+            .buttonStyle(.plain)
+            .disabled(trimmedFeedback.isEmpty)
+
+            Spacer(minLength: 0)
         }
+        .padding(20)
         .background(AppTheme.primaryGradient.ignoresSafeArea())
-        .navigationTitle("选择数据源")
+        .navigationTitle("反馈建议")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .alert("反馈已保存", isPresented: $showSavedConfirmation) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("已保存在本机，当前未联网发送。")
+        }
+    }
+
+    private func saveFeedback() {
+        guard !trimmedFeedback.isEmpty else { return }
+
+        var records = UserDefaults.standard.stringArray(forKey: feedbackStorageKey) ?? []
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        records.append("\(timestamp)\n\(trimmedFeedback)")
+        UserDefaults.standard.set(records, forKey: feedbackStorageKey)
+        feedback = ""
+        showSavedConfirmation = true
     }
 }
 
