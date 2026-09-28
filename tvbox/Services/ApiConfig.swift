@@ -1114,7 +1114,9 @@ class ApiConfig: ObservableObject {
             sourceBeanList[index].hidden = false
             sourceBeanList[index].disabled = false
         } else if let config = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
-                  let site = config.sites?.first(where: { $0.key.caseInsensitiveCompare("m766") == .orderedSame }) {
+                  let site = config.sites?.first(where: {
+                      ($0.key ?? "").caseInsensitiveCompare("m766") == .orderedSame
+                  }) {
             sourceBeanList.append(makeSourceBean(from: site))
         }
         return sourceBeanList.contains {
