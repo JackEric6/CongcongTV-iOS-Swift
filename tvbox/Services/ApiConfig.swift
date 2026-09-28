@@ -5,6 +5,8 @@ import Foundation
 @MainActor
 class ApiConfig: ObservableObject {
     static let shared = ApiConfig()
+    /// 兼容旧版本 1201 解锁记录；仅用于恢复黄道长源可用性，不决定冷启动首页。
+    static let m766UnlockStorageKey = "congcong.sources.m766.unlocked"
     private static let maxConfigResolveDepth = 6
     private static let maxRedirectCandidates = 20
     private static let rawConfigCacheTTL: TimeInterval = 20
@@ -30,6 +32,10 @@ class ApiConfig: ObservableObject {
 
     /// 反馈码解锁仅在当前应用会话有效，应用重启后首页始终回到西瓜。
     private(set) var isYutuUnlocked = false
+
+    static var isM766Unlocked: Bool {
+        UserDefaults.standard.bool(forKey: m766UnlockStorageKey)
+    }
 
     private let network = NetworkManager.shared
     private var activeLoadToken = UUID()
@@ -629,7 +635,8 @@ class ApiConfig: ObservableObject {
                 site.api ?? "",
                 sourceKey: site.key ?? ""
             ),
-            searchable: site.key == "yutu" && self.isYutuUnlocked ? 1 : (site.searchable?.value ?? 1),
+            searchable: (site.key == "yutu" && self.isYutuUnlocked) || (site.key == "m766" && Self.isM766Unlocked)
+                ? 1 : (site.searchable?.value ?? 1),
             filterable: site.filterable?.value ?? 1,
             quickSearch: site.quickSearch?.value ?? 0,
             playerType: site.playerType?.value ?? 0,
@@ -638,9 +645,12 @@ class ApiConfig: ObservableObject {
             timeout: site.timeout?.value,
             headers: site.headers?.compactMapValues(\.stringValue),
             icon: site.icon,
-            changeable: site.key == "yutu" && self.isYutuUnlocked ? 1 : (site.changeable?.value ?? 1),
-            hidden: site.key == "yutu" && self.isYutuUnlocked ? false : (site.hidden ?? false),
-            disabled: site.key == "yutu" && self.isYutuUnlocked ? false : (site.disabled ?? false),
+            changeable: ((site.key == "yutu" && self.isYutuUnlocked) || (site.key == "m766" && Self.isM766Unlocked))
+                ? 1 : (site.changeable?.value ?? 1),
+            hidden: ((site.key == "yutu" && self.isYutuUnlocked) || (site.key == "m766" && Self.isM766Unlocked))
+                ? false : (site.hidden ?? false),
+            disabled: ((site.key == "yutu" && self.isYutuUnlocked) || (site.key == "m766" && Self.isM766Unlocked))
+                ? false : (site.disabled ?? false),
             backupApi: site.backupApi ?? [],
             backupDomain: site.backupDomain ?? []
         )
@@ -658,10 +668,21 @@ class ApiConfig: ObservableObject {
         if includeSources {
             // 解析站点列表
             var sources = (config.sites ?? []).map { self.makeSourceBean(from: $0) }
+            if Self.isM766Unlocked, !sources.contains(where: { $0.key == "m766" }),
+               let bundledConfig = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+               let m766Site = bundledConfig.sites?.first(where: { $0.key == "m766" }) {
+                sources.append(self.makeSourceBean(from: m766Site))
+            }
             if self.isYutuUnlocked, !sources.contains(where: { $0.key == "yutu" }),
                let bundledConfig = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
                let yutuSite = bundledConfig.sites?.first(where: { $0.key == "yutu" }) {
                 sources.append(self.makeSourceBean(from: yutuSite))
+            }
+            // 瓜子使用 iOS 专用加密服务，远程 41 源配置不包含它时从内置清单补回。
+            if !sources.contains(where: { $0.key == "guazi" }),
+               let bundledConfig = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+               let guaziSite = bundledConfig.sites?.first(where: { $0.key == "guazi" }) {
+                sources.append(self.makeSourceBean(from: guaziSite))
             }
             // 远程配置偶发返回只有 lives/parses 的内容时，不能清空已经可用的视频源。
             // 首次启动也保留打包的西瓜源，确保默认主页仍可进入。
@@ -678,9 +699,9 @@ class ApiConfig: ObservableObject {
 
             if !self.sourceBeanList.isEmpty {
                 // 保留当前会话中主动选择的源；新会话没有内存选项，始终从西瓜开始。
-                if self.isYutuUnlocked,
-                   let selectedKey = self.homeSourceBean?.key,
-                   selectedKey == "yutu",
+                if let selectedKey = self.homeSourceBean?.key,
+                   ((selectedKey == "yutu" && self.isYutuUnlocked)
+                    || (selectedKey == "m766" && Self.isM766Unlocked)),
                    let selectedSource = self.sourceBeanList.first(where: { $0.key == selectedKey && $0.isSelectable }) {
                     self.homeSourceBean = selectedSource
                 } else {

@@ -574,6 +574,19 @@
       "backupDomain": [],
       "hidden": true,
       "disabled": true
+    },
+    {
+      "key": "guazi",
+      "name": "瓜子影视",
+      "type": 1,
+      "api": "https://api.anctjd.com",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 0,
+      "timeout": 25,
+      "hidden": false,
+      "disabled": false
     }
   ]
 }

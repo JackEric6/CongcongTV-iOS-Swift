@@ -15,6 +15,10 @@ class SourceService {
 
     /// 获取指定源的分类列表和首页推荐
     func getSort(sourceBean: SourceBean) async throws -> (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]) {
+        if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
+            // 瓜子没有标准 CMS 分类接口，搜索和详情走专用加密服务。
+            return (sorts: [], homeVideos: [])
+        }
         let api = sourceBean.api
         guard !api.isEmpty else {
             throw SourceError.emptyApi
@@ -191,6 +195,9 @@ class SourceService {
 
     /// 获取分类下的视频列表
     func getList(sourceBean: SourceBean, sortData: MovieSort.SortData, page: Int = 1, filters: [String: String]? = nil) async throws -> [Movie.Video] {
+        if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
+            return []
+        }
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
@@ -314,6 +321,9 @@ class SourceService {
 
     /// 获取视频详情
     func getDetail(sourceBean: SourceBean, vodId: String) async throws -> VodInfo? {
+        if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
+            return try await GuaziService.shared.detail(vodID: vodId)
+        }
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
         guard !vodId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -410,6 +420,9 @@ class SourceService {
 
     /// 在指定源中搜索
     func search(sourceBean: SourceBean, keyword: String) async throws -> [Movie.Video] {
+        if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
+            return try await GuaziService.shared.search(keyword: keyword)
+        }
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
@@ -478,6 +491,10 @@ class SourceService {
         let normalized = KktvsResponseNormalizer.normalizeMediaURL(url)
         guard let validURL = Self.validPlayableURL(normalized) else {
             throw SourceError.invalidPlayableURL(url)
+        }
+        if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame,
+           let request = GuaziService.PlayRequest(url: validURL) {
+            return try await GuaziService.shared.play(request)
         }
         if KktvsResponseNormalizer.directMediaURL(normalized) != nil {
             return validURL

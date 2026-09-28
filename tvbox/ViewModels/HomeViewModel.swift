@@ -414,6 +414,9 @@ class HomeViewModel: ObservableObject {
         if config.isYutuUnlocked, config.homeSourceBean?.key == "yutu" {
             return config.homeSourceBean
         }
+        if ApiConfig.isM766Unlocked, config.homeSourceBean?.key == "m766" {
+            return config.homeSourceBean
+        }
         return config.sourceBeanList.first(where: isXiguaSource)
     }
 
