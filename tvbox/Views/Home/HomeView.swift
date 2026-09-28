@@ -5,6 +5,7 @@ struct HomeView: View {
     @StateObject private var viewModel = HomeViewModel()
     @EnvironmentObject var appState: AppState
     @State private var categoryScrollAnchorId: String?
+    @State private var contentScrollAnchorId: String?
     
     // 网格布局
     #if os(iOS)
@@ -35,7 +36,11 @@ struct HomeView: View {
         }
         .task {
             await viewModel.loadSorts()
-            if let first = viewModel.sorts.first {
+            guard viewModel.categoryVideos.isEmpty else { return }
+            if let selected = viewModel.selectedSort,
+               viewModel.sorts.contains(where: { $0.id == selected.id }) {
+                viewModel.selectSort(selected)
+            } else if let first = viewModel.sorts.first {
                 viewModel.selectSort(first)
             }
         }
@@ -48,7 +53,11 @@ struct HomeView: View {
             if loaded && viewModel.sorts.isEmpty && viewModel.homeVideos.isEmpty {
                 Task {
                     await viewModel.loadSorts()
-                    if let first = viewModel.sorts.first {
+                    guard viewModel.categoryVideos.isEmpty else { return }
+                    if let selected = viewModel.selectedSort,
+                       viewModel.sorts.contains(where: { $0.id == selected.id }) {
+                        viewModel.selectSort(selected)
+                    } else if let first = viewModel.sorts.first {
                         viewModel.selectSort(first)
                     }
                 }
@@ -223,6 +232,7 @@ struct HomeView: View {
                             NavigationLink(value: video) {
                                 VodCardView(video: video)
                             }
+                            .id(video.id)
                             #if os(iOS)
                             .buttonStyle(VodCardPressStyle())
                             #else
@@ -242,6 +252,22 @@ struct HomeView: View {
                             .padding()
                     }
                 }
+                .scrollPosition(id: $contentScrollAnchorId)
+                .onAppear {
+                    restoreContentScrollPosition(sortID: viewModel.selectedSort?.id, videos: videos)
+                }
+                .onChange(of: contentScrollAnchorId) { _, newID in
+                    viewModel.rememberScrollPosition(
+                        videoID: newID,
+                        sortID: viewModel.selectedSort?.id
+                    )
+                }
+                .onChange(of: viewModel.selectedSort?.id) { _, newSortID in
+                    restoreContentScrollPosition(sortID: newSortID, videos: videos)
+                }
+                .onChange(of: videos.map(\.id)) { _, _ in
+                    restoreContentScrollPosition(sortID: viewModel.selectedSort?.id, videos: videos)
+                }
                 .refreshable {
                     await viewModel.refresh()
                 }
@@ -249,6 +275,18 @@ struct HomeView: View {
         }
         .navigationDestination(for: Movie.Video.self) { video in
             DetailView(video: video)
+        }
+    }
+
+    private func restoreContentScrollPosition(sortID: String?, videos: [Movie.Video]) {
+        let savedID = viewModel.savedScrollPosition(sortID: sortID)
+        let targetID = savedID.flatMap { saved in
+            videos.contains(where: { $0.id == saved }) ? saved : nil
+        }
+        guard contentScrollAnchorId != targetID else { return }
+        Task { @MainActor in
+            await Task.yield()
+            contentScrollAnchorId = targetID
         }
     }
 }

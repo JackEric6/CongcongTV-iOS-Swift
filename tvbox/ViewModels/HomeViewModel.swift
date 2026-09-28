@@ -39,6 +39,8 @@ class HomeViewModel: ObservableObject {
     private var categoryRequestsInFlight = Set<String>()
     private var lastHomeAppearanceReload = Date.distantPast
     private var homeAppearanceTask: Task<Void, Never>?
+    private let scrollPositionStoragePrefix = "congcong.home.scroll-position."
+    private let selectedSortStoragePrefix = "congcong.home.selected-sort."
     
     init() {
         setupNetworkRestoredAutoRetry()
@@ -91,7 +93,15 @@ class HomeViewModel: ObservableObject {
 
             let effectiveSorts = self.sorts
             if selectedSort == nil || !effectiveSorts.contains(where: { $0.id == selectedSort?.id }) {
-                selectedSort = effectiveSorts.first
+                if let savedID = savedSelectedSortID(),
+                   let savedSort = effectiveSorts.first(where: { $0.id == savedID }) {
+                    selectedSort = savedSort
+                } else {
+                    selectedSort = effectiveSorts.first
+                }
+            }
+            if let selectedSort {
+                rememberSelectedSort(selectedSort.id)
             }
             // 响应结构虽然合法，但完全没有可用分类或推荐时视为本次加载失败；
             // 这样上层会保留旧内容，下一次刷新仍可重试。
@@ -217,6 +227,7 @@ class HomeViewModel: ObservableObject {
     func selectSort(_ sort: MovieSort.SortData) {
         // 切分类时先重置分页状态，避免旧分类残留数据闪烁。
         selectedSort = sort
+        rememberSelectedSort(sort.id)
         errorMessage = nil
         categoryVideos = []
         currentPage = 1
@@ -269,6 +280,7 @@ class HomeViewModel: ObservableObject {
             hasMore = !enrichedVideos.isEmpty
         } catch {
             guard selectedSort?.id == sort.id else { return }
+            lastLoadFailedDueToNetwork = error.isNetworkConnectionError
             errorMessage = error.localizedDescription
         }
     }
@@ -356,14 +368,59 @@ class HomeViewModel: ObservableObject {
         homeAppearanceTask = Task { [weak self] in
             guard let self else { return }
             defer { self.homeAppearanceTask = nil }
+            let needsNetworkRecovery = self.lastLoadFailedDueToNetwork
             if self.sorts.isEmpty || self.homeVideos.isEmpty {
                 _ = await self.loadSorts()
             }
             guard let sort = self.selectedSort,
-                  sort.id != "home",
                   !Task.isCancelled else { return }
+            let hasCurrentContent = sort.id == "home"
+                ? !self.homeVideos.isEmpty
+                : !self.categoryVideos.isEmpty
+            guard needsNetworkRecovery || !hasCurrentContent else { return }
+            guard sort.id != "home" else { return }
             await self.loadCategoryVideos(page: 1, sort: sort)
         }
+    }
+
+    private var selectedSortStorageKey: String? {
+        let sourceKey = homeSource?.key.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !sourceKey.isEmpty else { return nil }
+        let encodedSource = sourceKey.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? sourceKey
+        return "\(selectedSortStoragePrefix)\(encodedSource)"
+    }
+
+    private func savedSelectedSortID() -> String? {
+        guard let key = selectedSortStorageKey else { return nil }
+        return UserDefaults.standard.string(forKey: key)
+    }
+
+    private func rememberSelectedSort(_ sortID: String) {
+        guard let key = selectedSortStorageKey,
+              !sortID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        UserDefaults.standard.set(sortID, forKey: key)
+    }
+
+    /// 保存指定源/分类下最后可见的卡片 ID，供从详情、下载等页面返回时恢复滚动位置。
+    func rememberScrollPosition(videoID: String?, sortID: String?) {
+        guard let videoID = videoID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !videoID.isEmpty,
+              let key = scrollPositionStorageKey(for: sortID) else { return }
+        UserDefaults.standard.set(videoID, forKey: key)
+    }
+
+    func savedScrollPosition(sortID: String?) -> String? {
+        guard let key = scrollPositionStorageKey(for: sortID) else { return nil }
+        return UserDefaults.standard.string(forKey: key)
+    }
+
+    private func scrollPositionStorageKey(for sortID: String?) -> String? {
+        let sourceKey = homeSource?.key.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedSortID = sortID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !sourceKey.isEmpty, !normalizedSortID.isEmpty else { return nil }
+        let source = sourceKey.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? sourceKey
+        let sort = normalizedSortID.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? normalizedSortID
+        return "\(scrollPositionStoragePrefix)\(source).\(sort)"
     }
 
     private func beginLoading() {

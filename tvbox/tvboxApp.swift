@@ -142,7 +142,7 @@ class AppState: ObservableObject {
         }
     }
 
-    /// 应用回到前台时重新验证当前配置，并在成功后通知首页刷新。
+    /// 应用回到前台时静默重新验证当前配置，不打断首页当前状态。
     /// 只使用最近一次保存的点播/直播地址，不依赖当前是否已经成功加载过。
     func recoverConfigOnForeground() {
         guard !lastVodUrl.isEmpty else { return }
@@ -166,9 +166,8 @@ class AppState: ObservableObject {
             guard let self, !Task.isCancelled, !self.configLoadInFlight else { return }
             let vodUrl = self.lastVodUrl
             let liveUrl = self.lastLiveUrl
-            self.isRetryingConfig = true
-            await self.loadConfig(vodUrl: vodUrl, liveUrl: liveUrl, refreshHomeOnSuccess: true)
-            self.isRetryingConfig = false
+            // 只重新验证配置，不通知首页刷新，避免重置分类、分页和滚动位置。
+            await self.loadConfig(vodUrl: vodUrl, liveUrl: liveUrl)
         }
     }
     

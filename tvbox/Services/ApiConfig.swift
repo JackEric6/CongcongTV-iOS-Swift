@@ -678,10 +678,11 @@ class ApiConfig: ObservableObject {
                let yutuSite = bundledConfig.sites?.first(where: { $0.key == "yutu" }) {
                 sources.append(self.makeSourceBean(from: yutuSite))
             }
-            // 瓜子使用 iOS 专用加密服务，远程 41 源配置不包含它时从内置清单补回。
-            if !sources.contains(where: { $0.key == "guazi" }),
-               let bundledConfig = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+            // 瓜子使用 iOS 专用加密服务。远程配置中的同名条目可能是旧的
+            // JAR/隐藏定义，必须由内置 iOS 定义覆盖，才能进入聚合搜索。
+            if let bundledConfig = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
                let guaziSite = bundledConfig.sites?.first(where: { $0.key == "guazi" }) {
+                sources.removeAll { $0.key.caseInsensitiveCompare("guazi") == .orderedSame }
                 sources.append(self.makeSourceBean(from: guaziSite))
             }
             // 远程配置偶发返回只有 lives/parses 的内容时，不能清空已经可用的视频源。
@@ -1040,7 +1041,42 @@ class ApiConfig: ObservableObject {
 
     /// 获取可搜索的源列表
     func getSearchableSources() -> [SourceBean] {
+        ensureBundledGuaziSource()
         sourceBeanList.filter { $0.isSearchable && $0.isSelectable }
+    }
+
+    /// 搜索可能早于远程配置加载完成；确保瓜子始终使用 iOS 专用实现。
+    /// 远程配置中的同名条目可能是隐藏源或 JAR 源，不能直接复用。
+    private func ensureBundledGuaziSource() {
+        let hasValidGuazi = sourceBeanList.contains {
+            $0.key.caseInsensitiveCompare("guazi") == .orderedSame
+                && $0.type == 1
+                && $0.searchable == 1
+                && !$0.hidden
+                && !$0.disabled
+                && $0.isHttpApi
+        }
+        guard !hasValidGuazi else { return }
+
+        let guazi: SourceBean
+        if let config = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+           let site = config.sites?.first(where: { $0.key?.caseInsensitiveCompare("guazi") == .orderedSame }) {
+            guazi = makeSourceBean(from: site)
+        } else {
+            // 资源文件缺失时仍保留搜索入口；瓜子请求由 GuaziService 接管 API。
+            guazi = SourceBean(
+                key: "guazi",
+                name: "瓜子影视",
+                api: "https://api.anctjd.com",
+                searchable: 1,
+                filterable: 0,
+                quickSearch: 1,
+                type: 1
+            )
+        }
+
+        sourceBeanList.removeAll { $0.key.caseInsensitiveCompare("guazi") == .orderedSame }
+        sourceBeanList.append(guazi)
     }
 
     /// 设置主页源
@@ -1067,6 +1103,23 @@ class ApiConfig: ObservableObject {
         }
         homeSourceBean = source
         return true
+    }
+
+    @discardableResult
+    func unlockM766Source() -> Bool {
+        UserDefaults.standard.set(true, forKey: Self.m766UnlockStorageKey)
+        if let index = sourceBeanList.firstIndex(where: { $0.key.caseInsensitiveCompare("m766") == .orderedSame }) {
+            sourceBeanList[index].searchable = 1
+            sourceBeanList[index].changeable = 1
+            sourceBeanList[index].hidden = false
+            sourceBeanList[index].disabled = false
+        } else if let config = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+                  let site = config.sites?.first(where: { $0.key.caseInsensitiveCompare("m766") == .orderedSame }) {
+            sourceBeanList.append(makeSourceBean(from: site))
+        }
+        return sourceBeanList.contains {
+            $0.key.caseInsensitiveCompare("m766") == .orderedSame && $0.isSelectable
+        }
     }
 }
 
