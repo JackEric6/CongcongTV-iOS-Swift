@@ -142,7 +142,8 @@ enum GuaziCrypto {
         guard key.count == kCCKeySizeAES128, iv.count == kCCBlockSizeAES128 else {
             throw GuaziCryptoError.invalidKey
         }
-        var output = Data(count: data.count + kCCBlockSizeAES128)
+        let outputCapacity = data.count + kCCBlockSizeAES128
+        var output = Data(count: outputCapacity)
         var outputLength = 0
         let status = output.withUnsafeMutableBytes { outputBytes in
             data.withUnsafeBytes { inputBytes in
@@ -158,7 +159,7 @@ enum GuaziCrypto {
                             inputBytes.baseAddress,
                             data.count,
                             outputBytes.baseAddress,
-                            output.count,
+                            outputCapacity,
                             &outputLength
                         )
                     }
