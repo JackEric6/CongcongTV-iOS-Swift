@@ -556,9 +556,12 @@ class SourceService {
         var searchableSources: [SourceBean] = []
         for source in sources where source.isSearchable
             && source.isSelectable
-            && source.isSupportedInSwift
-            && source.isHttpApi {
-            if source.key.caseInsensitiveCompare("guazi") != .orderedSame {
+            && source.isSupportedInSwift {
+            let isGuazi = source.key.caseInsensitiveCompare("guazi") == .orderedSame
+            // 瓜子由 GuaziService 直接请求加密接口，不依赖 SourceBean.api；
+            // 不能因为远程配置里的旧条目缺少 CMS api 就把它从聚合搜索中过滤掉。
+            guard isGuazi || source.isHttpApi else { continue }
+            if !isGuazi {
                 guard await searchHealth.isAvailable(source.key) else { continue }
             }
             searchableSources.append(source)
@@ -567,7 +570,11 @@ class SourceService {
         // 把后续搜索变成“没有任何源可用”。健康筛选为空时立即恢复全量源。
         if searchableSources.isEmpty {
             searchableSources = sources.filter {
-                $0.isSearchable && $0.isSelectable && $0.isSupportedInSwift && $0.isHttpApi
+                let isGuazi = $0.key.caseInsensitiveCompare("guazi") == .orderedSame
+                return $0.isSearchable
+                    && $0.isSelectable
+                    && $0.isSupportedInSwift
+                    && (isGuazi || $0.isHttpApi)
             }
         }
         searchableSources = prioritizedSearchSources(searchableSources)

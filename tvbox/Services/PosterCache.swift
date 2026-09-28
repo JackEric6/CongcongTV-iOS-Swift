@@ -52,10 +52,32 @@ actor PosterCache {
     nonisolated static func isLikelyBroken(_ raw: String, sourceKey: String = "") -> Bool {
         let value = raw.lowercased()
         let source = sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return source == "bfzy"
-            || source.contains("baofeng")
-            || value.contains("img.picbf.com")
-            || value.contains("picbf.com")
+        if source == "bfzy" || source.contains("baofeng") {
+            return true
+        }
+
+        // img.picbf.com 的原图在应用内会统一改走 weserv 代理；
+        // 代理地址本身可加载，不能再按原始域名把已经可用的海报丢掉。
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate = trimmed.hasPrefix("//") ? "https:\(trimmed)" : trimmed
+        if let url = URL(string: candidate),
+           let host = url.host?.lowercased() {
+            if host == "img.picbf.com" {
+                return false
+            }
+
+            // normalizedURL 会把 img.picbf.com 改成 weserv 代理；代理的
+            // query 中仍带原始地址，不能因此再次命中 picbf.com 黑名单。
+            if host == "images.weserv.nl",
+               let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                   .first(where: { $0.name.caseInsensitiveCompare("url") == .orderedSame })?.value,
+               let targetURL = URL(string: target),
+               targetURL.host?.lowercased() == "img.picbf.com" {
+                return false
+            }
+        }
+
+        return value.contains("picbf.com")
     }
 
     /// 供历史/收藏等同步视图读取最近一次成功复用的海报。
