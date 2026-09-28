@@ -1042,7 +1042,7 @@ class ApiConfig: ObservableObject {
     /// 获取可搜索的源列表
     func getSearchableSources() -> [SourceBean] {
         ensureBundledGuaziSource()
-        sourceBeanList.filter { $0.isSearchable && $0.isSelectable }
+        return sourceBeanList.filter { $0.isSearchable && $0.isSelectable }
     }
 
     /// 搜索可能早于远程配置加载完成；确保瓜子始终使用 iOS 专用实现。
