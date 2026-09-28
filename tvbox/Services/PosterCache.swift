@@ -47,6 +47,23 @@ actor PosterCache {
         return URL.posterURL(from: candidate)?.absoluteString ?? candidate
     }
 
+    nonisolated static func isGuaziSource(_ sourceKey: String) -> Bool {
+        sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare("guazi") == .orderedSame
+    }
+
+    private nonisolated static func normalizedGuaziPoster(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let candidate = trimmed.hasPrefix("//") ? "https:\(trimmed)" : trimmed
+        guard let components = URLComponents(string: candidate),
+              let scheme = components.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = components.host,
+              !host.isEmpty else { return nil }
+        return components.url?.absoluteString
+    }
+
     /// 这些地址经常能通过 URL 校验，但实际请求会长期超时或返回防盗链页面。
     /// 若同名影视存在其他来源的图片，应优先使用其他来源，避免暴风源坏图卡住整个卡片。
     nonisolated static func isLikelyBroken(_ raw: String, sourceKey: String = "") -> Bool {
@@ -82,7 +99,8 @@ actor PosterCache {
 
     /// 供历史/收藏等同步视图读取最近一次成功复用的海报。
     /// 该方法只读 UserDefaults，不会改变视频的 sourceKey、id 或播放配置。
-    nonisolated static func cachedPoster(for title: String) -> String? {
+    nonisolated static func cachedPoster(for title: String, sourceKey: String = "") -> String? {
+        guard !isGuaziSource(sourceKey) else { return nil }
         guard let data = UserDefaults.standard.data(forKey: Self.persistedKey),
               let saved = try? JSONDecoder().decode([String: String].self, from: data),
               let value = saved[key(for: title)],
@@ -98,6 +116,7 @@ actor PosterCache {
 
     /// 记录一个源返回的海报。已有有效海报不会被空值或新值覆盖。
     func remember(title: String, poster: String, sourceKey: String = "") -> String? {
+        guard !Self.isGuaziSource(sourceKey) else { return nil }
         let titleKey = Self.key(for: title)
         guard !titleKey.isEmpty, let normalized = Self.normalizedURL(poster) else {
             return posters[titleKey]
@@ -128,7 +147,7 @@ actor PosterCache {
     /// 记录当前批次已有的合法海报，并为同名缺图条目补齐缓存海报。
     /// 与 `enrich` 不同，此方法不会隐藏仍然没有海报的条目，适用于首页。
     func fill(_ videos: [Movie.Video]) -> [Movie.Video] {
-        for video in videos {
+        for video in videos where !Self.isGuaziSource(video.sourceKey) {
             if Self.normalizedURL(video.pic) != nil {
                 _ = remember(title: video.name, poster: video.pic, sourceKey: video.sourceKey)
             }
@@ -136,6 +155,7 @@ actor PosterCache {
 
         return videos.map { video in
             var filled = video
+            guard !Self.isGuaziSource(video.sourceKey) else { return filled }
             if Self.normalizedURL(filled.pic) == nil,
                let poster = posters[Self.key(for: filled.name)],
                Self.normalizedURL(poster) != nil {
@@ -147,7 +167,7 @@ actor PosterCache {
 
     /// 为搜索结果补齐同名海报，并隐藏仍然没有可用海报的结果。
     func enrich(_ videos: [Movie.Video]) -> [Movie.Video] {
-        for video in videos {
+        for video in videos where !Self.isGuaziSource(video.sourceKey) {
             if Self.normalizedURL(video.pic) != nil {
                 _ = remember(title: video.name, poster: video.pic, sourceKey: video.sourceKey)
             }
@@ -155,6 +175,11 @@ actor PosterCache {
 
         return videos.compactMap { video in
             var enriched = video
+            if Self.isGuaziSource(video.sourceKey) {
+                guard let poster = Self.normalizedGuaziPoster(video.pic) else { return nil }
+                enriched.pic = poster
+                return enriched
+            }
             let ownPoster = Self.normalizedURL(video.pic)
             let cached = posters[Self.key(for: video.name)]
             let canUseCached = cached != nil

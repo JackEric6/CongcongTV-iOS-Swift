@@ -22,6 +22,14 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
+      - name: Verify Guazi RSA key import and encryption
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Services/GuaziCrypto.swift \
+            scripts/verify-guazi-crypto.swift \
+            -o /tmp/verify-guazi-crypto
+          /tmp/verify-guazi-crypto
+
       - name: Build unsigned app
         run: |
           set -o pipefail

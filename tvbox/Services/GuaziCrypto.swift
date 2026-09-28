@@ -37,6 +37,52 @@ enum GuaziCrypto {
 
     private static let randomAlphabet = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
+    static func verifyEmbeddedKeyMaterial() throws {
+        _ = try publicSecKey()
+        let privateKey = try privateSecKey()
+        guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
+            throw GuaziCryptoError.invalidKey
+        }
+
+        let sessionKey = "0123456789abcdef"
+        let sessionIV = "fedcba9876543210"
+        let sessionData = try JSONSerialization.data(withJSONObject: [
+            "key": sessionKey,
+            "iv": sessionIV
+        ])
+        guard let encryptedSession = SecKeyCreateEncryptedData(
+            publicKey,
+            .rsaEncryptionPKCS1,
+            sessionData as CFData,
+            nil
+        ) as Data? else {
+            throw GuaziCryptoError.rsaFailed
+        }
+
+        let form = try createForm(parameters: ["probe": "ok"], token: "", time: 1)
+        guard let encodedRequestKey = form["keys"],
+              let wrappedRequestKey = Data(base64Encoded: encodedRequestKey),
+              wrappedRequestKey.count == SecKeyGetBlockSize(try publicSecKey()) else {
+            throw GuaziCryptoError.rsaFailed
+        }
+
+        let encryptedResponse = try aesEncrypt(
+            #"{"probe":"ok"}"#,
+            key: sessionKey,
+            iv: sessionIV
+        )
+        let response = try JSONSerialization.data(withJSONObject: [
+            "data": [
+                "keys": encryptedSession.base64EncodedString(),
+                "response_key": encryptedResponse
+            ]
+        ])
+        let decoded = try decodeResponse(String(decoding: response, as: UTF8.self))
+        guard decoded["probe"] as? String == "ok" else {
+            throw GuaziCryptoError.decryptionFailed
+        }
+    }
+
     static func createForm(parameters: [String: Any], token: String, time: Int64) throws -> [String: String] {
         let key = randomText(length: 16)
         let iv = randomText(length: 16)
@@ -176,16 +222,8 @@ enum GuaziCrypto {
     }
 
     private static func rsaEncrypt(_ data: Data) throws -> String {
-        guard let keyData = Data(base64Encoded: publicKey),
-              let key = SecKeyCreateWithData(
-                  keyData as CFData,
-                  [
-                      kSecAttrKeyType: kSecAttrKeyTypeRSA,
-                      kSecAttrKeyClass: kSecAttrKeyClassPublic,
-                      kSecAttrKeySizeInBits: 1024
-                  ] as CFDictionary,
-                  nil
-              ),
+        let key = try publicSecKey()
+        guard
               let encrypted = SecKeyCreateEncryptedData(
                   key,
                   .rsaEncryptionPKCS1,
@@ -198,16 +236,8 @@ enum GuaziCrypto {
     }
 
     private static func rsaDecrypt(_ value: String) throws -> Data {
-        guard let keyData = Data(base64Encoded: privateKey),
-              let key = SecKeyCreateWithData(
-                  keyData as CFData,
-                  [
-                      kSecAttrKeyType: kSecAttrKeyTypeRSA,
-                      kSecAttrKeyClass: kSecAttrKeyClassPrivate,
-                      kSecAttrKeySizeInBits: 1024
-                  ] as CFDictionary,
-                  nil
-              ),
+        let key = try privateSecKey()
+        guard
               let encrypted = Data(base64Encoded: value),
               let plain = SecKeyCreateDecryptedData(
                   key,
@@ -218,6 +248,71 @@ enum GuaziCrypto {
             throw GuaziCryptoError.rsaFailed
         }
         return plain
+    }
+
+    private static func publicSecKey() throws -> SecKey {
+        guard let wrappedData = Data(base64Encoded: publicKey) else {
+            throw GuaziCryptoError.invalidKey
+        }
+        let keyData = try unwrapSubjectPublicKeyInfo(wrappedData)
+        guard let key = SecKeyCreateWithData(
+            keyData as CFData,
+            [
+                kSecAttrKeyType: kSecAttrKeyTypeRSA,
+                kSecAttrKeyClass: kSecAttrKeyClassPublic
+            ] as CFDictionary,
+            nil
+        ) else {
+            throw GuaziCryptoError.invalidKey
+        }
+        return key
+    }
+
+    private static func privateSecKey() throws -> SecKey {
+        guard let wrappedData = Data(base64Encoded: privateKey) else {
+            throw GuaziCryptoError.invalidKey
+        }
+        let keyData = try unwrapPrivateKeyInfo(wrappedData)
+        guard let key = SecKeyCreateWithData(
+            keyData as CFData,
+            [
+                kSecAttrKeyType: kSecAttrKeyTypeRSA,
+                kSecAttrKeyClass: kSecAttrKeyClassPrivate
+            ] as CFDictionary,
+            nil
+        ) else {
+            throw GuaziCryptoError.invalidKey
+        }
+        return key
+    }
+
+    private static func unwrapPrivateKeyInfo(_ data: Data) throws -> Data {
+        var root = DERReader(data)
+        let sequence = try root.read(tag: 0x30)
+        guard root.isAtEnd else { throw GuaziCryptoError.invalidKey }
+
+        var fields = DERReader(sequence)
+        _ = try fields.read(tag: 0x02)
+        _ = try fields.read(tag: 0x30)
+        let keyData = try fields.read(tag: 0x04)
+        guard keyData.first == 0x30 else { throw GuaziCryptoError.invalidKey }
+        return keyData
+    }
+
+    private static func unwrapSubjectPublicKeyInfo(_ data: Data) throws -> Data {
+        var root = DERReader(data)
+        let sequence = try root.read(tag: 0x30)
+        guard root.isAtEnd else { throw GuaziCryptoError.invalidKey }
+
+        var fields = DERReader(sequence)
+        _ = try fields.read(tag: 0x30)
+        let bitString = try fields.read(tag: 0x03)
+        guard bitString.first == 0, bitString.count > 1 else {
+            throw GuaziCryptoError.invalidKey
+        }
+        let keyData = Data(bitString.dropFirst())
+        guard keyData.first == 0x30 else { throw GuaziCryptoError.invalidKey }
+        return keyData
     }
 
     private static func hexData(_ value: String) throws -> Data {
@@ -260,5 +355,52 @@ enum GuaziCrypto {
             return value.stringValue
         }
         return ""
+    }
+
+    private struct DERReader {
+        private let bytes: [UInt8]
+        private(set) var offset = 0
+
+        init(_ data: Data) {
+            bytes = Array(data)
+        }
+
+        var isAtEnd: Bool { offset == bytes.count }
+
+        mutating func read(tag expectedTag: UInt8) throws -> Data {
+            guard offset + 2 <= bytes.count, bytes[offset] == expectedTag else {
+                throw GuaziCryptoError.invalidKey
+            }
+            offset += 1
+
+            let firstLengthByte = Int(bytes[offset])
+            offset += 1
+            let length: Int
+            if firstLengthByte & 0x80 == 0 {
+                length = firstLengthByte
+            } else {
+                let lengthByteCount = firstLengthByte & 0x7F
+                guard lengthByteCount > 0, lengthByteCount <= MemoryLayout<Int>.size,
+                      offset + lengthByteCount <= bytes.count else {
+                    throw GuaziCryptoError.invalidKey
+                }
+                var decodedLength = 0
+                for _ in 0..<lengthByteCount {
+                    guard decodedLength <= (Int.max >> 8) else {
+                        throw GuaziCryptoError.invalidKey
+                    }
+                    decodedLength = (decodedLength << 8) | Int(bytes[offset])
+                    offset += 1
+                }
+                length = decodedLength
+            }
+
+            guard length <= bytes.count - offset else {
+                throw GuaziCryptoError.invalidKey
+            }
+            let value = Data(bytes[offset..<(offset + length)])
+            offset += length
+            return value
+        }
     }
 }

@@ -189,7 +189,7 @@ class DetailViewModel: ObservableObject {
             if safeEpisodes.indices.contains(safeIndex) {
                 let episode = safeEpisodes[safeIndex]
                 updateQualityOptions(
-                    for: KktvsResponseNormalizer.normalizeMediaURL(episode.url),
+                    for: normalizedEpisodeURL(episode.url),
                     resetSelection: true
                 )
             } else {
@@ -235,9 +235,7 @@ class DetailViewModel: ObservableObject {
                     : nil
 
                 if playbackEpisodes.indices.contains(playbackIndex) {
-                    let normalizedURL = KktvsResponseNormalizer.normalizeMediaURL(
-                        playbackEpisodes[playbackIndex].url
-                    )
+                    let normalizedURL = normalizedEpisodeURL(playbackEpisodes[playbackIndex].url)
                     if SourceService.validPlayableURL(normalizedURL) != nil {
                         updateQualityOptions(for: normalizedURL, resetSelection: true)
                         resolvePlayableURLIfNeeded(normalizedURL)
@@ -286,6 +284,7 @@ class DetailViewModel: ObservableObject {
         playbackSource: SourceBean,
         token: UUID
     ) {
+        guard playbackSource.key.caseInsensitiveCompare("guazi") != .orderedSame else { return }
         let title = originalVideo.name.isEmpty ? playbackInfo.name : originalVideo.name
         let normalizedTitle = Self.normalizeMetadataTitle(title)
         guard !normalizedTitle.isEmpty else { return }
@@ -488,7 +487,7 @@ class DetailViewModel: ObservableObject {
         selectedEpisodeIndex = targetIndex
         vodInfo?.playIndex = targetIndex
         let episodeURL = episodes[targetIndex].url
-        let normalizedURL = KktvsResponseNormalizer.normalizeMediaURL(episodeURL)
+        let normalizedURL = normalizedEpisodeURL(episodeURL)
         updateQualityOptions(for: normalizedURL, resetSelection: true)
 
         // 播放中切线路时，立即切换到新线路对应剧集
@@ -509,7 +508,7 @@ class DetailViewModel: ObservableObject {
         pendingResumeProtection = nil
 
         if let episode = vodInfo?.currentEpisode {
-            let normalizedURL = KktvsResponseNormalizer.normalizeMediaURL(episode.url)
+            let normalizedURL = normalizedEpisodeURL(episode.url)
             guard SourceService.validPlayableURL(normalizedURL) != nil else {
                 playUrl = nil
                 isPlaying = false
@@ -547,7 +546,7 @@ class DetailViewModel: ObservableObject {
         pendingResumeProtection = progress > 0
             ? (position: progress, deadline: Date().addingTimeInterval(4))
             : nil
-        let episodeURL = KktvsResponseNormalizer.normalizeMediaURL(episodes[targetIndex].url)
+        let episodeURL = normalizedEpisodeURL(episodes[targetIndex].url)
         guard SourceService.validPlayableURL(episodeURL) != nil else {
             playUrl = nil
             isPlaying = false
@@ -648,7 +647,7 @@ class DetailViewModel: ObservableObject {
     /// 解析请求绑定当前源、线路、剧集和令牌，避免旧任务回写新集。
     private func resolvePlayableURLIfNeeded(_ episodeURL: String) {
         guard let source = currentSource else { return }
-        let normalized = KktvsResponseNormalizer.normalizeMediaURL(episodeURL)
+        let normalized = normalizedEpisodeURL(episodeURL)
         guard SourceService.validPlayableURL(normalized) != nil else {
             playUrl = nil
             isPlaying = false
@@ -664,7 +663,7 @@ class DetailViewModel: ObservableObject {
         let requestFlag = selectedFlag
         let requestEpisodeIndex = selectedEpisodeIndex
 
-        guard KktvsResponseNormalizer.directMediaURL(normalized) == nil else {
+        guard !isDirectPlayableURL(normalized, for: source) else {
             playUrl = selectedPlayableURL(fallback: normalized)
             isPlaying = playUrl != nil
             return
@@ -717,15 +716,31 @@ class DetailViewModel: ObservableObject {
     /// 不改变当前播放集、线路或播放器状态；无法解析或地址无效时返回 nil。
     func resolvedPlayableURL(for index: Int) async -> String? {
         guard currentEpisodes.indices.contains(index) else { return nil }
-        let normalized = KktvsResponseNormalizer.normalizeMediaURL(currentEpisodes[index].url)
+        let normalized = normalizedEpisodeURL(currentEpisodes[index].url)
         guard let source = currentSource else { return SourceService.validPlayableURL(normalized) }
-        guard KktvsResponseNormalizer.directMediaURL(normalized) == nil else {
+        guard !isDirectPlayableURL(normalized, for: source) else {
             return SourceService.validPlayableURL(normalized)
         }
         guard let resolved = try? await sourceService.resolvePlayableURL(sourceBean: source, url: normalized) else {
             return nil
         }
         return SourceService.validPlayableURL(resolved)
+    }
+
+    private func normalizedEpisodeURL(_ url: String) -> String {
+        if currentSource?.key.caseInsensitiveCompare("guazi") == .orderedSame,
+           GuaziService.PlayRequest(url: url) != nil {
+            return url
+        }
+        return KktvsResponseNormalizer.normalizeMediaURL(url)
+    }
+
+    private func isDirectPlayableURL(_ url: String, for source: SourceBean) -> Bool {
+        if source.key.caseInsensitiveCompare("guazi") == .orderedSame,
+           GuaziService.PlayRequest(url: url) != nil {
+            return false
+        }
+        return KktvsResponseNormalizer.directMediaURL(url) != nil
     }
 
     /// 重置清晰度解析与选择状态。
@@ -794,6 +809,10 @@ class DetailViewModel: ObservableObject {
 
     /// 尝试从 HLS 主播放列表解析多清晰度选项。
     private func resolveQualityOptions(for episodeURL: String) async -> [PlaybackQualityOption] {
+        if currentSource?.key.caseInsensitiveCompare("guazi") == .orderedSame,
+           GuaziService.PlayRequest(url: episodeURL) != nil {
+            return []
+        }
         guard let url = URL(string: episodeURL), Self.looksLikeHLSURL(url) else { return [] }
         guard let playlist = try? await network.getString(from: episodeURL) else { return [] }
         return Self.parseMasterPlaylist(playlist, masterURL: url)

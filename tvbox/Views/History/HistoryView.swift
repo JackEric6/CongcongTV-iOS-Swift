@@ -140,11 +140,13 @@ struct HistoryView: View {
 
     /// 历史记录可能保存了某个资源站的失效海报；同名搜索结果已有正常海报时优先复用。
     private func displayPoster(for item: VodRecord) -> String {
-        if let cached = PosterCache.cachedPoster(for: item.vodName) {
-            return cached
-        }
-        if PosterCache.isLikelyBroken(item.vodPic, sourceKey: item.sourceKey) {
-            return ""
+        if !PosterCache.isGuaziSource(item.sourceKey) {
+            if let cached = PosterCache.cachedPoster(for: item.vodName, sourceKey: item.sourceKey) {
+                return cached
+            }
+            if PosterCache.isLikelyBroken(item.vodPic, sourceKey: item.sourceKey) {
+                return ""
+            }
         }
         return item.vodPic
     }

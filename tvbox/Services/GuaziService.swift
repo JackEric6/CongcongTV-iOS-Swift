@@ -110,6 +110,7 @@ actor GuaziService {
     private static let deviceKey = "congcong.guazi.device.key"
     private let session: URLSession
     private var metadataCache: [String: Metadata] = [:]
+    private var registrationTask: Task<String, Error>?
 
     private init() {
         let configuration = URLSessionConfiguration.default
@@ -128,7 +129,10 @@ actor GuaziService {
                 "search_type": ""
             ]
         )
-        let videos = array(result["list"]).compactMap { item -> Movie.Video? in
+        guard let list = result["list"] as? [Any] else {
+            throw GuaziServiceError.invalidResponse
+        }
+        let videos = list.compactMap { item -> Movie.Video? in
             guard let object = item as? [String: Any] else { return nil }
             let id = string(object["vod_id"])
             guard !id.isEmpty else { return nil }
@@ -261,13 +265,35 @@ actor GuaziService {
         do {
             return try await performRequest(path: path, parameters: parameters, token: token)
         } catch GuaziServiceError.authFailed {
-            UserDefaults.standard.removeObject(forKey: Self.tokenKey)
-            token = try await register()
+            let currentToken = UserDefaults.standard.string(forKey: Self.tokenKey) ?? ""
+            if currentToken.isEmpty || currentToken == token {
+                UserDefaults.standard.removeObject(forKey: Self.tokenKey)
+                token = try await register()
+            } else {
+                token = currentToken
+            }
             return try await performRequest(path: path, parameters: parameters, token: token)
         }
     }
 
     private func register() async throws -> String {
+        if let registrationTask {
+            return try await registrationTask.value
+        }
+
+        let task = Task { try await self.performRegistration() }
+        registrationTask = task
+        do {
+            let token = try await task.value
+            registrationTask = nil
+            return token
+        } catch {
+            registrationTask = nil
+            throw error
+        }
+    }
+
+    private func performRegistration() async throws -> String {
         let stable = stableDeviceKey()
         var device = UserDefaults.standard.string(forKey: Self.deviceKey) ?? ""
         if device.isEmpty {

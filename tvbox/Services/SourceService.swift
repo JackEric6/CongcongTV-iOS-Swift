@@ -488,13 +488,16 @@ class SourceService {
     /// 普通 CMS 源也可能返回播放器页（例如 `/play/...`），统一尝试提取
     /// 页面中的真实媒体地址；已经是 m3u8/mp4 等直链时保持原值。
     func resolvePlayableURL(sourceBean: SourceBean, url: String) async throws -> String {
+        if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
+            guard let request = GuaziService.PlayRequest(url: url) else {
+                throw SourceError.invalidPlayableURL(url)
+            }
+            return try await GuaziService.shared.play(request)
+        }
+
         let normalized = KktvsResponseNormalizer.normalizeMediaURL(url)
         guard let validURL = Self.validPlayableURL(normalized) else {
             throw SourceError.invalidPlayableURL(url)
-        }
-        if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame,
-           let request = GuaziService.PlayRequest(url: validURL) {
-            return try await GuaziService.shared.play(request)
         }
         if KktvsResponseNormalizer.directMediaURL(normalized) != nil {
             return validURL
@@ -549,7 +552,8 @@ class SourceService {
     /// 或取消的源不会阻塞其他源。
     func searchAllStreaming(
         keyword: String,
-        onResults: @escaping @MainActor ([Movie.Video]) async -> Void
+        onResults: @escaping @MainActor ([Movie.Video]) async -> Void,
+        onSourceError: @escaping @MainActor (String, String) async -> Void = { _, _ in }
     ) async {
         let sources = await ApiConfig.shared.getSearchableSources()
 
@@ -583,7 +587,7 @@ class SourceService {
         // 多数站点使用不同域名，适当提高并发可以显著降低首屏等待；
         // URLSession 仍会按 host 自己限流，不会把同一站点打爆。
         let concurrency = min(12, searchableSources.count)
-        await withTaskGroup(of: (Int, [Movie.Video]).self) { group in
+        await withTaskGroup(of: (Int, [Movie.Video], String?).self) { group in
             var nextIndex = 0
             for _ in 0..<concurrency {
                 let index = nextIndex
@@ -594,15 +598,16 @@ class SourceService {
                         if !videos.isEmpty {
                             await self.searchHealth.markSuccess(searchableSources[index].key)
                         }
-                        return (index, videos)
+                        return (index, videos, nil)
                     } catch is CancellationError {
-                        return (index, [])
+                        return (index, [], nil)
                     } catch {
                         await self.searchHealth.markFailure(
                             searchableSources[index].key,
                             duration: Self.searchFailureDuration(for: error)
                         )
-                        return (index, [])
+                        let isGuazi = searchableSources[index].key.caseInsensitiveCompare("guazi") == .orderedSame
+                        return (index, [], isGuazi ? error.localizedDescription : nil)
                     }
                 }
             }
@@ -614,7 +619,10 @@ class SourceService {
                     break
                 }
 
-                let (_, videos) = result
+                let (sourceIndex, videos, errorMessage) = result
+                if let errorMessage {
+                    await onSourceError(searchableSources[sourceIndex].key, errorMessage)
+                }
                 var batch: [Movie.Video] = []
                 for video in videos {
                     let identity: String
@@ -642,15 +650,16 @@ class SourceService {
                         if !videos.isEmpty {
                             await self.searchHealth.markSuccess(searchableSources[index].key)
                         }
-                        return (index, videos)
+                        return (index, videos, nil)
                     } catch is CancellationError {
-                        return (index, [])
+                        return (index, [], nil)
                     } catch {
                         await self.searchHealth.markFailure(
                             searchableSources[index].key,
                             duration: Self.searchFailureDuration(for: error)
                         )
-                        return (index, [])
+                        let isGuazi = searchableSources[index].key.caseInsensitiveCompare("guazi") == .orderedSame
+                        return (index, [], isGuazi ? error.localizedDescription : nil)
                     }
                 }
             }

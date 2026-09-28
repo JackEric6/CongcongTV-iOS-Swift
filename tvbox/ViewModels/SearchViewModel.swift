@@ -92,6 +92,10 @@ class SearchViewModel: ObservableObject {
                 // enrich 跨 actor 等待期间可能已经开始了新搜索，禁止旧批次回写。
                 guard requestId == self.latestSearchRequestId else { return }
                 self.results = enriched
+            } onSourceError: { [weak self] sourceKey, message in
+                guard let self, requestId == self.latestSearchRequestId,
+                      sourceKey.caseInsensitiveCompare("guazi") == .orderedSame else { return }
+                self.errorMessage = "瓜子搜索失败：\(message)"
             }
         }
         activeSearchTask = task
@@ -99,7 +103,7 @@ class SearchViewModel: ObservableObject {
 
         guard requestId == latestSearchRequestId else { return }
         if results.isEmpty {
-            errorMessage = "未找到相关内容"
+            errorMessage = errorMessage ?? "未找到相关内容"
         }
         activeSearchTask = nil
         
