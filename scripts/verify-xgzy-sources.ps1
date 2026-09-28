@@ -5,10 +5,10 @@ $config = Get-Content -LiteralPath $resourcePath -Raw | ConvertFrom-Json
 $sites = @($config.sites)
 $keys = @($sites | ForEach-Object { $_.key })
 
-if ($sites.Count -ne 42) {
-    throw "源数量错误: $($sites.Count)，预期 42（含瓜子专用适配源）"
+if ($sites.Count -ne 41) {
+    throw "源数量错误: $($sites.Count)，预期 41（含瓜子专用适配源）"
 }
-if (($keys | Select-Object -Unique).Count -ne 42) {
+if (($keys | Select-Object -Unique).Count -ne 41) {
     throw '源 key 不唯一'
 }
 if ($sites[0].key -ne 'xgzy') {

@@ -421,17 +421,6 @@ private struct FeedbackSuggestionView: View {
     private func saveFeedback() {
         guard !trimmedFeedback.isEmpty else { return }
 
-        if trimmedFeedback == "1201" {
-            guard appState.apiConfig.unlockM766Source() else {
-                submissionMessage = "黄道长影视源暂不可用"
-                return
-            }
-            appState.applyLoadedConfigState(refreshHome: true)
-            feedback = ""
-            submissionMessage = "黄道长影视源已解锁"
-            return
-        }
-
         if trimmedFeedback == "1202" {
             guard appState.apiConfig.unlockYutuSource() else {
                 submissionMessage = "玉兔影视源暂不可用"

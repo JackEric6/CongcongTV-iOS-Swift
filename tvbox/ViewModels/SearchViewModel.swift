@@ -175,6 +175,7 @@ class SearchViewModel: ObservableObject {
         case "ffzy", "feifan", "feifazy": return 1
         case "lzi", "liangzi", "liangzizy": return 2
         case "modu", "moduzy": return 3
+        case "guazi", "guazizy": return 4
         default: return 100
         }
     }

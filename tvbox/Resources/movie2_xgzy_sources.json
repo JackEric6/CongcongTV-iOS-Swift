@@ -556,26 +556,6 @@
       ]
     },
     {
-      "key": "m766",
-      "name": "黄道长",
-      "type": 1,
-      "api": "https://m766.com/api.php/provide/vod/at/json",
-      "searchable": 0,
-      "quickSearch": 0,
-      "changeable": 0,
-      "filterable": 0,
-      "timeout": 25,
-      "icon": "https://m766.com/upload/site/20250729-1/deca59291b2f4f2f45a1d93fcc208489.jpg",
-      "home": "https://m766.com/",
-      "help": "https://help.m766.com/",
-      "backupApi": [
-        "https://m766.com/api.php/provide/vod/at/xml"
-      ],
-      "backupDomain": [],
-      "hidden": true,
-      "disabled": true
-    },
-    {
       "key": "guazi",
       "name": "瓜子影视",
       "type": 1,

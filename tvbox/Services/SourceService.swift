@@ -558,7 +558,9 @@ class SourceService {
             && source.isSelectable
             && source.isSupportedInSwift
             && source.isHttpApi {
-            guard await searchHealth.isAvailable(source.key) else { continue }
+            if source.key.caseInsensitiveCompare("guazi") != .orderedSame {
+                guard await searchHealth.isAvailable(source.key) else { continue }
+            }
             searchableSources.append(source)
         }
         // 健康缓存只用于避开近期明确失败的站点；不能让一次搜索失败
@@ -568,6 +570,7 @@ class SourceService {
                 $0.isSearchable && $0.isSelectable && $0.isSupportedInSwift && $0.isHttpApi
             }
         }
+        searchableSources = prioritizedSearchSources(searchableSources)
         guard !searchableSources.isEmpty else { return }
 
         // 多数站点使用不同域名，适当提高并发可以显著降低首屏等待；
@@ -647,6 +650,30 @@ class SourceService {
 
             group.cancelAll()
         }
+    }
+
+    /// 让瓜子和首选资源站在首批并发中启动，避免配置列表末尾的源被多轮请求拖延。
+    private func prioritizedSearchSources(_ sources: [SourceBean]) -> [SourceBean] {
+        func priority(_ source: SourceBean) -> Int {
+            let key = source.key
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+                .lowercased()
+            switch key {
+            case "xgzy", "xigua", "xiguazy": return 0
+            case "ffzy", "feifan", "feifazy": return 1
+            case "lzi", "liangzi", "liangzizy": return 2
+            case "modu", "moduzy": return 3
+            case "guazi", "guazizy": return 4
+            default: return 100
+            }
+        }
+
+        return sources.enumerated().sorted {
+            let leftPriority = priority($0.element)
+            let rightPriority = priority($1.element)
+            return leftPriority == rightPriority ? $0.offset < $1.offset : leftPriority < rightPriority
+        }.map(\.element)
     }
 
     /// 对源返回结果做本地关键词过滤，规避部分接口返回推荐/无关内容。

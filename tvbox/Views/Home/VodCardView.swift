@@ -32,9 +32,15 @@ struct VodCardView: View {
             // 封面图
             ZStack(alignment: .bottomLeading) {
                 CachedAsyncImage(url: URL.posterURL(from: video.pic)) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(2/3, contentMode: .fill)
+                    if usesYutuPosterLayout {
+                        image
+                            .resizable()
+                            .scaledToFit()
+                    } else {
+                        image
+                            .resizable()
+                            .aspectRatio(2/3, contentMode: .fill)
+                    }
                 } placeholder: {
                     placeholderImage
                         .overlay(ProgressView().tint(.white))
@@ -95,6 +101,7 @@ struct VodCardView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                 }
             }
+            .modifier(SourceSpecificPosterFrame(isYutu: usesYutuPosterLayout))
             // 悬停缩放只增强视觉反馈，不影响点击命中区域。
             .scaleEffect(isHovered ? 1.05 : 1.0)
             .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isHovered)
@@ -122,6 +129,10 @@ struct VodCardView: View {
         .contentShape(Rectangle())
         #endif
     }
+
+    private var usesYutuPosterLayout: Bool {
+        video.sourceKey.caseInsensitiveCompare("yutu") == .orderedSame
+    }
     
     /// 海报占位图，避免图片加载失败导致卡片高度塌陷。
     private var placeholderImage: some View {
@@ -133,5 +144,21 @@ struct VodCardView: View {
                     .font(.system(size: 30))
                     .foregroundColor(.white.opacity(0.2))
             )
+    }
+}
+
+private struct SourceSpecificPosterFrame: ViewModifier {
+    let isYutu: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isYutu {
+            content
+                .frame(maxWidth: .infinity)
+                .aspectRatio(2/3, contentMode: .fit)
+                .clipped()
+        } else {
+            content
+        }
     }
 }
