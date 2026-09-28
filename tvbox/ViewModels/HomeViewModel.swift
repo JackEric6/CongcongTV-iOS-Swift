@@ -465,11 +465,15 @@ class HomeViewModel: ObservableObject {
             .map(\.element)
     }
 
-    /// 首页默认使用西瓜；反馈码解锁玉兔后仅在当前会话切到玉兔。
+    /// 首页默认使用西瓜；反馈码解锁的源仅在当前会话切换，重启后仍回到西瓜。
     private var homeSource: SourceBean? {
         let config = ApiConfig.shared
-        if config.isYutuUnlocked, config.homeSourceBean?.key == "yutu" {
-            return config.homeSourceBean
+        if let selectedSource = config.homeSourceBean {
+            let key = selectedSource.key.lowercased()
+            if (key == "yutu" && config.isYutuUnlocked)
+                || (key == "guazi" && config.isGuaziUnlocked) {
+                return selectedSource
+            }
         }
         return config.sourceBeanList.first(where: isXiguaSource)
     }

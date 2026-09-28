@@ -108,6 +108,7 @@ actor GuaziService {
 
     private static let tokenKey = "congcong.guazi.api.token"
     private static let deviceKey = "congcong.guazi.device.key"
+    private static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     private let session: URLSession
     private var metadataCache: [String: Metadata] = [:]
     private var registrationTask: Task<String, Error>?
@@ -347,14 +348,21 @@ actor GuaziService {
         request.setValue(GuaziCrypto.versionCode, forHTTPHeaderField: "Version")
         request.setValue(GuaziCrypto.baseURL, forHTTPHeaderField: "Referer")
         request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         var components = URLComponents()
         components.queryItems = form.map { URLQueryItem(name: $0.key, value: $0.value) }
         request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
 
         do {
             let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                throw GuaziServiceError.requestFailed("瓜子接口 HTTP 请求失败")
+            guard let http = response as? HTTPURLResponse else {
+                throw GuaziServiceError.requestFailed("瓜子接口响应状态无效")
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                if http.statusCode == 401 || http.statusCode == 403 {
+                    throw GuaziServiceError.authFailed
+                }
+                throw GuaziServiceError.requestFailed("瓜子接口 HTTP 请求失败（\(http.statusCode)）")
             }
             let raw = String(decoding: data, as: UTF8.self)
             let code = GuaziCrypto.responseCode(raw)

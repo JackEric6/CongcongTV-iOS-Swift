@@ -421,6 +421,17 @@ private struct FeedbackSuggestionView: View {
     private func saveFeedback() {
         guard !trimmedFeedback.isEmpty else { return }
 
+        if trimmedFeedback == "8801" {
+            guard appState.apiConfig.unlockGuaziSource() else {
+                submissionMessage = "瓜子影视源暂不可用"
+                return
+            }
+            appState.applyLoadedConfigState(refreshHome: true)
+            feedback = ""
+            submissionMessage = "瓜子影视源已切换为首页"
+            return
+        }
+
         if trimmedFeedback == "1202" {
             guard appState.apiConfig.unlockYutuSource() else {
                 submissionMessage = "玉兔影视源暂不可用"

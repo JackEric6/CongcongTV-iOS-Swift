@@ -30,6 +30,7 @@ class ApiConfig: ObservableObject {
 
     /// 反馈码解锁仅在当前应用会话有效，应用重启后首页始终回到西瓜。
     private(set) var isYutuUnlocked = false
+    private(set) var isGuaziUnlocked = false
 
     private let network = NetworkManager.shared
     private var activeLoadToken = UUID()
@@ -690,7 +691,8 @@ class ApiConfig: ObservableObject {
             if !self.sourceBeanList.isEmpty {
                 // 保留当前会话中主动选择的源；新会话没有内存选项，始终从西瓜开始。
                 if let selectedKey = self.homeSourceBean?.key,
-                   selectedKey == "yutu" && self.isYutuUnlocked,
+                   (selectedKey == "yutu" && self.isYutuUnlocked
+                    || selectedKey.caseInsensitiveCompare("guazi") == .orderedSame && self.isGuaziUnlocked),
                    let selectedSource = self.sourceBeanList.first(where: { $0.key == selectedKey && $0.isSelectable }) {
                     self.homeSourceBean = selectedSource
                 } else {
@@ -1087,6 +1089,20 @@ class ApiConfig: ObservableObject {
         }
         guard let source = sourceBeanList.first(where: { $0.key == "yutu" && $0.isSelectable }) else {
             isYutuUnlocked = false
+            return false
+        }
+        homeSourceBean = source
+        return true
+    }
+
+    @discardableResult
+    func unlockGuaziSource() -> Bool {
+        isGuaziUnlocked = true
+        ensureBundledGuaziSource()
+        guard let source = sourceBeanList.first(where: {
+            $0.key.caseInsensitiveCompare("guazi") == .orderedSame && $0.isSelectable
+        }) else {
+            isGuaziUnlocked = false
             return false
         }
         homeSourceBean = source
