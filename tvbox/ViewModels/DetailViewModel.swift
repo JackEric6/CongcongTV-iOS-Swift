@@ -75,6 +75,26 @@ class DetailViewModel: ObservableObject {
     private var lastVideo: Movie.Video?
     private var shouldRetryAfterNetworkRecovery = false
 
+    /// 按视频携带的 sourceKey 严格解析实际播放源。
+    /// 配置静默刷新期间，sourceBeanList 可能短暂重建，但首页仍持有当前源对象；
+    /// 仅当两者 key 完全一致时才允许使用该对象，绝不回退到西瓜或其他源。
+    private func resolveSource(for sourceKey: String) -> SourceBean? {
+        let normalizedKey = sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedKey.isEmpty else {
+            return ApiConfig.shared.homeSourceBean
+        }
+
+        if let source = ApiConfig.shared.getSource(key: normalizedKey) {
+            return source
+        }
+
+        if let homeSource = ApiConfig.shared.homeSourceBean,
+           homeSource.key.caseInsensitiveCompare(normalizedKey) == .orderedSame {
+            return homeSource
+        }
+        return nil
+    }
+
     init() {
         networkRestoredCancellable = NetworkMonitor.shared.networkRestoredPublisher
             .sink { [weak self] in
@@ -99,13 +119,8 @@ class DetailViewModel: ObservableObject {
             && playUrl != nil
         lastVideo = video
         let sourceKey = video.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let source: SourceBean?
-        if sourceKey.isEmpty {
-            source = ApiConfig.shared.homeSourceBean
-        } else {
-            // 海报携带了 sourceKey 时必须使用对应源，不能静默回退到首页源。
-            source = ApiConfig.shared.getSource(key: sourceKey)
-        }
+        // 海报携带了 sourceKey 时必须使用对应源，不能静默回退到首页源。
+        let source = resolveSource(for: sourceKey)
         guard let source else {
             currentSource = nil
             vodInfo = nil

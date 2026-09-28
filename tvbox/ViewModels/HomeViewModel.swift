@@ -80,7 +80,9 @@ class HomeViewModel: ObservableObject {
                 self.sorts = allSorts
             }
 
-            let sourceHomeVideos = result.homeVideos
+            // 部分 CMS 会遗漏 sourceKey；首页卡片必须绑定当前实际请求源，
+            // 否则点击后详情页无法找到对应源。
+            let sourceHomeVideos = videosBoundToSource(result.homeVideos, source: source)
             // 先展示西瓜源返回的首页，豆瓣榜单仅作为后台海报增强，不能阻塞首屏。
             if !sourceHomeVideos.isEmpty || self.homeVideos.isEmpty {
                 self.homeVideos = sourceHomeVideos
@@ -243,7 +245,10 @@ class HomeViewModel: ObservableObject {
         }
         
         do {
-            let videos = try await sourceService.getList(sourceBean: source, sortData: sort, page: page)
+            let videos = videosBoundToSource(
+                try await sourceService.getList(sourceBean: source, sortData: sort, page: page),
+                source: source
+            )
             let filteredVideos = strictCategoryVideos(videos, for: sort, source: source)
             let enrichedVideos = await PosterCache.shared.fill(filteredVideos)
             
@@ -311,7 +316,10 @@ class HomeViewModel: ObservableObject {
         beginLoading()
         defer { endLoading() }
         do {
-            let videos = try await sourceService.getList(sourceBean: source, sortData: firstCategory, page: 1)
+            let videos = videosBoundToSource(
+                try await sourceService.getList(sourceBean: source, sortData: firstCategory, page: 1),
+                source: source
+            )
             let filteredVideos = strictCategoryVideos(videos, for: firstCategory, source: source)
             let enrichedVideos = await PosterCache.shared.fill(filteredVideos)
             guard requestGeneration == refreshGeneration else { return }
@@ -400,10 +408,10 @@ class HomeViewModel: ObservableObject {
             .map(\.element)
     }
 
-    /// 首页默认使用西瓜；通过反馈码解锁并选择黄道长后切到该源。
+    /// 首页默认使用西瓜；反馈码解锁玉兔后仅在当前会话切到玉兔。
     private var homeSource: SourceBean? {
         let config = ApiConfig.shared
-        if ApiConfig.isM766Unlocked, config.homeSourceBean?.key == "m766" {
+        if config.isYutuUnlocked, config.homeSourceBean?.key == "yutu" {
             return config.homeSourceBean
         }
         return config.sourceBeanList.first(where: isXiguaSource)
@@ -425,6 +433,17 @@ class HomeViewModel: ObservableObject {
         return videos.filter { video in
             let videoTypeID = video.tid.trimmingCharacters(in: .whitespacesAndNewlines)
             return !videoTypeID.isEmpty && videoTypeID == categoryID
+        }
+    }
+
+    private func videosBoundToSource(_ videos: [Movie.Video], source: SourceBean) -> [Movie.Video] {
+        videos.map { video in
+            guard video.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return video
+            }
+            var boundVideo = video
+            boundVideo.sourceKey = source.key
+            return boundVideo
         }
     }
 

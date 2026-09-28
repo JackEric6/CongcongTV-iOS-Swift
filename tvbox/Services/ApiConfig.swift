@@ -5,7 +5,6 @@ import Foundation
 @MainActor
 class ApiConfig: ObservableObject {
     static let shared = ApiConfig()
-    static let m766UnlockStorageKey = "congcong.sources.m766.unlocked"
     private static let maxConfigResolveDepth = 6
     private static let maxRedirectCandidates = 20
     private static let rawConfigCacheTTL: TimeInterval = 20
@@ -28,6 +27,9 @@ class ApiConfig: ObservableObject {
     @Published var liveConfigUrl: String = ""
     @Published var wallpaper: String = ""
     @Published var danmaku: String = ""
+
+    /// 反馈码解锁仅在当前应用会话有效，应用重启后首页始终回到西瓜。
+    private(set) var isYutuUnlocked = false
 
     private let network = NetworkManager.shared
     private var activeLoadToken = UUID()
@@ -627,7 +629,7 @@ class ApiConfig: ObservableObject {
                 site.api ?? "",
                 sourceKey: site.key ?? ""
             ),
-            searchable: site.key == "m766" && Self.isM766Unlocked ? 1 : (site.searchable?.value ?? 1),
+            searchable: site.key == "yutu" && self.isYutuUnlocked ? 1 : (site.searchable?.value ?? 1),
             filterable: site.filterable?.value ?? 1,
             quickSearch: site.quickSearch?.value ?? 0,
             playerType: site.playerType?.value ?? 0,
@@ -636,9 +638,9 @@ class ApiConfig: ObservableObject {
             timeout: site.timeout?.value,
             headers: site.headers?.compactMapValues(\.stringValue),
             icon: site.icon,
-            changeable: site.key == "m766" && Self.isM766Unlocked ? 1 : (site.changeable?.value ?? 1),
-            hidden: site.key == "m766" && Self.isM766Unlocked ? false : (site.hidden ?? false),
-            disabled: site.key == "m766" && Self.isM766Unlocked ? false : (site.disabled ?? false),
+            changeable: site.key == "yutu" && self.isYutuUnlocked ? 1 : (site.changeable?.value ?? 1),
+            hidden: site.key == "yutu" && self.isYutuUnlocked ? false : (site.hidden ?? false),
+            disabled: site.key == "yutu" && self.isYutuUnlocked ? false : (site.disabled ?? false),
             backupApi: site.backupApi ?? [],
             backupDomain: site.backupDomain ?? []
         )
@@ -656,10 +658,10 @@ class ApiConfig: ObservableObject {
         if includeSources {
             // 解析站点列表
             var sources = (config.sites ?? []).map { self.makeSourceBean(from: $0) }
-            if Self.isM766Unlocked, !sources.contains(where: { $0.key == "m766" }),
-               let m766Config = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
-               let m766Site = m766Config.sites?.first(where: { $0.key == "m766" }) {
-                sources.append(self.makeSourceBean(from: m766Site))
+            if self.isYutuUnlocked, !sources.contains(where: { $0.key == "yutu" }),
+               let bundledConfig = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+               let yutuSite = bundledConfig.sites?.first(where: { $0.key == "yutu" }) {
+                sources.append(self.makeSourceBean(from: yutuSite))
             }
             // 远程配置偶发返回只有 lives/parses 的内容时，不能清空已经可用的视频源。
             // 首次启动也保留打包的西瓜源，确保默认主页仍可进入。
@@ -676,7 +678,9 @@ class ApiConfig: ObservableObject {
 
             if !self.sourceBeanList.isEmpty {
                 // 保留当前会话中主动选择的源；新会话没有内存选项，始终从西瓜开始。
-                if let selectedKey = self.homeSourceBean?.key,
+                if self.isYutuUnlocked,
+                   let selectedKey = self.homeSourceBean?.key,
+                   selectedKey == "yutu",
                    let selectedSource = self.sourceBeanList.first(where: { $0.key == selectedKey && $0.isSelectable }) {
                     self.homeSourceBean = selectedSource
                 } else {
@@ -1024,27 +1028,23 @@ class ApiConfig: ObservableObject {
         UserDefaults.standard.set(source.key, forKey: HawkConfig.HOME_API)
     }
 
-    static var isM766Unlocked: Bool {
-        UserDefaults.standard.bool(forKey: m766UnlockStorageKey)
-    }
-
     @discardableResult
-    func unlockM766Source() -> Bool {
-        UserDefaults.standard.set(true, forKey: Self.m766UnlockStorageKey)
-        if let index = sourceBeanList.firstIndex(where: { $0.key == "m766" }) {
+    func unlockYutuSource() -> Bool {
+        isYutuUnlocked = true
+        if let index = sourceBeanList.firstIndex(where: { $0.key == "yutu" }) {
             sourceBeanList[index].searchable = 1
             sourceBeanList[index].changeable = 1
             sourceBeanList[index].hidden = false
             sourceBeanList[index].disabled = false
         } else if let config = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
-                  let site = config.sites?.first(where: { $0.key == "m766" }) {
+                  let site = config.sites?.first(where: { $0.key == "yutu" }) {
             sourceBeanList.append(makeSourceBean(from: site))
         }
-        guard let source = sourceBeanList.first(where: { $0.key == "m766" && $0.isSelectable }) else {
+        guard let source = sourceBeanList.first(where: { $0.key == "yutu" && $0.isSelectable }) else {
+            isYutuUnlocked = false
             return false
         }
         homeSourceBean = source
-        UserDefaults.standard.set("xgzy", forKey: HawkConfig.HOME_API)
         return true
     }
 }
