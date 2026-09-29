@@ -167,7 +167,7 @@ class SearchViewModel: ObservableObject {
         }.map(\.element)
     }
 
-    /// 搜索页顶部优先展示稳定性较好的四个源；未列出的源保持并发回调的相对顺序。
+    /// 瓜子固定排首位，其余优先源随后展示；未列出的源保持相对顺序。
     private func sourcePriority(for sourceKey: String) -> Int {
         let key = sourceKey
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -175,11 +175,11 @@ class SearchViewModel: ObservableObject {
             .lowercased()
 
         switch key {
-        case "xgzy", "xigua", "xiguazy": return 0
-        case "ffzy", "feifan", "feifazy": return 1
-        case "lzi", "liangzi", "liangzizy": return 2
-        case "modu", "moduzy": return 3
-        case "guazi", "guazizy": return 4
+        case "guazi", "guazizy": return 0
+        case "xgzy", "xigua", "xiguazy": return 1
+        case "ffzy", "feifan", "feifazy": return 2
+        case "lzi", "liangzi", "liangzizy": return 3
+        case "modu", "moduzy": return 4
         default: return 100
         }
     }

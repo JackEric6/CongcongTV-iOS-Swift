@@ -42,7 +42,7 @@ actor GuaziService {
         ("4", "动漫", "30")
     ]
 
-    struct PlayRequest: Hashable {
+    struct PlayRequest: Hashable, Sendable {
         let vodID: String
         let cloudID: String
         let vurlID: String

@@ -696,11 +696,11 @@ class SourceService {
                 .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
                 .lowercased()
             switch key {
-            case "xgzy", "xigua", "xiguazy": return 0
-            case "ffzy", "feifan", "feifazy": return 1
-            case "lzi", "liangzi", "liangzizy": return 2
-            case "modu", "moduzy": return 3
-            case "guazi", "guazizy": return 4
+            case "guazi", "guazizy": return 0
+            case "xgzy", "xigua", "xiguazy": return 1
+            case "ffzy", "feifan", "feifazy": return 2
+            case "lzi", "liangzi", "liangzizy": return 3
+            case "modu", "moduzy": return 4
             default: return 100
             }
         }

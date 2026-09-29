@@ -17,8 +17,7 @@ private func stableHLSDownloadURL(taskIdentifier: Int) throws -> URL {
     )
 }
 
-/// 可下载的实际播放地址。`identifier` 应由调用方使用 sourceKey、影片 ID 和集数组成，
-/// 不能使用搜索结果的临时索引，以便同一集在重启后仍能查询到。
+/// 下载请求保留稳定剧集标识；瓜子额外携带 PlayRequest，以便续传时换取新 CDN 地址。
 struct DownloadRequest: Identifiable, Hashable, Sendable {
     let identifier: String
     let title: String
@@ -27,6 +26,7 @@ struct DownloadRequest: Identifiable, Hashable, Sendable {
     let episodeIndex: Int
     let episodeName: String
     let url: URL
+    let playRequestURL: URL?
     let headers: [String: String]
 
     var id: String { identifier }
@@ -39,6 +39,7 @@ struct DownloadRequest: Identifiable, Hashable, Sendable {
         episodeIndex: Int,
         episodeName: String = "",
         url: URL,
+        playRequestURL: URL? = nil,
         headers: [String: String] = [:]
     ) {
         self.identifier = identifier
@@ -48,6 +49,7 @@ struct DownloadRequest: Identifiable, Hashable, Sendable {
         self.episodeIndex = episodeIndex
         self.episodeName = episodeName
         self.url = url
+        self.playRequestURL = playRequestURL
         self.headers = headers
     }
 
@@ -78,7 +80,8 @@ struct DownloadItem: Identifiable, Equatable, Sendable {
     let episodeIndex: Int
     let episodeName: String
     let headers: [String: String]
-    let url: URL
+    var url: URL
+    let playRequestURL: URL?
     var mediaKind: DownloadMediaKind
     var status: DownloadStatus
     var progress: Double
@@ -106,9 +109,8 @@ enum DownloadError: LocalizedError, Equatable {
     }
 }
 
-/// 基于系统 URLSession 的直接视频文件下载服务。
-///
-/// 服务只接收实际播放 URL，不参与 CMS 解析，也不修改 sourceKey、播放线路或集数配置。
+/// 基于 URLSession 与 AVFoundation 的离线下载服务。
+/// 瓜子任务保存稳定的 PlayRequest，开始或续传时再解析临时 CDN 地址。
 @MainActor
 final class DownloadManager: NSObject, ObservableObject {
     static let shared = DownloadManager()
@@ -127,6 +129,7 @@ final class DownloadManager: NSObject, ObservableObject {
     private var hlsAssetFallbackAttempted = Set<String>()
     private var pausedIdentifiers = Set<String>()
     private var pendingPauseIdentifiers = Set<String>()
+    private var pendingResumeIdentifiers = Set<String>()
     private var resumeDataByIdentifier: [String: Data] = [:]
 
     private struct ProgressSample {
@@ -196,6 +199,7 @@ final class DownloadManager: NSObject, ObservableObject {
             return items[request.identifier] ?? existing
         }
 
+        hlsAssetFallbackAttempted.remove(request.identifier)
         let mediaKind = Self.mediaKind(for: request.url)
         let item = DownloadItem(
             id: request.identifier,
@@ -206,6 +210,7 @@ final class DownloadManager: NSObject, ObservableObject {
             episodeName: request.episodeName,
             headers: request.headers,
             url: request.url,
+            playRequestURL: request.playRequestURL,
             mediaKind: mediaKind,
             status: .queued,
             progress: 0,
@@ -216,20 +221,14 @@ final class DownloadManager: NSObject, ObservableObject {
         )
         items[request.identifier] = item
 
-        let headers = Self.normalizedHeaders(request.headers)
-
-        if mediaKind == .hls {
+        if request.playRequestURL != nil {
+            startRefreshingDownload(identifier: request.identifier, item: item, url: request.url)
+        } else if mediaKind == .hls {
             startHLSDownload(identifier: request.identifier, item: item, url: request.url)
             updateStatus(for: request.identifier, status: .downloading)
             return items[request.identifier] ?? item
         } else {
-            var urlRequest = URLRequest(url: request.url)
-            headers.forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
-            let task = session.downloadTask(with: urlRequest)
-            taskIDs[task.taskIdentifier] = request.identifier
-            activeTasks[task.taskIdentifier] = task
-            progressSamples.removeValue(forKey: task.taskIdentifier)
-            task.resume()
+            startDirectDownload(identifier: request.identifier, item: item, url: request.url)
         }
         updateStatus(for: request.identifier, status: .downloading)
         return items[request.identifier] ?? item
@@ -279,18 +278,45 @@ final class DownloadManager: NSObject, ObservableObject {
     func resume(identifier: String) {
         guard let item = items[identifier], item.status == .paused else { return }
         if pendingPauseIdentifiers.contains(identifier) { return }
+        if fallbackTasks[identifier] != nil {
+            pendingResumeIdentifiers.insert(identifier)
+            return
+        }
 
         pausedIdentifiers.remove(identifier)
         if let taskID = taskIDs.first(where: { $0.value == identifier })?.key,
            let task = activeTasks[taskID] {
             if let assetTask = task as? AVAssetDownloadTask {
-                assetTask.resume()
-                updateStatus(for: identifier, status: .downloading)
-                saveManifest()
+                if item.playRequestURL != nil {
+                    taskIDs.removeValue(forKey: taskID)
+                    activeTasks.removeValue(forKey: taskID)
+                    assetTask.cancel()
+                    startRefreshingDownload(
+                        identifier: identifier,
+                        item: item,
+                        url: item.url,
+                        resetProgress: false,
+                        forceSystemHLS: true
+                    )
+                } else {
+                    assetTask.resume()
+                    updateStatus(for: identifier, status: .downloading)
+                    saveManifest()
+                }
             }
             return
         }
 
+        if item.playRequestURL != nil {
+            resumeDataByIdentifier.removeValue(forKey: identifier)
+            startRefreshingDownload(
+                identifier: identifier,
+                item: item,
+                url: item.url,
+                resetProgress: item.mediaKind != .hls
+            )
+            return
+        }
         if item.mediaKind == .hls {
             startHLSDownload(identifier: identifier, item: item, url: item.url, resetProgress: false)
             updateStatus(for: identifier, status: .downloading)
@@ -317,6 +343,7 @@ final class DownloadManager: NSObject, ObservableObject {
     func cancel(identifier: String) {
         pausedIdentifiers.remove(identifier)
         pendingPauseIdentifiers.remove(identifier)
+        pendingResumeIdentifiers.remove(identifier)
         resumeDataByIdentifier.removeValue(forKey: identifier)
         if let fallbackTask = fallbackTasks.removeValue(forKey: identifier) {
             fallbackTask.cancel()
@@ -396,6 +423,18 @@ final class DownloadManager: NSObject, ObservableObject {
         guard var item = items[identifier] else { return }
         item.status = status
         items[identifier] = item
+    }
+
+    @discardableResult
+    private func finishPausedFallbackTask(for identifier: String) -> Bool {
+        guard pausedIdentifiers.contains(identifier) else { return false }
+        fallbackTasks.removeValue(forKey: identifier)
+        updateStatus(for: identifier, status: .paused)
+        saveManifest()
+        if pendingResumeIdentifiers.remove(identifier) != nil {
+            resume(identifier: identifier)
+        }
+        return true
     }
 
     private func updateProgress(
@@ -487,11 +526,20 @@ final class DownloadManager: NSObject, ObservableObject {
         case unsupported(String)
         case http(Int)
         case invalid(String)
+        case staleAddress(String)
 
         var errorDescription: String? {
             switch self {
-            case .unsupported(let message), .invalid(let message): return message
+            case .unsupported(let message), .invalid(let message), .staleAddress(let message): return message
             case .http(let status): return "播放列表或分片返回 HTTP \(status)"
+            }
+        }
+
+        var shouldRefreshDynamicURL: Bool {
+            switch self {
+            case .http(let status): return [401, 403, 404, 410].contains(status)
+            case .staleAddress: return true
+            case .unsupported(_), .invalid(_): return false
             }
         }
     }
@@ -500,7 +548,8 @@ final class DownloadManager: NSObject, ObservableObject {
         identifier: String,
         item: DownloadItem,
         url: URL,
-        resetProgress: Bool = true
+        resetProgress: Bool = true,
+        refreshDynamicURL: Bool = true
     ) {
         guard fallbackTasks[identifier] == nil else { return }
         var updated = item
@@ -521,29 +570,134 @@ final class DownloadManager: NSObject, ObservableObject {
 
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
+            var effectiveURL = url
             do {
-                try await self.downloadPlainHLS(identifier: identifier, item: updated, url: url)
+                if refreshDynamicURL {
+                    effectiveURL = try await self.refreshedDownloadURL(for: updated, fallbackURL: url)
+                }
+                try Task.checkCancellation()
+                updated.url = effectiveURL
+                self.items[identifier] = updated
+                do {
+                    try await self.downloadPlainHLS(identifier: identifier, item: updated, url: effectiveURL)
+                } catch let error as HLSDownloadError
+                    where updated.playRequestURL != nil && error.shouldRefreshDynamicURL {
+                    self.removeHLSArtifacts(identifier: identifier)
+                    updated.progress = 0
+                    updated.bytesWritten = 0
+                    updated.totalBytes = 0
+                    effectiveURL = try await self.refreshedDownloadURL(for: updated, fallbackURL: effectiveURL)
+                    try Task.checkCancellation()
+                    updated.url = effectiveURL
+                    self.items[identifier] = updated
+                    try await self.downloadPlainHLS(identifier: identifier, item: updated, url: effectiveURL)
+                }
                 self.fallbackTasks.removeValue(forKey: identifier)
                 self.hlsAssetFallbackAttempted.remove(identifier)
             } catch is CancellationError {
-                self.fallbackTasks.removeValue(forKey: identifier)
-                if self.pausedIdentifiers.contains(identifier) {
-                    self.updateStatus(for: identifier, status: .paused)
-                    self.saveManifest()
-                } else {
+                if !self.finishPausedFallbackTask(for: identifier) {
+                    self.fallbackTasks.removeValue(forKey: identifier)
                     self.updateStatus(for: identifier, status: .cancelled)
                 }
             } catch HLSDownloadError.unsupported(_) {
+                guard !self.finishPausedFallbackTask(for: identifier) else { return }
                 self.fallbackTasks.removeValue(forKey: identifier)
+                guard !self.hlsAssetFallbackAttempted.contains(identifier) else {
+                    self.updateStatus(for: identifier, status: .failed("该 HLS 格式暂不支持离线缓存"))
+                    return
+                }
                 self.hlsAssetFallbackAttempted.insert(identifier)
-                self.startHLSAssetDownload(identifier: identifier, item: updated, url: url)
+                self.startHLSAssetDownload(identifier: identifier, item: updated, url: effectiveURL)
             } catch {
+                guard !self.finishPausedFallbackTask(for: identifier) else { return }
                 self.fallbackTasks.removeValue(forKey: identifier)
                 self.progressSamples.removeValue(forKey: identifier.hashValue)
                 self.updateStatus(for: identifier, status: .failed(error.localizedDescription))
             }
         }
         fallbackTasks[identifier] = task
+    }
+
+    private func refreshedDownloadURL(for item: DownloadItem, fallbackURL: URL) async throws -> URL {
+        guard item.sourceKey.caseInsensitiveCompare("guazi") == .orderedSame else { return fallbackURL }
+        guard let playRequestURL = item.playRequestURL else { return fallbackURL }
+        guard let playRequest = GuaziService.PlayRequest(url: playRequestURL.absoluteString) else {
+            throw DownloadError.invalidURL
+        }
+        let rawURL = try await GuaziService.shared.play(playRequest)
+        guard let url = URL(string: rawURL),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            throw DownloadError.invalidURL
+        }
+        return url
+    }
+
+    private func startRefreshingDownload(
+        identifier: String,
+        item: DownloadItem,
+        url: URL,
+        resetProgress: Bool = true,
+        forceSystemHLS: Bool = false
+    ) {
+        guard fallbackTasks[identifier] == nil else { return }
+        var updated = item
+        updated.status = .downloading
+        if resetProgress {
+            updated.progress = 0
+            updated.bytesWritten = 0
+            updated.totalBytes = 0
+        }
+        items[identifier] = updated
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let effectiveURL = try await self.refreshedDownloadURL(for: updated, fallbackURL: url)
+                try Task.checkCancellation()
+                guard self.items[identifier]?.status == .downloading else {
+                    self.fallbackTasks.removeValue(forKey: identifier)
+                    return
+                }
+                updated.url = effectiveURL
+                updated.mediaKind = Self.mediaKind(for: effectiveURL)
+                self.items[identifier] = updated
+                self.fallbackTasks.removeValue(forKey: identifier)
+                if updated.mediaKind == .hls {
+                    if forceSystemHLS {
+                        self.startHLSAssetDownload(identifier: identifier, item: updated, url: effectiveURL)
+                    } else {
+                        self.startHLSDownload(
+                            identifier: identifier,
+                            item: updated,
+                            url: effectiveURL,
+                            resetProgress: resetProgress,
+                            refreshDynamicURL: false
+                        )
+                    }
+                } else {
+                    self.startDirectDownload(identifier: identifier, item: updated, url: effectiveURL)
+                }
+            } catch is CancellationError {
+                if !self.finishPausedFallbackTask(for: identifier) {
+                    self.fallbackTasks.removeValue(forKey: identifier)
+                    self.updateStatus(for: identifier, status: .cancelled)
+                }
+            } catch {
+                guard !self.finishPausedFallbackTask(for: identifier) else { return }
+                self.fallbackTasks.removeValue(forKey: identifier)
+                self.updateStatus(for: identifier, status: .failed(error.localizedDescription))
+            }
+        }
+        fallbackTasks[identifier] = task
+    }
+
+    private func startDirectDownload(identifier: String, item: DownloadItem, url: URL) {
+        var urlRequest = URLRequest(url: url)
+        Self.normalizedHeaders(item.headers).forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
+        let task = session.downloadTask(with: urlRequest)
+        taskIDs[task.taskIdentifier] = identifier
+        activeTasks[task.taskIdentifier] = task
+        progressSamples.removeValue(forKey: task.taskIdentifier)
+        task.resume()
     }
 
     private func startHLSAssetDownload(identifier: String, item: DownloadItem, url: URL) {
@@ -715,15 +869,28 @@ final class DownloadManager: NSObject, ObservableObject {
         var request = URLRequest(url: url)
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
         request.timeoutInterval = 30
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let result: (Data, URLResponse)
+        do {
+            result = try await URLSession.shared.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        }
+        let (data, response) = result
         guard let http = response as? HTTPURLResponse else {
             throw HLSDownloadError.invalid("播放列表响应无效")
         }
         guard (200...299).contains(http.statusCode) else {
             throw HLSDownloadError.http(http.statusCode)
         }
-        guard let playlist = String(data: data, encoding: .utf8),
-              playlist.localizedCaseInsensitiveContains("#EXTM3U") else {
+        guard let playlist = String(data: data, encoding: .utf8) else {
+            throw HLSDownloadError.unsupported("服务器返回的不是文本 HLS 播放列表")
+        }
+        guard playlist.localizedCaseInsensitiveContains("#EXTM3U") else {
+            if looksLikeTextError(data) {
+                throw HLSDownloadError.staleAddress("播放列表返回了错误页")
+            }
             throw HLSDownloadError.unsupported("服务器返回的不是有效 HLS 播放列表")
         }
         return (playlist, http.url ?? url)
@@ -759,6 +926,9 @@ final class DownloadManager: NSObject, ObservableObject {
             throw HLSDownloadError.unsupported("该地址不是有限点播流")
         }
         let upper = playlist.uppercased()
+        if upper.contains("#EXT-X-STREAM-INF:") {
+            throw HLSDownloadError.unsupported("播放列表仍包含多层清晰度索引，交由系统转换")
+        }
         if upper.contains("#EXT-X-MAP:") || upper.contains("#EXT-X-BYTERANGE:") {
             throw HLSDownloadError.unsupported("该 HLS 使用 fMP4 或 BYTERANGE，交由系统转换")
         }
@@ -780,6 +950,10 @@ final class DownloadManager: NSObject, ObservableObject {
             guard expectsURL else { continue }
             guard let segmentURL = URL(string: line, relativeTo: baseURL)?.absoluteURL else {
                 throw HLSDownloadError.invalid("分片地址无效")
+            }
+            let segmentExtension = segmentURL.pathExtension.lowercased()
+            if ["m4s", "mp4", "m4a", "aac", "mp3", "vtt", "webvtt"].contains(segmentExtension) {
+                throw HLSDownloadError.unsupported("该 HLS 使用非 MPEG-TS 分片，交由系统转换")
             }
             urls.append(segmentURL)
             expectsURL = false
@@ -810,7 +984,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     throw HLSDownloadError.http(http.statusCode)
                 }
                 guard !data.isEmpty else {
-                    throw HLSDownloadError.invalid("分片返回了错误页")
+                    throw HLSDownloadError.staleAddress("分片返回了空响应")
                 }
                 if Self.looksLikeHLSPlaylist(data) {
                     // A segment URL returning another playlist is not a TS
@@ -818,7 +992,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     throw HLSDownloadError.unsupported("分片返回了 HLS 播放列表，交由系统转换")
                 }
                 guard !Self.looksLikeTextError(data) else {
-                    throw HLSDownloadError.invalid("分片返回了错误页")
+                    throw HLSDownloadError.staleAddress("分片返回了错误页")
                 }
                 try data.write(to: destination, options: .atomic)
                 return (index, destination, Int64(data.count))
@@ -969,6 +1143,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     episodeName: entry.episodeName ?? "",
                     headers: entry.headers ?? [:],
                     url: entry.url,
+                    playRequestURL: entry.playRequestURL,
                     mediaKind: entry.mediaKind ?? .directFile,
                     status: .paused,
                     progress: min(1, max(0, entry.progress ?? 0)),
@@ -998,6 +1173,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 episodeName: entry.episodeName ?? "",
                 headers: entry.headers ?? [:],
                 url: entry.url,
+                playRequestURL: entry.playRequestURL,
                 mediaKind: entry.mediaKind ?? .directFile,
                 status: .completed,
                 progress: 1,
@@ -1027,6 +1203,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 episodeName: item.episodeName,
                 headers: item.headers,
                 url: item.url,
+                playRequestURL: item.playRequestURL,
                 fileName: localURL?.lastPathComponent,
                 localURL: localURL,
                 mediaKind: item.mediaKind,
@@ -1050,6 +1227,7 @@ final class DownloadManager: NSObject, ObservableObject {
         let episodeName: String?
         let headers: [String: String]?
         let url: URL
+        let playRequestURL: URL?
         let fileName: String?
         let localURL: URL?
         let mediaKind: DownloadMediaKind?

@@ -644,14 +644,18 @@ struct DetailView: View {
         let sourceHeaders = apiConfig.getSource(key: video.sourceKey)?.headers ?? [:]
         let videoID = video.id
         let currentIndex = viewModel.selectedEpisodeIndex
+        let episodeURL = viewModel.currentEpisodes[episodeIndex].url
         // 瓜子播放地址带有短时令牌；下载时必须从虚拟 PlayRequest
         // 重新换取地址，不能复用播放器已经打开过的旧 CDN URL。
         let isGuazi = sourceKey.caseInsensitiveCompare("guazi") == .orderedSame
+        let guaziPlayRequest = isGuazi ? GuaziService.PlayRequest(url: episodeURL) : nil
         let currentURL = !isGuazi && episodeIndex == currentIndex ? viewModel.playUrl : nil
 
         Task { @MainActor in
             let rawURL: String?
-            if let currentURL {
+            if let guaziPlayRequest {
+                rawURL = guaziPlayRequest.url
+            } else if let currentURL {
                 rawURL = currentURL
             } else {
                 rawURL = await viewModel.resolvedPlayableURL(for: episodeIndex)
@@ -676,6 +680,7 @@ struct DetailView: View {
                 episodeIndex: episodeIndex,
                 episodeName: episodeName,
                 url: url,
+                playRequestURL: guaziPlayRequest.flatMap { URL(string: $0.url) },
                 headers: sourceHeaders
             )
 
