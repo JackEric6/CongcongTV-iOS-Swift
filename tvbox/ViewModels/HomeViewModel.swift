@@ -393,8 +393,8 @@ class HomeViewModel: ObservableObject {
                await fallbackToXigua(
                 preferredSource: source,
                 expectedLoadGeneration: loadGeneration,
-                preferredSort: firstCategory,
-                expectedRefreshGeneration: requestGeneration
+                expectedRefreshGeneration: requestGeneration,
+                preferredSort: firstCategory
                ) {
                 return
             }
@@ -415,8 +415,8 @@ class HomeViewModel: ObservableObject {
                await fallbackToXigua(
                 preferredSource: source,
                 expectedLoadGeneration: loadGeneration,
-                preferredSort: selectedSort,
-                expectedRefreshGeneration: requestGeneration
+                expectedRefreshGeneration: requestGeneration,
+                preferredSort: selectedSort
                ) {
                 return
             }
