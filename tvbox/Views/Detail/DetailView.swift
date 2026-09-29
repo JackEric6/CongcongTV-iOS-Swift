@@ -6,12 +6,6 @@ import AppKit
 import UIKit
 #endif
 
-extension Notification.Name {
-    static let congcongPlaybackSessionWillChange = Notification.Name(
-        "CongcongPlaybackSessionWillChange"
-    )
-}
-
 /// 详情页 - 对应 Android 版 DetailActivity
 struct DetailView: View {
     let video: Movie.Video
@@ -1032,13 +1026,6 @@ struct DetailView: View {
 
     /// 开始新的线路/剧集播放会话，令旧播放器回调失效，并重新计算本集的持久化阈值。
     private func beginPlaybackSession() {
-        // The native KSPlayer view can be hosted by its own full-screen
-        // controller while SwiftUI temporarily removes the inline representable.
-        // Stop that exact session before changing episode/URL state.
-        NotificationCenter.default.post(
-            name: .congcongPlaybackSessionWillChange,
-            object: nil
-        )
         playbackSessionToken = UUID()
         lastPersistedProgress = 0
         didSkipOutroForEpisode = false

@@ -15,6 +15,22 @@ struct VerifyGuaziMetadata {
         guard orderedCategories.map(\.name) == expectedCategories else {
             fatalError("瓜子固定分类顺序不正确：\(orderedCategories.map(\.name))")
         }
+        let requiredPageIDs = GuaziHomeCategoryOrder.prioritizedPageIDs(
+            in: ["1", "5", "16", "3", "4", "6", "7", "8", "9"]
+        )
+        guard requiredPageIDs == ["1", "5", "16", "3", "4", "6"] else {
+            fatalError("瓜子优先片单栏目预加载列表不正确：\(requiredPageIDs)")
+        }
+        let overflowPlaylists = (0..<40).map {
+            MovieSort.SortData(id: "guazi-playlist:99:\($0)", name: "溢出片单 \($0)")
+        }
+        let limitedHomeItems = GuaziHomeCategoryOrder.sort(
+            overflowPlaylists + shuffledCategories
+        )
+        guard limitedHomeItems.count == 30,
+              limitedHomeItems.last?.id == "guazi-playlist:99:29" else {
+            fatalError("瓜子首页标签未严格限制为前 30 项")
+        }
 
         let prioritizedIDs = [
             "guazi-playlist:4:74151",

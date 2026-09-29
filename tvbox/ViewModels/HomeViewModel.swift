@@ -42,7 +42,6 @@ class HomeViewModel: ObservableObject {
     /// 瓜子首屏无内容时临时用西瓜展示；配置中的首选源仍保留为瓜子，刷新可重试。
     private var fallbackPreferredSourceKey: String?
     private let scrollPositionStoragePrefix = "congcong.home.scroll-position."
-    private let selectedSortStoragePrefix = "congcong.home.selected-sort."
     
     init() {
         setupNetworkRestoredAutoRetry()
@@ -96,15 +95,9 @@ class HomeViewModel: ObservableObject {
 
             let effectiveSorts = self.sorts
             if selectedSort == nil || !effectiveSorts.contains(where: { $0.id == selectedSort?.id }) {
-                if let savedID = savedSelectedSortID(),
-                   let savedSort = effectiveSorts.first(where: { $0.id == savedID }) {
-                    selectedSort = savedSort
-                } else {
-                    selectedSort = effectiveSorts.first
-                }
-            }
-            if let selectedSort {
-                rememberSelectedSort(selectedSort.id)
+                // 每次新建首页模型（包括冷启动）从当前源排序后的第一项开始；
+                // 同一次运行中已有的 selectedSort 则保留，便于从下载/收藏返回时恢复位置。
+                selectedSort = effectiveSorts.first
             }
             // 响应结构虽然合法，但完全没有可用分类或推荐时视为本次加载失败；
             // 这样上层会保留旧内容，下一次刷新仍可重试。
@@ -250,7 +243,6 @@ class HomeViewModel: ObservableObject {
     func selectSort(_ sort: MovieSort.SortData) {
         // 切分类时先重置分页状态，避免旧分类残留数据闪烁。
         selectedSort = sort
-        rememberSelectedSort(sort.id)
         errorMessage = nil
         categoryVideos = []
         currentPage = 1
@@ -524,7 +516,6 @@ class HomeViewModel: ObservableObject {
                 return boundVideo
             }
             selectedSort = firstSort
-            rememberSelectedSort(firstSort.id)
             categoryVideos = videos
             currentPage = 1
             hasMore = true
@@ -567,24 +558,6 @@ class HomeViewModel: ObservableObject {
             guard sort.id != "home" else { return }
             await self.loadCategoryVideos(page: 1, sort: sort)
         }
-    }
-
-    private var selectedSortStorageKey: String? {
-        let sourceKey = homeSource?.key.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !sourceKey.isEmpty else { return nil }
-        let encodedSource = sourceKey.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? sourceKey
-        return "\(selectedSortStoragePrefix)\(encodedSource)"
-    }
-
-    private func savedSelectedSortID() -> String? {
-        guard let key = selectedSortStorageKey else { return nil }
-        return UserDefaults.standard.string(forKey: key)
-    }
-
-    private func rememberSelectedSort(_ sortID: String) {
-        guard let key = selectedSortStorageKey,
-              !sortID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        UserDefaults.standard.set(sortID, forKey: key)
     }
 
     /// 保存指定源/分类下最后可见的卡片 ID，供从详情、下载等页面返回时恢复滚动位置。

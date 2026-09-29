@@ -107,8 +107,8 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private let deviceBatteryIconView = UIImageView()
     private let deviceBatteryLabel = UILabel()
     private var deviceStatusTimer: Timer?
-    private var playbackSessionObserver: NSObjectProtocol?
     var customControlsLayout: ((Bool) -> Void)?
+    var customControlsRefresh: (() -> Void)?
     private var isSliderDragging = false
     private var sliderSeekCommitted = false
     private var panStartPoint: CGPoint?
@@ -265,7 +265,6 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        installPlaybackSessionObserverIfNeeded()
         if window == nil {
             deviceStatusTimer?.invalidate()
             deviceStatusTimer = nil
@@ -277,20 +276,6 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     deinit {
         deviceStatusTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
-        if let playbackSessionObserver {
-            NotificationCenter.default.removeObserver(playbackSessionObserver)
-        }
-    }
-
-    private func installPlaybackSessionObserverIfNeeded() {
-        guard playbackSessionObserver == nil else { return }
-        playbackSessionObserver = NotificationCenter.default.addObserver(
-            forName: .congcongPlaybackSessionWillChange,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            self?.stopCurrentPlayback(reportFinalProgress: false)
-        }
     }
 
     private func installDeviceStatusViewIfNeeded() {
@@ -432,6 +417,12 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // KSPlayer 2.3.4 每次 readyToPlay 都会重建一次默认倍速菜单，默认只到 2x。
         // 在它完成初始化后覆盖菜单，避免切集或重连时选项又被恢复。
         rebuildPlaybackRateMenu()
+        DispatchQueue.main.async { [weak self, weak layer] in
+            guard let self, let layer, self.playerLayer === layer else { return }
+            self.isMaskShow = true
+            self.customControlsLayout?(self.landscapeButton.isSelected)
+            self.customControlsRefresh?()
+        }
     }
 
     override func player(layer: KSPlayerLayer, finish error: Error?) {
@@ -617,6 +608,19 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         playerLayer = nil
         pendingStartPosition = 0
         didApplyStartPosition = false
+    }
+
+    func replacePlayback(url: URL, options: KSOptions) {
+        let oldLayer = playerLayer
+        oldLayer?.delegate = nil
+        // The detail flow checkpoints history before rotating the session token.
+        // Never send the retired layer's final callback through the new session.
+        playTimeDidChange = nil
+
+        // Keep the fullscreen host attached to this view while the new layer
+        // replaces the old one; clearing playerLayer first leaves a black frame.
+        super.set(url: url, options: options)
+        oldLayer?.stop()
     }
 
     private func applyTransparentSurfaces() {
@@ -891,10 +895,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
         with view: CongcongKSVideoPlayerView
     ) -> Bool {
         let sessionChanged = coordinator.playbackSessionToken != playbackSessionToken
+            || coordinator.url != url
         if sessionChanged {
-            // Stop and checkpoint the old session before replacing its callback
-            // closures, so its final progress is never recorded against the next episode.
-            view.stopCurrentPlayback()
             coordinator.playbackSessionToken = playbackSessionToken
         }
         coordinator.onProgressChanged = onProgressChanged
@@ -916,6 +918,18 @@ private struct KSPlayerUIView: UIViewRepresentable {
             canPlayNext: canPlayNext,
             canSelectEpisode: canSelectEpisode
         )
+        let canPlayPrevious = self.canPlayPrevious
+        let canPlayNext = self.canPlayNext
+        let canSelectEpisode = self.canSelectEpisode
+        view.customControlsRefresh = { [weak coordinator, weak view] in
+            guard let coordinator, let view else { return }
+            coordinator.installActionButtons(
+                on: view,
+                canPlayPrevious: canPlayPrevious,
+                canPlayNext: canPlayNext,
+                canSelectEpisode: canSelectEpisode
+            )
+        }
         coordinator.updateActionButtonsLayout(isLandscape: view.landscapeButton.isSelected)
         view.customControlsLayout = { [weak coordinator] isLandscape in
             coordinator?.updateActionButtonsLayout(isLandscape: isLandscape)
@@ -936,9 +950,6 @@ private struct KSPlayerUIView: UIViewRepresentable {
     }
 
     private func configure(_ view: CongcongKSVideoPlayerView, coordinator: Coordinator) {
-        if let previousURL = coordinator.url, previousURL != url {
-            view.stopCurrentPlayback()
-        }
         coordinator.url = url
         coordinator.playbackSessionToken = playbackSessionToken
         view.pendingStartPosition = max(0, startPosition)
@@ -964,7 +975,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // 本应用只提供点播，不启用画中画；尤其不能让播放器在内联状态下
         // 因切后台或系统事件自动进入 PiP。
         options.canStartPictureInPictureAutomaticallyFromInline = false
-        view.set(url: url, options: options)
+        view.replacePlayback(url: url, options: options)
         view.backgroundColor = .clear
         view.isOpaque = false
         view.contentOverlayView.backgroundColor = .clear

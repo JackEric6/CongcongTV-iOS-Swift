@@ -181,60 +181,89 @@ actor GuaziService {
                 }
                 return pid
             }
-            var pageDataByPID: [String: Data] = [:]
-            var nextPageIndex = 0
-            await withTaskGroup(of: (String, Data?).self) { group in
-                for _ in 0..<min(3, pagePIDs.count) {
-                    let pid = pagePIDs[nextPageIndex]
-                    nextPageIndex += 1
-                    group.addTask {
-                        guard let page = try? await self.request(
-                            path: "/App/IndexList/index",
-                            parameters: ["pid": pid]
-                        ),
-                        let data = try? JSONSerialization.data(withJSONObject: page) else {
-                            return (pid, nil)
-                        }
-                        return (pid, data)
-                    }
-                }
+            let requiredPageIDs = Set(
+                GuaziHomeCategoryOrder.prioritizedPageIDs(in: pagePIDs)
+            )
+            let firstNavigationPageIDs = Set(pagePIDs.prefix(2))
+            let initialPageIDs = pagePIDs.filter {
+                firstNavigationPageIDs.contains($0) || requiredPageIDs.contains($0)
+            }
 
-                while let (pid, data) = await group.next() {
-                    if let data {
-                        pageDataByPID[pid] = data
-                    }
-                    guard nextPageIndex < pagePIDs.count else { continue }
-                    let nextPID = pagePIDs[nextPageIndex]
-                    nextPageIndex += 1
-                    group.addTask {
-                        guard let page = try? await self.request(
-                            path: "/App/IndexList/index",
-                            parameters: ["pid": nextPID]
-                        ),
-                        let data = try? JSONSerialization.data(withJSONObject: page) else {
-                            return (nextPID, nil)
+            func fetchPage(_ pid: String) async -> (String, Data?) {
+                guard let page = try? await self.request(
+                    path: "/App/IndexList/index",
+                    parameters: ["pid": pid]
+                ),
+                let data = try? JSONSerialization.data(withJSONObject: page) else {
+                    return (pid, nil)
+                }
+                return (pid, data)
+            }
+
+            func fetchPages(_ pids: [String]) async -> [String: Data] {
+                await withTaskGroup(of: (String, Data?).self) { group in
+                    var nextIndex = 0
+                    for _ in 0..<min(3, pids.count) {
+                        let pid = pids[nextIndex]
+                        nextIndex += 1
+                        group.addTask {
+                            await fetchPage(pid)
                         }
-                        return (nextPID, data)
                     }
+
+                    var pages: [String: Data] = [:]
+                    while let (pid, data) = await group.next() {
+                        if let data {
+                            pages[pid] = data
+                        }
+                        guard nextIndex < pids.count else { continue }
+                        let nextPID = pids[nextIndex]
+                        nextIndex += 1
+                        group.addTask {
+                            await fetchPage(nextPID)
+                        }
+                    }
+                    return pages
                 }
             }
 
-            var playlists: [GuaziPlaylistCatalog.Playlist] = []
-            for item in navigation {
-                let pid = string(item["pid"])
-                guard let data = pageDataByPID[pid],
-                      let value = try? JSONSerialization.jsonObject(with: data),
-                      let page = value as? [String: Any] else {
-                    continue
+            func parsePlaylists(from pages: [String: Data]) -> [GuaziPlaylistCatalog.Playlist] {
+                navigation.flatMap { item in
+                    let pid = string(item["pid"])
+                    guard let data = pages[pid],
+                          let value = try? JSONSerialization.jsonObject(with: data),
+                          let page = value as? [String: Any] else {
+                        return []
+                    }
+                    return GuaziPlaylistCatalog.playlists(from: page)
                 }
-                playlists.append(contentsOf: GuaziPlaylistCatalog.playlists(from: page))
             }
+
+            var pageDataByPID = await fetchPages(initialPageIDs)
+            var playlists = parsePlaylists(from: pageDataByPID)
+            var sorts = GuaziHomeCategoryOrder.sort(playlists.map(\.sort) + categories)
+
+            // Most launches need only the first navigation groups and groups
+            // containing pinned playlists. Fetch the rest only when fewer than
+            // 30 tabs can be assembled from those responses.
+            let missingPriorityPageIDs = initialPageIDs.filter {
+                requiredPageIDs.contains($0) && pageDataByPID[$0] == nil
+            }
+            if sorts.count < 30 || !missingPriorityPageIDs.isEmpty {
+                let remainingPageIDs = sorts.count < 30
+                    ? pagePIDs.filter { pageDataByPID[$0] == nil }
+                    : missingPriorityPageIDs
+                if !remainingPageIDs.isEmpty {
+                    let additionalPages = await fetchPages(remainingPageIDs)
+                    pageDataByPID.merge(additionalPages) { _, new in new }
+                    playlists = parsePlaylists(from: pageDataByPID)
+                    sorts = GuaziHomeCategoryOrder.sort(playlists.map(\.sort) + categories)
+                }
+            }
+
             playlistBySortID = Dictionary(
                 playlists.map { ($0.sort.id, $0) },
                 uniquingKeysWith: { first, _ in first }
-            )
-            let sorts = GuaziHomeCategoryOrder.sort(
-                playlists.map(\.sort) + categories
             )
             if !playlists.isEmpty {
                 cachedHomeSorts = sorts

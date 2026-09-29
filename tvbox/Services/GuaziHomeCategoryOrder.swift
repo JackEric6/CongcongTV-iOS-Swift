@@ -30,6 +30,15 @@ enum GuaziHomeCategoryOrder {
         "guazi-playlist:16:embedded-0"
     ]
 
+    static func prioritizedPageIDs(in pageIDs: [String]) -> [String] {
+        let requiredPageIDs = Set(prioritizedPlaylistIDs.compactMap { id -> String? in
+            let components = id.split(separator: ":")
+            guard components.count >= 3 else { return nil }
+            return String(components[1])
+        })
+        return pageIDs.filter { requiredPageIDs.contains($0) }
+    }
+
     static func sort(_ source: [MovieSort.SortData]) -> [MovieSort.SortData] {
         let categoriesByID = Dictionary(
             source.map { ($0.id.trimmingCharacters(in: .whitespacesAndNewlines), $0) },
@@ -63,6 +72,7 @@ enum GuaziHomeCategoryOrder {
             category.name = name
             return category
         }
-        return orderedPlaylists + orderedCategories
+        // 首页标签保持排序结果的前 30 项，避免片单过多拖慢首屏和横向滚动。
+        return Array((orderedPlaylists + orderedCategories).prefix(30))
     }
 }
