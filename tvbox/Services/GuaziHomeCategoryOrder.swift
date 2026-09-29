@@ -72,7 +72,8 @@ enum GuaziHomeCategoryOrder {
             category.name = name
             return category
         }
-        // 首页标签保持排序结果的前 30 项，避免片单过多拖慢首屏和横向滚动。
-        return Array((orderedPlaylists + orderedCategories).prefix(30))
+        // 保留瓜子接口返回的全部有效片单；请求层负责受控并发和渐进发布，
+        // 不再因为标签数量截断首页栏目。
+        return orderedPlaylists + orderedCategories
     }
 }

@@ -105,6 +105,22 @@ class SourceService {
         return (sorts, homeVideos)
     }
 
+    /// 获取分类列表的渐进版本。瓜子会在每个栏目页返回后回调当前排序，
+    /// 其他资源站保持一次性返回，避免改变既有加载行为。
+    func getSortProgressively(
+        sourceBean: SourceBean,
+        onSorts: @escaping @Sendable ([MovieSort.SortData]) async -> Void
+    ) async throws -> (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]) {
+        if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
+            let sorts = await GuaziService.shared.homeSortsProgressively(onUpdate: onSorts)
+            return (sorts: sorts, homeVideos: [])
+        }
+
+        let result = try await getSort(sourceBean: sourceBean)
+        await onSorts(result.sorts)
+        return result
+    }
+
     private func parseSort(_ jsonStr: String, sourceBean: SourceBean) throws -> (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]) {
         guard let data = jsonStr.data(using: .utf8) else {
             throw SourceError.parseError("无法解析数据")

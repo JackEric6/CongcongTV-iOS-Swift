@@ -157,8 +157,14 @@ actor GuaziService {
     }
 
     /// 片单来自瓜子首页导航及各栏目列表，保留接口返回的榜单顺序。
-    func homeSorts() async -> [MovieSort.SortData] {
+    ///
+    /// 瓜子首页的栏目数量可能很多。请求采用最多 3 个并发逐页推进，
+    /// 每拿到一个栏目页就回调一次当前完整排序，避免首屏等待所有栏目。
+    func homeSortsProgressively(
+        onUpdate: @escaping @Sendable ([MovieSort.SortData]) async -> Void = { _ in }
+    ) async -> [MovieSort.SortData] {
         if let cachedHomeSorts {
+            await onUpdate(cachedHomeSorts)
             return cachedHomeSorts
         }
 
@@ -181,15 +187,8 @@ actor GuaziService {
                 }
                 return pid
             }
-            let requiredPageIDs = Set(
-                GuaziHomeCategoryOrder.prioritizedPageIDs(in: pagePIDs)
-            )
-            let firstNavigationPageIDs = Set(pagePIDs.prefix(2))
-            let initialPageIDs = pagePIDs.filter {
-                firstNavigationPageIDs.contains($0) || requiredPageIDs.contains($0)
-            }
-
             func fetchPage(_ pid: String) async -> (String, Data?) {
+                guard !Task.isCancelled else { return (pid, nil) }
                 guard let page = try? await self.request(
                     path: "/App/IndexList/index",
                     parameters: ["pid": pid]
@@ -198,33 +197,6 @@ actor GuaziService {
                     return (pid, nil)
                 }
                 return (pid, data)
-            }
-
-            func fetchPages(_ pids: [String]) async -> [String: Data] {
-                await withTaskGroup(of: (String, Data?).self) { group in
-                    var nextIndex = 0
-                    for _ in 0..<min(3, pids.count) {
-                        let pid = pids[nextIndex]
-                        nextIndex += 1
-                        group.addTask {
-                            await fetchPage(pid)
-                        }
-                    }
-
-                    var pages: [String: Data] = [:]
-                    while let (pid, data) = await group.next() {
-                        if let data {
-                            pages[pid] = data
-                        }
-                        guard nextIndex < pids.count else { continue }
-                        let nextPID = pids[nextIndex]
-                        nextIndex += 1
-                        group.addTask {
-                            await fetchPage(nextPID)
-                        }
-                    }
-                    return pages
-                }
             }
 
             func parsePlaylists(from pages: [String: Data]) -> [GuaziPlaylistCatalog.Playlist] {
@@ -241,28 +213,66 @@ actor GuaziService {
                 return playlists
             }
 
-            var pageDataByPID = await fetchPages(initialPageIDs)
-            var playlists = parsePlaylists(from: pageDataByPID)
-            var sorts = GuaziHomeCategoryOrder.sort(playlists.map(\.sort) + categories)
-
-            // Most launches need only the first navigation groups and groups
-            // containing pinned playlists. Fetch the rest only when fewer than
-            // 30 tabs can be assembled from those responses.
-            let missingPriorityPageIDs = initialPageIDs.filter {
-                requiredPageIDs.contains($0) && pageDataByPID[$0] == nil
+            // 优先探测首屏导航和固定片单所在页面，之后再按接口顺序补齐全部页面。
+            var orderedPageIDs: [String] = []
+            var orderedPageSet = Set<String>()
+            for pid in pagePIDs.prefix(2) {
+                if orderedPageSet.insert(pid).inserted { orderedPageIDs.append(pid) }
             }
-            if sorts.count < 30 || !missingPriorityPageIDs.isEmpty {
-                let remainingPageIDs = sorts.count < 30
-                    ? pagePIDs.filter { pageDataByPID[$0] == nil }
-                    : missingPriorityPageIDs
-                if !remainingPageIDs.isEmpty {
-                    let additionalPages = await fetchPages(remainingPageIDs)
-                    pageDataByPID.merge(additionalPages) { _, new in new }
-                    playlists = parsePlaylists(from: pageDataByPID)
-                    sorts = GuaziHomeCategoryOrder.sort(playlists.map(\.sort) + categories)
+            for pid in GuaziHomeCategoryOrder.prioritizedPageIDs(in: pagePIDs) {
+                if orderedPageSet.insert(pid).inserted { orderedPageIDs.append(pid) }
+            }
+            for pid in pagePIDs {
+                if orderedPageSet.insert(pid).inserted { orderedPageIDs.append(pid) }
+            }
+
+            var pageDataByPID: [String: Data] = [:]
+            var didPublishContent = false
+            await withTaskGroup(of: (String, Data?).self) { group in
+                var nextIndex = 0
+
+                for _ in 0..<min(3, orderedPageIDs.count) {
+                    let pid = orderedPageIDs[nextIndex]
+                    nextIndex += 1
+                    group.addTask {
+                        await fetchPage(pid)
+                    }
+                }
+
+                while let (pid, data) = await group.next() {
+                    if Task.isCancelled {
+                        group.cancelAll()
+                        break
+                    }
+                    if let data {
+                        pageDataByPID[pid] = data
+                        let playlists = parsePlaylists(from: pageDataByPID)
+                        let sorts = GuaziHomeCategoryOrder.sort(playlists.map(\.sort) + categories)
+                        playlistBySortID = Dictionary(
+                            playlists.map { ($0.sort.id, $0) },
+                            uniquingKeysWith: { first, _ in first }
+                        )
+                        if !playlists.isEmpty {
+                            didPublishContent = true
+                            await onUpdate(sorts)
+                        }
+                    }
+                    guard !Task.isCancelled else {
+                        group.cancelAll()
+                        break
+                    }
+                    if nextIndex < orderedPageIDs.count {
+                        let nextPID = orderedPageIDs[nextIndex]
+                        nextIndex += 1
+                        group.addTask {
+                            await fetchPage(nextPID)
+                        }
+                    }
                 }
             }
 
+            let playlists = parsePlaylists(from: pageDataByPID)
+            let sorts = GuaziHomeCategoryOrder.sort(playlists.map(\.sort) + categories)
             playlistBySortID = Dictionary(
                 playlists.map { ($0.sort.id, $0) },
                 uniquingKeysWith: { first, _ in first }
@@ -270,11 +280,20 @@ actor GuaziService {
             if !playlists.isEmpty {
                 cachedHomeSorts = sorts
             }
+            if !didPublishContent, !Task.isCancelled {
+                await onUpdate(sorts)
+            }
             return sorts
         } catch {
             // 首页片单暂不可用时仍保留普通分类，后续刷新可重新探测。
-            return GuaziHomeCategoryOrder.sort(categories)
+            let sorts = GuaziHomeCategoryOrder.sort(categories)
+            await onUpdate(sorts)
+            return sorts
         }
+    }
+
+    func homeSorts() async -> [MovieSort.SortData] {
+        await homeSortsProgressively()
     }
 
     /// 加载瓜子首页指定分类。接口返回结构与搜索接口不同，但同样走瓜子专用加密协议。

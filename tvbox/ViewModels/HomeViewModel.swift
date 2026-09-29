@@ -74,7 +74,14 @@ class HomeViewModel: ObservableObject {
         }
         
         do {
-            let result = try await sourceService.getSort(sourceBean: source)
+            let result = try await sourceService.getSortProgressively(sourceBean: source) { [weak self] partialSorts in
+                guard let self else { return }
+                await self.applyProgressiveSorts(
+                    partialSorts,
+                    source: source,
+                    expectedLoadGeneration: requestGeneration
+                )
+            }
             guard requestGeneration == loadGeneration else { return false }
             
             // 首页标签只展示源返回的子分类；不要把本地“推荐”或西瓜聚合父类混入标签。
@@ -214,6 +221,35 @@ class HomeViewModel: ObservableObject {
     private func isXiguaSource(_ source: SourceBean) -> Bool {
         let identity = "\(source.key) \(source.name) \(source.api)".lowercased()
         return identity.contains("xgzy") || identity.contains("西瓜")
+    }
+
+    /// 瓜子栏目逐页到达时立即发布标签，并尽早请求当前首个分类。
+    private func applyProgressiveSorts(
+        _ sourceSorts: [MovieSort.SortData],
+        source: SourceBean,
+        expectedLoadGeneration: Int
+    ) async {
+        guard expectedLoadGeneration == loadGeneration,
+              homeSource?.key == source.key else { return }
+        let partialSorts = visibleChildSorts(sourceSorts, source: source)
+        guard !partialSorts.isEmpty else { return }
+
+        let selectedID = selectedSort?.id
+        let selectedStillAvailable = selectedID.map { id in partialSorts.contains { $0.id == id } } ?? false
+        sorts = partialSorts
+
+        // 首次加载时随首批栏目立即开始内容请求；后续排序更新不打断用户当前选择。
+        if selectedSort == nil || !selectedStillAvailable {
+            selectedSort = partialSorts.first
+        }
+        guard categoryVideos.isEmpty,
+              let sort = selectedSort,
+              sort.id != "home",
+              selectedSort?.id == sort.id else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.loadCategoryVideos(page: 1, sort: sort)
+        }
     }
 
     private func isGuaziSource(_ source: SourceBean) -> Bool {
