@@ -8,20 +8,58 @@ struct VerifyGuaziMetadata {
             MovieSort.SortData(id: "64", name: "旧短剧"),
             MovieSort.SortData(id: "3", name: "旧综艺"),
             MovieSort.SortData(id: "1", name: "旧电影"),
-            MovieSort.SortData(id: "2", name: "旧电视剧"),
-            MovieSort.SortData(id: "guazi-playlist:4:series", name: "本周国产剧排行榜"),
-            MovieSort.SortData(id: "guazi-playlist:1:hot", name: "热门推荐"),
-            MovieSort.SortData(id: "guazi-playlist:5:netflix", name: "Netflix新片榜"),
-            MovieSort.SortData(id: "guazi-playlist:6:hot-movie", name: "本周热门电影榜"),
-            MovieSort.SortData(id: "guazi-playlist:4:series", name: "重复片单")
+            MovieSort.SortData(id: "2", name: "旧电视剧")
         ]
         let orderedCategories = GuaziHomeCategoryOrder.sort(shuffledCategories)
-        let expectedCategories = [
-            "热门推荐", "本周国产剧排行榜", "Netflix新片榜", "本周热门电影榜",
-            "电视剧", "电影", "短剧", "综艺", "动漫"
-        ]
+        let expectedCategories = ["电视剧", "电影", "短剧", "综艺", "动漫"]
         guard orderedCategories.map(\.name) == expectedCategories else {
-            fatalError("瓜子分类顺序不正确：\(orderedCategories.map(\.name))")
+            fatalError("瓜子固定分类顺序不正确：\(orderedCategories.map(\.name))")
+        }
+
+        let prioritizedIDs = [
+            "guazi-playlist:4:74151",
+            "guazi-playlist:3:46296",
+            "guazi-playlist:3:19260",
+            "guazi-playlist:3:17613",
+            "guazi-playlist:1:130",
+            "guazi-playlist:5:10772",
+            "guazi-playlist:4:24058",
+            "guazi-playlist:4:24066",
+            "guazi-playlist:4:24057",
+            "guazi-playlist:4:24067",
+            "guazi-playlist:16:embedded-0",
+            "guazi-playlist:16:38579",
+            "guazi-playlist:3:16560",
+            "guazi-playlist:3:8",
+            "guazi-playlist:6:6663"
+        ]
+        let playlistNames = [
+            "精选推荐", "综艺榜单", "TC抢先看（请勿相信视频内广告/网址/二维码）",
+            "热播综艺", "电影榜单", "Netflix新片榜", "动漫榜一", "动漫榜二",
+            "动漫榜三", "动漫榜四", "内嵌精选", "精选榜", "综艺精选",
+            "综艺榜", "电影榜"
+        ]
+        let unprioritizedIDs = ["guazi-playlist:9:extra-a", "guazi-playlist:9:extra-b"]
+        let playlistInput = Array(zip(prioritizedIDs, playlistNames).map {
+            MovieSort.SortData(id: $0.0, name: $0.1)
+        }.reversed())
+        let trailingPlaylists = unprioritizedIDs.map {
+            MovieSort.SortData(id: $0, name: $0)
+        }
+        let duplicatePriority = [
+            MovieSort.SortData(id: prioritizedIDs[0], name: "重复优先片单")
+        ]
+        let orderingInput = trailingPlaylists
+            + playlistInput
+            + duplicatePriority
+            + Array(shuffledCategories.reversed())
+        let orderedHomeItems = GuaziHomeCategoryOrder.sort(orderingInput)
+        let expectedHomeIDs = prioritizedIDs + unprioritizedIDs
+        guard Array(orderedHomeItems.prefix(expectedHomeIDs.count)).map(\.id) == expectedHomeIDs,
+              orderedHomeItems.first(where: { $0.id == "guazi-playlist:3:19260" })?.name == "TC抢先看",
+              Array(orderedHomeItems.dropFirst(prioritizedIDs.count).prefix(unprioritizedIDs.count)).map(\.id) == unprioritizedIDs,
+              Array(orderedHomeItems.suffix(expectedCategories.count)).map(\.name) == expectedCategories else {
+            fatalError("瓜子首页片单优先级、顺序或固定分类顺序不正确：\(orderedHomeItems)")
         }
 
         let homePage: [String: Any] = [
