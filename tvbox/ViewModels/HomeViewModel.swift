@@ -39,6 +39,8 @@ class HomeViewModel: ObservableObject {
     private var categoryRequestsInFlight = Set<String>()
     private var lastHomeAppearanceReload = Date.distantPast
     private var homeAppearanceTask: Task<Void, Never>?
+    /// 瓜子首屏无内容时临时用西瓜展示；配置中的首选源仍保留为瓜子，刷新可重试。
+    private var fallbackPreferredSourceKey: String?
     private let scrollPositionStoragePrefix = "congcong.home.scroll-position."
     private let selectedSortStoragePrefix = "congcong.home.selected-sort."
     
@@ -56,8 +58,9 @@ class HomeViewModel: ObservableObject {
         loadGeneration &+= 1
         let requestGeneration = loadGeneration
 
+        clearFallbackIfPreferredSourceChanged()
         guard let source = homeSource else {
-            errorMessage = "未找到西瓜资源站配置"
+            errorMessage = "未找到可用资源站配置"
             return false
         }
         sortsLoadInFlight = true
@@ -106,6 +109,14 @@ class HomeViewModel: ObservableObject {
             // 响应结构虽然合法，但完全没有可用分类或推荐时视为本次加载失败；
             // 这样上层会保留旧内容，下一次刷新仍可重试。
             if allSorts.isEmpty && sourceHomeVideos.isEmpty {
+                if isGuaziSource(source),
+                   await fallbackToXigua(
+                    preferredSource: source,
+                    expectedLoadGeneration: requestGeneration,
+                    preferredSort: selectedSort
+                   ) {
+                    return true
+                }
                 errorMessage = "资源站暂时没有返回可用内容"
                 return false
             }
@@ -129,6 +140,14 @@ class HomeViewModel: ObservableObject {
             return true
         } catch {
             guard requestGeneration == loadGeneration else { return false }
+            if isGuaziSource(source),
+               await fallbackToXigua(
+                preferredSource: source,
+                expectedLoadGeneration: requestGeneration,
+                preferredSort: selectedSort
+               ) {
+                return true
+            }
             errorMessage = error.localizedDescription
             lastLoadFailedDueToNetwork = error.isNetworkConnectionError
             return false
@@ -204,6 +223,10 @@ class HomeViewModel: ObservableObject {
         return identity.contains("xgzy") || identity.contains("西瓜")
     }
 
+    private func isGuaziSource(_ source: SourceBean) -> Bool {
+        source.key.caseInsensitiveCompare("guazi") == .orderedSame
+    }
+
     private nonisolated static func normalizedTitle(_ value: String) -> String {
         value.lowercased().unicodeScalars.filter { scalar in
             CharacterSet.alphanumerics.contains(scalar) || (scalar.value >= 0x3400 && scalar.value <= 0x9FFF)
@@ -249,6 +272,7 @@ class HomeViewModel: ObservableObject {
         // 只去重同一分类、同一页的请求；首页恢复不能被其他加载任务静默吞掉。
         let requestKey = "\(source.key)|\(sort.id)|\(page)"
         guard categoryRequestsInFlight.insert(requestKey).inserted else { return }
+        let requestGeneration = loadGeneration
         beginLoading()
         defer {
             categoryRequestsInFlight.remove(requestKey)
@@ -264,7 +288,19 @@ class HomeViewModel: ObservableObject {
             let enrichedVideos = await PosterCache.shared.fill(filteredVideos)
             
             // 分类切换过程中，丢弃旧请求结果
-            guard selectedSort?.id == sort.id else { return }
+            guard requestGeneration == loadGeneration,
+                  selectedSort?.id == sort.id,
+                  homeSource?.key == source.key else { return }
+
+            if page == 1, enrichedVideos.isEmpty, isGuaziSource(source),
+               await fallbackToXigua(
+                preferredSource: source,
+                expectedLoadGeneration: requestGeneration,
+                preferredSort: sort,
+                expectedSelectedSortID: sort.id
+               ) {
+                return
+            }
             
             if page == 1 {
                 if enrichedVideos.isEmpty && !categoryVideos.isEmpty {
@@ -279,7 +315,18 @@ class HomeViewModel: ObservableObject {
             currentPage = page
             hasMore = !enrichedVideos.isEmpty
         } catch {
-            guard selectedSort?.id == sort.id else { return }
+            guard requestGeneration == loadGeneration,
+                  selectedSort?.id == sort.id,
+                  homeSource?.key == source.key else { return }
+            if page == 1, isGuaziSource(source),
+               await fallbackToXigua(
+                preferredSource: source,
+                expectedLoadGeneration: requestGeneration,
+                preferredSort: sort,
+                expectedSelectedSortID: sort.id
+               ) {
+                return
+            }
             lastLoadFailedDueToNetwork = error.isNetworkConnectionError
             errorMessage = error.localizedDescription
         }
@@ -308,6 +355,8 @@ class HomeViewModel: ObservableObject {
         refreshInFlight = true
         defer { refreshInFlight = false }
 
+        // 用户刷新时先重试首选源；若瓜子仍无内容，本轮再使用西瓜兜底。
+        fallbackPreferredSourceKey = nil
         refreshGeneration &+= 1
         let requestGeneration = refreshGeneration
 
@@ -319,6 +368,10 @@ class HomeViewModel: ObservableObject {
         errorMessage = nil
         let sortsLoaded = await loadSorts()
         guard requestGeneration == refreshGeneration, sortsLoaded else { return }
+        // loadSorts 可能已完成瓜子->西瓜兜底，保留其有效首屏，避免紧接着重复请求并覆盖。
+        if fallbackPreferredSourceKey != nil, !categoryVideos.isEmpty {
+            return
+        }
         
         // 切换资源源后始终回到排序后的第一个子分类（国产剧优先），
         // 避免沿用上一个源的分类 id 导致空列表或停留在错误标签。
@@ -336,6 +389,16 @@ class HomeViewModel: ObservableObject {
             let enrichedVideos = await PosterCache.shared.fill(filteredVideos)
             guard requestGeneration == refreshGeneration else { return }
 
+            if enrichedVideos.isEmpty, isGuaziSource(source),
+               await fallbackToXigua(
+                preferredSource: source,
+                expectedLoadGeneration: loadGeneration,
+                preferredSort: firstCategory,
+                expectedRefreshGeneration: requestGeneration
+               ) {
+                return
+            }
+
             if enrichedVideos.isEmpty && !categoryVideos.isEmpty {
                 errorMessage = "资源站暂时没有返回分类内容，请稍后重试"
                 return
@@ -347,6 +410,16 @@ class HomeViewModel: ObservableObject {
             hasMore = !enrichedVideos.isEmpty
         } catch {
             guard requestGeneration == refreshGeneration else { return }
+            if let source = homeSource,
+               isGuaziSource(source),
+               await fallbackToXigua(
+                preferredSource: source,
+                expectedLoadGeneration: loadGeneration,
+                preferredSort: selectedSort,
+                expectedRefreshGeneration: requestGeneration
+               ) {
+                return
+            }
             if hadPreviousContent {
                 // 分类请求成功但第一页列表失败时，回滚本轮临时分类/推荐，避免旧列表
                 // 与新分类错配；已有页面内容继续可用，下一次刷新可以重试。
@@ -358,7 +431,120 @@ class HomeViewModel: ObservableObject {
         }
     }
 
-    /// 首页重新出现时轻量恢复当前西瓜分类。短时间内重复 appear 只保留一次，
+    /// 仅在瓜子失败或首屏分类为空时，加载西瓜自己的分类与首屏列表。
+    /// 成功后用临时覆盖源驱动后续分页和详情，刷新则清除此标记重试瓜子。
+    private func fallbackToXigua(
+        preferredSource: SourceBean,
+        expectedLoadGeneration: Int,
+        expectedRefreshGeneration: Int? = nil,
+        preferredSort: MovieSort.SortData? = nil,
+        expectedSelectedSortID: String? = nil
+    ) async -> Bool {
+        guard isGuaziSource(preferredSource),
+              fallbackPreferredSourceKey?.caseInsensitiveCompare(preferredSource.key) != .orderedSame,
+              let xigua = ApiConfig.shared.sourceBeanList.first(where: isXiguaSource),
+              xigua.isSelectable else {
+            return false
+        }
+
+        func isCurrentRequest() -> Bool {
+            guard loadGeneration == expectedLoadGeneration,
+                  ApiConfig.shared.homeSourceBean?.key.caseInsensitiveCompare(preferredSource.key) == .orderedSame else {
+                return false
+            }
+            if let expectedRefreshGeneration, refreshGeneration != expectedRefreshGeneration {
+                return false
+            }
+            if let expectedSelectedSortID, selectedSort?.id != expectedSelectedSortID {
+                return false
+            }
+            return true
+        }
+
+        do {
+            let result = try await sourceService.getSort(sourceBean: xigua)
+            guard isCurrentRequest() else { return false }
+            let xiguaSorts = visibleChildSorts(result.sorts, source: xigua)
+            guard !xiguaSorts.isEmpty else { return false }
+            let preferredName = preferredSort.map { normalizedCategoryName($0.name) } ?? ""
+            let matchingSort = xiguaSorts.first { sort in
+                let name = normalizedCategoryName(sort.name)
+                if name == preferredName { return true }
+                if ["电视剧", "连续剧"].contains(preferredName) {
+                    return ["国产剧", "大陆剧", "内地剧"].contains(name)
+                }
+                if preferredName == "动漫" {
+                    return name.contains("动漫") || name.contains("动画")
+                }
+                return false
+            }
+            let orderedSorts = matchingSort.map { match in
+                [match] + xiguaSorts.filter { $0.id != match.id }
+            } ?? xiguaSorts
+
+            var firstSortWithVideos: MovieSort.SortData?
+            var videos: [Movie.Video] = []
+            for sort in orderedSorts.prefix(8) {
+                guard isCurrentRequest() else { return false }
+                let rawVideos: [Movie.Video]
+                do {
+                    rawVideos = try await sourceService.getList(
+                        sourceBean: xigua,
+                        sortData: sort,
+                        page: 1
+                    )
+                } catch {
+                    if error.isNetworkConnectionError {
+                        break
+                    }
+                    continue
+                }
+                let filteredVideos = strictCategoryVideos(rawVideos, for: sort, source: xigua)
+                guard !filteredVideos.isEmpty else { continue }
+                let cachedVideos = await PosterCache.shared.fill(filteredVideos)
+                videos = cachedVideos.map { video in
+                    var boundVideo = video
+                    boundVideo.sourceKey = xigua.key
+                    return boundVideo
+                }
+                if !videos.isEmpty {
+                    firstSortWithVideos = sort
+                    break
+                }
+            }
+            guard isCurrentRequest(), let firstSort = firstSortWithVideos, !videos.isEmpty else {
+                return false
+            }
+
+            fallbackPreferredSourceKey = preferredSource.key
+            sorts = xiguaSorts
+            homeVideos = result.homeVideos.map { video in
+                var boundVideo = video
+                boundVideo.sourceKey = xigua.key
+                return boundVideo
+            }
+            selectedSort = firstSort
+            rememberSelectedSort(firstSort.id)
+            categoryVideos = videos
+            currentPage = 1
+            hasMore = true
+            errorMessage = nil
+            lastLoadFailedDueToNetwork = false
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func clearFallbackIfPreferredSourceChanged() {
+        guard let fallbackPreferredSourceKey else { return }
+        let selectedKey = ApiConfig.shared.homeSourceBean?.key
+        if selectedKey?.caseInsensitiveCompare(fallbackPreferredSourceKey) != .orderedSame {
+            self.fallbackPreferredSourceKey = nil
+        }
+    }
+
+    /// 首页重新出现时轻量恢复当前首页分类。短时间内重复 appear 只保留一次，
     /// 不常驻轮询，避免播放器返回后首页沿用已结束或被取消的请求状态。
     func handleHomeAppearance() {
         guard homeAppearanceTask == nil else { return }
@@ -472,15 +658,26 @@ class HomeViewModel: ObservableObject {
             .map(\.element)
     }
 
-    /// 首页默认使用西瓜；反馈码解锁的源仅在当前会话切换，重启后仍回到西瓜。
+    /// 默认使用瓜子；失败回退期间临时使用西瓜并保留正确的播放源身份。
     private var homeSource: SourceBean? {
         let config = ApiConfig.shared
+        if let preferredKey = config.homeSourceBean?.key,
+           fallbackPreferredSourceKey?.caseInsensitiveCompare(preferredKey) == .orderedSame,
+           let xigua = config.sourceBeanList.first(where: isXiguaSource),
+           xigua.isSelectable {
+            return xigua
+        }
         if let selectedSource = config.homeSourceBean {
             let key = selectedSource.key.lowercased()
             if (key == "yutu" && config.isYutuUnlocked)
-                || (key == "guazi" && config.isGuaziUnlocked) {
+                || key == "guazi" {
                 return selectedSource
             }
+        }
+        if let guazi = config.sourceBeanList.first(where: {
+            isGuaziSource($0) && $0.isSelectable
+        }) {
+            return guazi
         }
         return config.sourceBeanList.first(where: isXiguaSource)
     }

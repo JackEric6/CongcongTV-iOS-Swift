@@ -28,7 +28,7 @@ class ApiConfig: ObservableObject {
     @Published var wallpaper: String = ""
     @Published var danmaku: String = ""
 
-    /// 反馈码解锁仅在当前应用会话有效，应用重启后首页始终回到西瓜。
+    /// 玉兔解锁仅在当前应用会话有效；新会话默认从瓜子首页开始。
     private(set) var isYutuUnlocked = false
     private(set) var isGuaziUnlocked = false
 
@@ -680,7 +680,7 @@ class ApiConfig: ObservableObject {
                 sources.append(self.makeSourceBean(from: guaziSite))
             }
             // 远程配置偶发返回只有 lives/parses 的内容时，不能清空已经可用的视频源。
-            // 首次启动也保留打包的西瓜源，确保默认主页仍可进入。
+            // 首次启动也保留打包源清单，确保默认瓜子主页可进入。
             if !sources.isEmpty {
                 self.sourceBeanList = sources
             } else if self.sourceBeanList.isEmpty,
@@ -693,20 +693,22 @@ class ApiConfig: ObservableObject {
             }
 
             if !self.sourceBeanList.isEmpty {
-                // 保留当前会话中主动选择的源；新会话没有内存选项，始终从西瓜开始。
+                // 保留当前会话中主动选择的源；新会话没有内存选项，始终从瓜子开始。
                 if let selectedKey = self.homeSourceBean?.key,
-                   (selectedKey == "yutu" && self.isYutuUnlocked
-                    || selectedKey.caseInsensitiveCompare("guazi") == .orderedSame && self.isGuaziUnlocked),
+                   (selectedKey != "yutu" || self.isYutuUnlocked),
                    let selectedSource = self.sourceBeanList.first(where: { $0.key == selectedKey && $0.isSelectable }) {
                     self.homeSourceBean = selectedSource
                 } else {
-                    // 默认保持西瓜入口；隐藏/停用源只保留在配置列表中，不作为可切换主页源。
+                    // 瓜子为默认首页；西瓜保留为可选源及瓜子空结果时的首页兜底。
+                    let guazi = self.sourceBeanList.first(where: {
+                        $0.key.caseInsensitiveCompare("guazi") == .orderedSame && $0.isSelectable
+                    })
                     let xigua = self.sourceBeanList.first(where: { $0.key == "xgzy" && $0.isSelectable })
                         ?? self.sourceBeanList.first(where: { $0.isSelectable })
                         ?? self.sourceBeanList.first
-                    self.homeSourceBean = xigua
-                    if let xigua {
-                        UserDefaults.standard.set(xigua.key, forKey: HawkConfig.HOME_API)
+                    self.homeSourceBean = guazi ?? xigua
+                    if let defaultSource = self.homeSourceBean {
+                        UserDefaults.standard.set(defaultSource.key, forKey: HawkConfig.HOME_API)
                     }
                 }
             }
