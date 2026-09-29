@@ -458,6 +458,10 @@ class HomeViewModel: ObservableObject {
             return seen.insert(dedupKey).inserted
         }
 
+        if isGuazi {
+            return GuaziHomeCategoryOrder.sort(filtered)
+        }
+
         // 显式携带源序号，保证相同优先级的分类严格保持源返回顺序。
         return filtered.enumerated()
             .sorted {

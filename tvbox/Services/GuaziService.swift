@@ -150,7 +150,9 @@ actor GuaziService {
 
     /// 瓜子没有 CMS 分类接口，首页分类由 Android 端适配器固定映射。
     func homeSorts() -> [MovieSort.SortData] {
-        Self.homeCategories.map { MovieSort.SortData(id: $0.id, name: $0.name) }
+        GuaziHomeCategoryOrder.sort(
+            Self.homeCategories.map { MovieSort.SortData(id: $0.id, name: $0.name) }
+        )
     }
 
     /// 加载瓜子首页指定分类。接口返回结构与搜索接口不同，但同样走瓜子专用加密协议。
@@ -186,12 +188,33 @@ actor GuaziService {
     }
 
     func detail(vodID: String) async throws -> VodInfo {
-        let metadataObject = try await request(
+        let detailResponse = try await request(
             path: "/App/Resource/Vod/showOne",
             parameters: ["d_id": vodID]
         )
+        let metadataObject = GuaziMetadataParser.payload(from: detailResponse)
         let detailMetadata = makeMetadata(from: metadataObject)
-        let metadata = mergeMetadata(metadataCache[vodID], with: detailMetadata)
+        var metadata = mergeMetadata(metadataCache[vodID], with: detailMetadata)
+
+        // Detail responses can omit d_class. Recover it from the same Guazi
+        // search endpoint, matching the exact video ID and never mixing sources.
+        if metadata.des.isEmpty, !metadata.name.isEmpty,
+           let searchResponse = try? await request(
+               path: "/App/Index/findMoreVod",
+               parameters: [
+                   "keywords": metadata.name,
+                   "order_val": "0",
+                   "search_type": ""
+               ]),
+           let list = searchResponse["list"] as? [Any],
+           let matchingVideo = list.first(where: { item in
+               guard let object = item as? [String: Any] else { return false }
+               return string(object["vod_id"]) == vodID
+           }) as? [String: Any] {
+            metadata = mergeMetadata(metadata, with: makeMetadata(from: matchingVideo))
+        }
+
+        metadata = mergeMetadata(metadataCache[vodID], with: metadata)
         metadataCache[vodID] = metadata
         var info = VodInfo(id: vodID)
         info.name = metadata.name.isEmpty ? "瓜子 \(vodID)" : metadata.name
@@ -206,7 +229,7 @@ actor GuaziService {
         info.doubanRating = metadata.rating
         info.sourceKey = "guazi"
 
-        let clouds = array(metadataObject["vurl_clouds"])
+        let clouds = array(detailResponse["vurl_clouds"] ?? metadataObject["vurl_clouds"])
         for cloudValue in clouds {
             guard let cloud = cloudValue as? [String: Any] else { continue }
             let cloudID = string(cloud["id"])
@@ -415,47 +438,19 @@ actor GuaziService {
     }
 
     private func makeMetadata(from object: [String: Any]) -> Metadata {
-        Metadata(
-            name: string(object["vod_name"]),
-            pic: string(object["vod_pic"]),
-            year: string(object["vod_year"]),
-            area: string(object["vod_area"]),
-            type: string(object["vod_class"]),
-            director: string(object["vod_director"]).isEmpty
-                ? string(object["vod_directed"])
-                : string(object["vod_director"]),
-            actor: string(object["vod_actor"]),
-            des: description(from: object),
-            note: string(object["new_continue"]).isEmpty
-                ? (string(object["vod_remarks"]).isEmpty ? string(object["vod_title"]) : string(object["vod_remarks"]))
-                : string(object["new_continue"]),
-            rating: string(object["vod_scroe"]).isEmpty ? string(object["vod_score"]) : string(object["vod_scroe"])
+        let parsed = GuaziMetadataParser.parse(object)
+        return Metadata(
+            name: parsed.name,
+            pic: parsed.pic,
+            year: parsed.year,
+            area: parsed.area,
+            type: parsed.type,
+            director: parsed.director,
+            actor: parsed.actor,
+            des: parsed.description,
+            note: parsed.note,
+            rating: parsed.rating
         )
-    }
-
-    /// 详情接口和搜索接口返回的字段并不完全一致。只从瓜子影视的简介字段
-    /// 中取值，避免把 vurl_clouds 或播放参数中的 URL 混入影片简介。
-    private func description(from object: [String: Any]) -> String {
-        let keys = [
-            "vod_content", "vod_blurb", "vod_desc", "vod_description",
-            "synopsis", "summary", "intro", "introduction", "description",
-            "desc", "content", "d_class"
-        ]
-
-        for key in keys {
-            let value = cleanDescription(string(object[key]))
-            if !value.isEmpty { return value }
-        }
-
-        // 某些瓜子响应会把影片对象包在 detail/data/result/vod 等节点中。
-        let containers = ["detail", "data", "result", "vod", "info", "item", "vod_info"]
-        for key in containers {
-            guard let nested = object[key] as? [String: Any] else { continue }
-            let value = description(from: nested)
-            if !value.isEmpty { return value }
-        }
-
-        return ""
     }
 
     private func mergeMetadata(_ cached: Metadata?, with detail: Metadata) -> Metadata {
@@ -472,28 +467,6 @@ actor GuaziService {
             note: detail.note.isEmpty ? cached.note : detail.note,
             rating: detail.rating.isEmpty ? cached.rating : detail.rating
         )
-    }
-
-    private func cleanDescription(_ raw: String) -> String {
-        guard !raw.isEmpty else { return "" }
-
-        var value = raw
-            .replacingOccurrences(of: "<br />", with: "\n", options: .caseInsensitive)
-            .replacingOccurrences(of: "<br/>", with: "\n", options: .caseInsensitive)
-            .replacingOccurrences(of: "<br>", with: "\n", options: .caseInsensitive)
-            .replacingOccurrences(of: "</p>", with: "\n", options: .caseInsensitive)
-            .replacingOccurrences(of: "&nbsp;", with: " ", options: .caseInsensitive)
-            .replacingOccurrences(of: "&amp;", with: "&", options: .caseInsensitive)
-            .replacingOccurrences(of: "&lt;", with: "<", options: .caseInsensitive)
-            .replacingOccurrences(of: "&gt;", with: ">", options: .caseInsensitive)
-            .replacingOccurrences(of: "&quot;", with: "\"", options: .caseInsensitive)
-            .replacingOccurrences(of: "&#39;", with: "'", options: .caseInsensitive)
-            .replacingOccurrences(of: "&#x27;", with: "'", options: .caseInsensitive)
-
-        value = value.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        value = value.replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
-        value = value.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
-        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// 生成与 OkHttp FormBody 等价的 UTF-8 表单体。
@@ -537,7 +510,7 @@ actor GuaziService {
         let id = string(object["vod_id"])
         guard !id.isEmpty else { return nil }
 
-        let metadata = makeMetadata(from: object)
+        let metadata = mergeMetadata(metadataCache[id], with: makeMetadata(from: object))
         metadataCache[id] = metadata
         var video = Movie.Video(
             id: id,

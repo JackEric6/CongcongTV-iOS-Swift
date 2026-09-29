@@ -30,6 +30,16 @@ jobs:
             -o /tmp/verify-guazi-crypto
           /tmp/verify-guazi-crypto
 
+      - name: Verify Guazi categories and metadata parsing
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Models/MovieSort.swift \
+            tvbox/Services/GuaziHomeCategoryOrder.swift \
+            tvbox/Services/GuaziMetadataParser.swift \
+            scripts/verify-guazi-metadata.swift \
+            -o /tmp/verify-guazi-metadata
+          /tmp/verify-guazi-metadata
+
       - name: Build unsigned app
         run: |
           set -o pipefail
