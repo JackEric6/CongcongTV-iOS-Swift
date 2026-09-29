@@ -26,6 +26,10 @@ enum GuaziHomeCategoryOrder {
         "guazi-playlist:6:6663"
     ]
 
+    static var initialSortID: String? {
+        prioritizedPlaylistIDs.first
+    }
+
     private static let hiddenPlaylistIDs: Set<String> = [
         "guazi-playlist:16:embedded-0"
     ]

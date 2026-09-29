@@ -39,6 +39,11 @@ class HomeViewModel: ObservableObject {
     private var categoryRequestsInFlight = Set<String>()
     private var lastHomeAppearanceReload = Date.distantPast
     private var homeAppearanceTask: Task<Void, Never>?
+    /// 冷启动分类请求失败时静默重试，避免把短暂网络抖动显示成首页错误页。
+    private var initialLoadRetryTask: Task<Void, Never>?
+    private var initialLoadRetryToken: UUID?
+    private var isWaitingForInitialRetry = false
+    private var initialLoadRetryAttempt = 0
     /// 瓜子首屏无内容时临时用西瓜展示；配置中的首选源仍保留为瓜子，刷新可重试。
     private var fallbackPreferredSourceKey: String?
     private let scrollPositionStoragePrefix = "congcong.home.scroll-position."
@@ -46,9 +51,11 @@ class HomeViewModel: ObservableObject {
     private var hasUserSelectedSort = false
     /// 当前 ViewModel 的首次完整分类结果是否已经落地。
     ///
-    /// 渐进回调可以先选中临时首项，但应用冷启动的最终结果必须只收敛一次；
-    /// 后续从详情、下载等页面返回时不能因为生命周期回调再次改动用户所在分类。
+    /// 冷启动可在固定优先片单到达后提前选中，但部分列表顺序不能改变选择；
+    /// 后续从详情、下载等页面返回时也不能因为渐进回调改动用户所在分类。
     private var didCompleteInitialSortLoad = false
+    /// 首个分类的可用内容是否已经成功落地；仅分类接口返回不算完成冷启动。
+    private var didLoadInitialContent = false
     
     init() {
         setupNetworkRestoredAutoRetry()
@@ -76,7 +83,7 @@ class HomeViewModel: ObservableObject {
             sortsLoadInFlight = false
             endLoading()
             if requestGeneration == loadGeneration {
-                isLoading = loadingOperationCount > 0
+                isLoading = loadingOperationCount > 0 || isWaitingForInitialRetry
             }
         }
         
@@ -139,7 +146,6 @@ class HomeViewModel: ObservableObject {
                     }
                 }
             }
-            didCompleteInitialSortLoad = true
             // 响应结构虽然合法，但完全没有可用分类或推荐时视为本次加载失败；
             // 这样上层会保留旧内容，下一次刷新仍可重试。
             if allSorts.isEmpty && sourceHomeVideos.isEmpty {
@@ -151,9 +157,24 @@ class HomeViewModel: ObservableObject {
                    ) {
                     return true
                 }
-                errorMessage = "资源站暂时没有返回可用内容"
+                if !hasUserSelectedSort {
+                    errorMessage = nil
+                    isLoading = true
+                    scheduleInitialLoadRetry()
+                } else {
+                    errorMessage = "资源站暂时没有返回可用内容"
+                }
                 return false
             }
+            if categoryVideos.isEmpty,
+               let selectedSort,
+               selectedSort.id != "home" {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.loadCategoryVideos(page: 1, sort: selectedSort)
+                }
+            }
+            didCompleteInitialSortLoad = true
 
             let sourceKey = source.key
             recommendationTask?.cancel()
@@ -182,8 +203,16 @@ class HomeViewModel: ObservableObject {
                ) {
                 return true
             }
-            errorMessage = error.localizedDescription
             lastLoadFailedDueToNetwork = error.isNetworkConnectionError
+            // 冷启动尚未得到稳定的首个分类时，网络瞬时失败不应把临时错误
+            // 显示给用户，也不能让一个不完整的分类列表成为最终首页状态。
+            if error.isNetworkConnectionError && !didLoadInitialContent && !hasUserSelectedSort {
+                errorMessage = nil
+                isLoading = true
+                scheduleInitialLoadRetry()
+            } else {
+                errorMessage = error.localizedDescription
+            }
             return false
         }
     }
@@ -265,30 +294,64 @@ class HomeViewModel: ObservableObject {
     ) async {
         guard expectedLoadGeneration == loadGeneration,
               homeSource?.key == source.key else { return }
+        // 已有稳定分类时，刷新过程暂存渐进结果，避免标签栏暂时缺项并
+        // 把当前分类误判为不可用；loadSorts 完成后再一次性替换。
+        guard !didCompleteInitialSortLoad else { return }
         let partialSorts = visibleChildSorts(sourceSorts, source: source)
         guard !partialSorts.isEmpty else { return }
 
-        let selectedID = selectedSort?.id
-        let selectedStillAvailable = selectedID.map { id in partialSorts.contains { $0.id == id } } ?? false
         sorts = partialSorts
-
-        // 首次加载时随首批栏目立即开始内容请求；后续排序更新不打断用户当前选择。
-        if !hasUserSelectedSort && (selectedSort == nil || !selectedStillAvailable) {
-            selectedSort = partialSorts.first
-        }
-        guard categoryVideos.isEmpty,
-              let sort = selectedSort,
-              sort.id != "home",
-              partialSorts.contains(where: { $0.id == sort.id }),
-              selectedSort?.id == sort.id else { return }
+        guard !hasUserSelectedSort, selectedSort == nil else { return }
+        guard let initialSortID = GuaziHomeCategoryOrder.initialSortID else { return }
+        let initialSort = isGuaziSource(source)
+            ? partialSorts.first(where: { $0.id == initialSortID })
+            : nil
+        guard let initialSort else { return }
+        selectedSort = initialSort
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.loadCategoryVideos(page: 1, sort: sort)
+            await self.loadCategoryVideos(page: 1, sort: initialSort)
         }
     }
 
     private func isGuaziSource(_ source: SourceBean) -> Bool {
         source.key.caseInsensitiveCompare("guazi") == .orderedSame
+    }
+
+    private func scheduleInitialLoadRetry() {
+        guard initialLoadRetryTask == nil else { return }
+        let attempt = initialLoadRetryAttempt
+        let delaySeconds = min(30, 1 << min(attempt, 5))
+        initialLoadRetryAttempt = attempt + 1
+        let retryToken = UUID()
+        initialLoadRetryToken = retryToken
+        isWaitingForInitialRetry = true
+        isLoading = true
+        initialLoadRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delaySeconds) * 1_000_000_000)
+            guard let self,
+                  self.initialLoadRetryToken == retryToken else { return }
+            self.initialLoadRetryTask = nil
+            self.initialLoadRetryToken = nil
+            self.isWaitingForInitialRetry = false
+            self.isLoading = self.loadingOperationCount > 0
+            guard !Task.isCancelled,
+                  !self.didLoadInitialContent,
+                  !self.hasUserSelectedSort else { return }
+            if self.didCompleteInitialSortLoad, let sort = self.selectedSort {
+                await self.loadCategoryVideos(page: 1, sort: sort)
+            } else {
+                _ = await self.loadSorts()
+            }
+        }
+    }
+
+    private func cancelInitialLoadRetry() {
+        initialLoadRetryTask?.cancel()
+        initialLoadRetryTask = nil
+        initialLoadRetryToken = nil
+        isWaitingForInitialRetry = false
+        isLoading = loadingOperationCount > 0
     }
 
     private nonisolated static func normalizedTitle(_ value: String) -> String {
@@ -315,6 +378,7 @@ class HomeViewModel: ObservableObject {
         // 切分类时先重置分页状态，避免旧分类残留数据闪烁。
         if userInitiated {
             hasUserSelectedSort = true
+            cancelInitialLoadRetry()
         } else if selectedSort?.id == sort.id, !categoryVideos.isEmpty {
             return
         }
@@ -371,11 +435,22 @@ class HomeViewModel: ObservableObject {
             }
             
             if page == 1 {
+                if enrichedVideos.isEmpty && !didLoadInitialContent && !hasUserSelectedSort {
+                    errorMessage = nil
+                    isLoading = true
+                    scheduleInitialLoadRetry()
+                    return
+                }
                 if enrichedVideos.isEmpty && !categoryVideos.isEmpty {
                     errorMessage = "资源站暂时没有返回分类内容，请稍后重试"
                     return
                 }
                 categoryVideos = enrichedVideos
+                if !enrichedVideos.isEmpty {
+                    didLoadInitialContent = true
+                    initialLoadRetryAttempt = 0
+                    cancelInitialLoadRetry()
+                }
             } else {
                 categoryVideos.append(contentsOf: enrichedVideos)
             }
@@ -396,7 +471,13 @@ class HomeViewModel: ObservableObject {
                 return
             }
             lastLoadFailedDueToNetwork = error.isNetworkConnectionError
-            errorMessage = error.localizedDescription
+            if error.isNetworkConnectionError && !didLoadInitialContent && !hasUserSelectedSort {
+                errorMessage = nil
+                isLoading = true
+                scheduleInitialLoadRetry()
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
     
@@ -593,10 +674,14 @@ class HomeViewModel: ObservableObject {
             }
             selectedSort = firstSort
             categoryVideos = videos
+            didCompleteInitialSortLoad = true
+            didLoadInitialContent = true
+            initialLoadRetryAttempt = 0
             currentPage = 1
             hasMore = true
             errorMessage = nil
             lastLoadFailedDueToNetwork = false
+            cancelInitialLoadRetry()
             return true
         } catch {
             return false
@@ -665,7 +750,7 @@ class HomeViewModel: ObservableObject {
 
     private func endLoading() {
         loadingOperationCount = max(0, loadingOperationCount - 1)
-        isLoading = loadingOperationCount > 0
+        isLoading = loadingOperationCount > 0 || isWaitingForInitialRetry
     }
 
     /// 过滤父分类并按安卓版规则稳定排序，只保留首页可直接请求的子分类。

@@ -277,6 +277,9 @@ extension Error {
     /// 判断是否为网络连接类错误（超时、断网、DNS 失败等）。
     var isNetworkConnectionError: Bool {
         if self is CancellationError { return false }
+        if let guaziError = self as? GuaziServiceError {
+            return guaziError.isNetworkConnectionFailure
+        }
         if let networkError = self as? NetworkError {
             if case .httpError(let statusCode) = networkError {
                 return [408, 429, 500, 502, 503, 504].contains(statusCode)

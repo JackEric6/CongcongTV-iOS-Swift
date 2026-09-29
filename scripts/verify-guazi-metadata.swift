@@ -57,6 +57,9 @@ struct VerifyGuaziMetadata {
             "guazi-playlist:3:8",
             "guazi-playlist:6:6663"
         ]
+        guard GuaziHomeCategoryOrder.initialSortID == prioritizedIDs.first else {
+            fatalError("瓜子首页冷启动首项必须固定为第一优先片单")
+        }
         let playlistNames = [
             "精选推荐", "综艺榜单", "TC抢先看（请勿相信视频内广告/网址/二维码）",
             "热播综艺", "电影榜单", "Netflix新片榜", "动漫榜一", "动漫榜二",

@@ -139,18 +139,11 @@ struct DetailView: View {
             if let savedPlaybackState {
                 lastPersistedProgress = max(savedPlaybackState.progressSeconds, 0)
             }
-            // 海报点击后默认直接进入播放：先按历史续播，无历史则自动选中第一集播放，
-            // 用户无需再额外点击“立即播放”。
-            if !viewModel.isPlaying {
-                beginPlaybackSession()
-                // 历史状态存在时保留其线路/集数；只有无历史时才从第一集开始。
-                let index = savedPlaybackState == nil ? 0 : viewModel.selectedEpisodeIndex
-                viewModel.selectEpisode(index: index)
-                if viewModel.isPlaying {
-                    saveHistoryForCurrentEpisode()
-                }
-            }
             refreshCollectState()
+        }
+        .onChange(of: viewModel.playUrl) { oldURL, newURL in
+            guard oldURL != newURL, newURL != nil, viewModel.isPlaying else { return }
+            saveHistoryForCurrentEpisode()
         }
         .onDisappear {
             viewModel.commitPlaybackProgressSnapshot()
@@ -291,7 +284,7 @@ struct DetailView: View {
                     .tint(.white)
                     .scaleEffect(1.15)
             } else if let error = viewModel.errorMessage {
-                VStack(spacing: 6) {
+                VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.orange)
                     Text(error)
@@ -300,6 +293,16 @@ struct DetailView: View {
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                         .padding(.horizontal, 20)
+                    Button {
+                        Task {
+                            await viewModel.retryCurrentDetailIfNeeded(force: true)
+                        }
+                    } label: {
+                        Label("重试播放", systemImage: "arrow.clockwise")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
                 }
             }
         }

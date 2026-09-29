@@ -112,7 +112,7 @@ class SourceService {
         onSorts: @escaping @Sendable ([MovieSort.SortData]) async -> Void
     ) async throws -> (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]) {
         if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
-            let sorts = await GuaziService.shared.homeSortsProgressively(onUpdate: onSorts)
+            let sorts = try await GuaziService.shared.homeSortsProgressively(onUpdate: onSorts)
             return (sorts: sorts, homeVideos: [])
         }
 

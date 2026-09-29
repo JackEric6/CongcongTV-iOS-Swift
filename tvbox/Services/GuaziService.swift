@@ -1,10 +1,11 @@
 import Foundation
 
-enum GuaziServiceError: LocalizedError {
+enum GuaziServiceError: LocalizedError, Sendable {
     case invalidURL
     case invalidResponse
     case authFailed
     case requestFailed(String)
+    case networkFailure(String)
     case playableURLMissing
 
     var errorDescription: String? {
@@ -17,9 +18,16 @@ enum GuaziServiceError: LocalizedError {
             return "瓜子设备注册失败"
         case .requestFailed(let message):
             return message
+        case .networkFailure(let message):
+            return "瓜子接口网络请求失败：\(message)"
         case .playableURLMissing:
             return "瓜子接口没有返回可播放地址"
         }
+    }
+
+    var isNetworkConnectionFailure: Bool {
+        if case .networkFailure = self { return true }
+        return false
     }
 }
 
@@ -158,11 +166,12 @@ actor GuaziService {
 
     /// 片单来自瓜子首页导航及各栏目列表，保留接口返回的榜单顺序。
     ///
-    /// 瓜子首页的栏目数量可能很多。请求采用最多 3 个并发逐页推进，
-    /// 每拿到一个栏目页就回调一次当前完整排序，避免首屏等待所有栏目。
+    /// 瓜子首页的栏目数量可能很多。请求采用最多 2 个并发逐页推进，
+    /// 每拿到一个栏目页就回调一次当前排序；限制并发，避免首页与详情同时
+    /// 请求时压垮瓜子接口，首屏排序仍按接口顺序渐进补齐。
     func homeSortsProgressively(
         onUpdate: @escaping @Sendable ([MovieSort.SortData]) async -> Void = { _ in }
-    ) async -> [MovieSort.SortData] {
+    ) async throws -> [MovieSort.SortData] {
         if let cachedHomeSorts {
             await onUpdate(cachedHomeSorts)
             return cachedHomeSorts
@@ -171,129 +180,148 @@ actor GuaziService {
         let categories = Self.homeCategories.map {
             MovieSort.SortData(id: $0.id, name: $0.name)
         }
-        do {
-            let navigation = try await requestArray(
-                path: "/App/Index/indexPid",
-                parameters: [:]
-            )
-            var visitedPIDs = Set<String>()
-            let pagePIDs = navigation.compactMap { item -> String? in
-                let type = string(item["type"])
-                let pid = string(item["pid"])
-                guard (type == "video" || type == "recommend"),
-                      !pid.isEmpty, pid != "0",
-                      visitedPIDs.insert(pid).inserted else {
-                    return nil
-                }
-                return pid
+        let navigation = try await requestArray(
+            path: "/App/Index/indexPid",
+            parameters: [:]
+        )
+        guard !navigation.isEmpty else {
+            throw GuaziServiceError.invalidResponse
+        }
+        var visitedPIDs = Set<String>()
+        let pagePIDs = navigation.compactMap { item -> String? in
+            let type = string(item["type"])
+            let pid = string(item["pid"])
+            guard (type == "video" || type == "recommend"),
+                  !pid.isEmpty, pid != "0",
+                  visitedPIDs.insert(pid).inserted else {
+                return nil
             }
-            func fetchPage(_ pid: String) async -> (String, Data?) {
-                guard !Task.isCancelled else { return (pid, nil) }
-                guard let page = try? await self.request(
+            return pid
+        }
+        guard !pagePIDs.isEmpty else {
+            throw GuaziServiceError.invalidResponse
+        }
+        func fetchPage(_ pid: String) async -> (String, Data?, String?, Bool) {
+            guard !Task.isCancelled else { return (pid, nil, nil, false) }
+            do {
+                let page = try await self.request(
                     path: "/App/IndexList/index",
                     parameters: ["pid": pid]
-                ),
-                let data = try? JSONSerialization.data(withJSONObject: page) else {
-                    return (pid, nil)
+                )
+                return (pid, try JSONSerialization.data(withJSONObject: page), nil, false)
+            } catch {
+                let guaziError = error as? GuaziServiceError
+                return (
+                    pid,
+                    nil,
+                    error.localizedDescription,
+                    guaziError?.isNetworkConnectionFailure ?? false
+                )
+            }
+        }
+
+        func parsePlaylists(from pages: [String: Data]) -> [GuaziPlaylistCatalog.Playlist] {
+            var playlists: [GuaziPlaylistCatalog.Playlist] = []
+            for item in navigation {
+                let pid = string(item["pid"])
+                guard let data = pages[pid],
+                      let value = try? JSONSerialization.jsonObject(with: data),
+                      let page = value as? [String: Any] else {
+                    continue
                 }
-                return (pid, data)
+                playlists.append(contentsOf: GuaziPlaylistCatalog.playlists(from: page))
+            }
+            return playlists
+        }
+
+        // 优先探测首屏导航和固定片单所在页面，之后再按接口顺序补齐全部页面。
+        var orderedPageIDs: [String] = []
+        var orderedPageSet = Set<String>()
+        for pid in pagePIDs.prefix(2) {
+            if orderedPageSet.insert(pid).inserted { orderedPageIDs.append(pid) }
+        }
+        for pid in GuaziHomeCategoryOrder.prioritizedPageIDs(in: pagePIDs) {
+            if orderedPageSet.insert(pid).inserted { orderedPageIDs.append(pid) }
+        }
+        for pid in pagePIDs {
+            if orderedPageSet.insert(pid).inserted { orderedPageIDs.append(pid) }
+        }
+
+        var pageDataByPID: [String: Data] = [:]
+        var lastPageError: String?
+        var sawNetworkFailure = false
+        await withTaskGroup(of: (String, Data?, String?, Bool).self) { group in
+            var nextIndex = 0
+
+            for _ in 0..<min(2, orderedPageIDs.count) {
+                let pid = orderedPageIDs[nextIndex]
+                nextIndex += 1
+                group.addTask {
+                    await fetchPage(pid)
+                }
             }
 
-            func parsePlaylists(from pages: [String: Data]) -> [GuaziPlaylistCatalog.Playlist] {
-                var playlists: [GuaziPlaylistCatalog.Playlist] = []
-                for item in navigation {
-                    let pid = string(item["pid"])
-                    guard let data = pages[pid],
-                          let value = try? JSONSerialization.jsonObject(with: data),
-                          let page = value as? [String: Any] else {
-                        continue
+            while let (pid, data, error, isNetworkFailure) = await group.next() {
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
+                if let data {
+                    pageDataByPID[pid] = data
+                    let playlists = parsePlaylists(from: pageDataByPID)
+                    let sorts = GuaziHomeCategoryOrder.sort(playlists.map(\.sort) + categories)
+                    playlistBySortID = Dictionary(
+                        playlists.map { ($0.sort.id, $0) },
+                        uniquingKeysWith: { first, _ in first }
+                    )
+                    if !playlists.isEmpty {
+                        await onUpdate(sorts)
                     }
-                    playlists.append(contentsOf: GuaziPlaylistCatalog.playlists(from: page))
+                } else if let error {
+                    lastPageError = error
+                    sawNetworkFailure = sawNetworkFailure || isNetworkFailure
                 }
-                return playlists
-            }
-
-            // 优先探测首屏导航和固定片单所在页面，之后再按接口顺序补齐全部页面。
-            var orderedPageIDs: [String] = []
-            var orderedPageSet = Set<String>()
-            for pid in pagePIDs.prefix(2) {
-                if orderedPageSet.insert(pid).inserted { orderedPageIDs.append(pid) }
-            }
-            for pid in GuaziHomeCategoryOrder.prioritizedPageIDs(in: pagePIDs) {
-                if orderedPageSet.insert(pid).inserted { orderedPageIDs.append(pid) }
-            }
-            for pid in pagePIDs {
-                if orderedPageSet.insert(pid).inserted { orderedPageIDs.append(pid) }
-            }
-
-            var pageDataByPID: [String: Data] = [:]
-            var didPublishContent = false
-            await withTaskGroup(of: (String, Data?).self) { group in
-                var nextIndex = 0
-
-                for _ in 0..<min(3, orderedPageIDs.count) {
-                    let pid = orderedPageIDs[nextIndex]
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    break
+                }
+                if nextIndex < orderedPageIDs.count {
+                    let nextPID = orderedPageIDs[nextIndex]
                     nextIndex += 1
                     group.addTask {
-                        await fetchPage(pid)
-                    }
-                }
-
-                while let (pid, data) = await group.next() {
-                    if Task.isCancelled {
-                        group.cancelAll()
-                        break
-                    }
-                    if let data {
-                        pageDataByPID[pid] = data
-                        let playlists = parsePlaylists(from: pageDataByPID)
-                        let sorts = GuaziHomeCategoryOrder.sort(playlists.map(\.sort) + categories)
-                        playlistBySortID = Dictionary(
-                            playlists.map { ($0.sort.id, $0) },
-                            uniquingKeysWith: { first, _ in first }
-                        )
-                        if !playlists.isEmpty {
-                            didPublishContent = true
-                            await onUpdate(sorts)
-                        }
-                    }
-                    guard !Task.isCancelled else {
-                        group.cancelAll()
-                        break
-                    }
-                    if nextIndex < orderedPageIDs.count {
-                        let nextPID = orderedPageIDs[nextIndex]
-                        nextIndex += 1
-                        group.addTask {
-                            await fetchPage(nextPID)
-                        }
+                        await fetchPage(nextPID)
                     }
                 }
             }
-
-            let playlists = parsePlaylists(from: pageDataByPID)
-            let sorts = GuaziHomeCategoryOrder.sort(playlists.map(\.sort) + categories)
-            playlistBySortID = Dictionary(
-                playlists.map { ($0.sort.id, $0) },
-                uniquingKeysWith: { first, _ in first }
-            )
-            if !playlists.isEmpty {
-                cachedHomeSorts = sorts
-            }
-            if !didPublishContent, !Task.isCancelled {
-                await onUpdate(sorts)
-            }
-            return sorts
-        } catch {
-            // 首页片单暂不可用时仍保留普通分类，后续刷新可重新探测。
-            let sorts = GuaziHomeCategoryOrder.sort(categories)
-            await onUpdate(sorts)
-            return sorts
         }
+        try Task.checkCancellation()
+        guard !pageDataByPID.isEmpty else {
+            if sawNetworkFailure {
+                throw GuaziServiceError.networkFailure(
+                    lastPageError ?? "网络暂时不可用"
+                )
+            }
+            throw GuaziServiceError.requestFailed(
+                lastPageError.map { "瓜子首页片单加载失败：\($0)" } ?? "瓜子首页片单暂不可用"
+            )
+        }
+
+        let playlists = parsePlaylists(from: pageDataByPID)
+        guard !playlists.isEmpty else {
+            throw GuaziServiceError.invalidResponse
+        }
+        let sorts = GuaziHomeCategoryOrder.sort(playlists.map(\.sort) + categories)
+        playlistBySortID = Dictionary(
+            playlists.map { ($0.sort.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        cachedHomeSorts = sorts
+        await onUpdate(sorts)
+        return sorts
     }
 
     func homeSorts() async -> [MovieSort.SortData] {
-        await homeSortsProgressively()
+        (try? await homeSortsProgressively()) ?? []
     }
 
     /// 加载瓜子首页指定分类。接口返回结构与搜索接口不同，但同样走瓜子专用加密协议。
@@ -582,6 +610,45 @@ actor GuaziService {
         parameters: [String: Any],
         token: String
     ) async throws -> Any {
+        for attempt in 0..<3 {
+            try Task.checkCancellation()
+            do {
+                return try await performRequestAttempt(
+                    path: path,
+                    parameters: parameters,
+                    token: token
+                )
+            } catch let error as GuaziServiceError {
+                throw error
+            } catch {
+                let nsError = error as NSError
+                guard nsError.domain == NSURLErrorDomain else {
+                    throw GuaziServiceError.requestFailed(
+                        "瓜子接口请求失败：\(error.localizedDescription)"
+                    )
+                }
+                if nsError.code == URLError.cancelled.rawValue {
+                    throw CancellationError()
+                }
+                guard Self.isRetryableConnectionError(nsError.code) else {
+                    throw GuaziServiceError.requestFailed(
+                        "瓜子接口请求失败：\(error.localizedDescription)"
+                    )
+                }
+                guard attempt < 2 else {
+                    throw GuaziServiceError.networkFailure(error.localizedDescription)
+                }
+                try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 600_000_000)
+            }
+        }
+        throw GuaziServiceError.networkFailure("网络暂时不可用")
+    }
+
+    private func performRequestAttempt(
+        path: String,
+        parameters: [String: Any],
+        token: String
+    ) async throws -> Any {
         guard let url = URL(string: GuaziCrypto.baseURL + path) else {
             throw GuaziServiceError.invalidURL
         }
@@ -603,35 +670,44 @@ actor GuaziService {
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         request.httpBody = Self.formEncodedBody(form)
 
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                throw GuaziServiceError.requestFailed("瓜子接口响应状态无效")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw GuaziServiceError.requestFailed("瓜子接口响应状态无效")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw GuaziServiceError.authFailed
             }
-            guard (200..<300).contains(http.statusCode) else {
-                if http.statusCode == 401 || http.statusCode == 403 {
-                    throw GuaziServiceError.authFailed
-                }
-                throw GuaziServiceError.requestFailed("瓜子接口 HTTP 请求失败（\(http.statusCode)）")
+            throw GuaziServiceError.requestFailed("瓜子接口 HTTP 请求失败（\(http.statusCode)）")
+        }
+        let raw = String(decoding: data, as: UTF8.self)
+        let code = GuaziCrypto.responseCode(raw)
+        guard code == 200 else {
+            let message = GuaziCrypto.responseMessage(raw)
+            if code == 401 || code == 403
+                || message.localizedCaseInsensitiveContains("token")
+                || message.localizedCaseInsensitiveContains("签名") {
+                throw GuaziServiceError.authFailed
             }
-            let raw = String(decoding: data, as: UTF8.self)
-            let code = GuaziCrypto.responseCode(raw)
-            guard code == 200 else {
-                let message = GuaziCrypto.responseMessage(raw)
-                if code == 401 || code == 403
-                    || message.localizedCaseInsensitiveContains("token")
-                    || message.localizedCaseInsensitiveContains("签名") {
-                    throw GuaziServiceError.authFailed
-                }
-                throw GuaziServiceError.requestFailed(
-                    message.isEmpty ? "瓜子接口请求失败" : "瓜子接口错误：\(message)"
-                )
-            }
-            return try GuaziCrypto.decodeResponseValue(raw)
-        } catch let error as GuaziServiceError {
-            throw error
-        } catch {
-            throw GuaziServiceError.requestFailed("瓜子接口请求失败：\(error.localizedDescription)")
+            throw GuaziServiceError.requestFailed(
+                message.isEmpty ? "瓜子接口请求失败" : "瓜子接口错误：\(message)"
+            )
+        }
+        return try GuaziCrypto.decodeResponseValue(raw)
+    }
+
+    private static func isRetryableConnectionError(_ code: Int) -> Bool {
+        switch code {
+        case URLError.timedOut.rawValue,
+             URLError.cannotFindHost.rawValue,
+             URLError.cannotConnectToHost.rawValue,
+             URLError.networkConnectionLost.rawValue,
+             URLError.dnsLookupFailed.rawValue,
+             URLError.notConnectedToInternet.rawValue,
+             URLError.dataNotAllowed.rawValue:
+            return true
+        default:
+            return false
         }
     }
 

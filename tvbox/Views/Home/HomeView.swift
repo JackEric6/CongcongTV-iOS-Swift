@@ -25,7 +25,9 @@ struct HomeView: View {
                 headerBar
                 
                 // 分类标签栏
-                if !viewModel.sorts.isEmpty {
+                // 冷启动时先保持加载态，等瓜子片单完整排序后再展示标签栏，
+                // 避免临时返回顺序造成随机选中和横向跳动。
+                if !viewModel.sorts.isEmpty && viewModel.selectedSort != nil {
                     categoryTabBar
                 }
                 
@@ -187,7 +189,8 @@ struct HomeView: View {
         let videos = isHome ? viewModel.homeVideos : viewModel.categoryVideos
 
         return Group {
-            if viewModel.isLoading && videos.isEmpty {
+            if (viewModel.selectedSort == nil && viewModel.errorMessage == nil)
+                || (viewModel.isLoading && videos.isEmpty) {
                 VStack {
                     Spacer()
                     ProgressView()

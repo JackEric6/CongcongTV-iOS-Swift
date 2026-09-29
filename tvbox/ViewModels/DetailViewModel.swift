@@ -76,6 +76,8 @@ class DetailViewModel: ObservableObject {
     private var networkRestoredCancellable: AnyCancellable?
     private var lastVideo: Movie.Video?
     private var shouldRetryAfterNetworkRecovery = false
+    private var shouldAutoplayAfterNetworkRecovery = false
+    private var lastPreferredPlaybackState: VodPlaybackState?
 
     /// 按视频携带的 sourceKey 严格解析实际播放源。
     /// 配置静默刷新期间，sourceBeanList 可能短暂重建，但首页仍持有当前源对象；
@@ -120,6 +122,8 @@ class DetailViewModel: ObservableObject {
             && isPlaying
             && playUrl != nil
         lastVideo = video
+        shouldAutoplayAfterNetworkRecovery = autoplay
+        lastPreferredPlaybackState = preferredPlaybackState
         let sourceKey = video.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
         // 海报携带了 sourceKey 时必须使用对应源，不能静默回退到首页源。
         let source = resolveSource(for: sourceKey)
@@ -131,6 +135,8 @@ class DetailViewModel: ObservableObject {
             isResolvingPlaybackURL = false
             errorMessage = SourceError.invalidResponse("未找到视频对应的数据源").localizedDescription
             shouldRetryAfterNetworkRecovery = false
+            shouldAutoplayAfterNetworkRecovery = false
+            lastPreferredPlaybackState = nil
             return
         }
         currentSource = source
@@ -144,6 +150,7 @@ class DetailViewModel: ObservableObject {
 
         isLoading = true
         errorMessage = nil
+        shouldRetryAfterNetworkRecovery = false
         vodInfo = nil
         if !isReloadingSamePlayback {
             playUrl = nil
@@ -264,20 +271,38 @@ class DetailViewModel: ObservableObject {
     func retryCurrentDetailIfNeeded(force: Bool = false) async {
         guard (force || shouldRetryAfterNetworkRecovery),
               !isLoading,
+              !isResolvingPlaybackURL,
               let video = lastVideo else { return }
 
-        let wasPlaying = isPlaying
-        let state = VodPlaybackState(
-            flag: selectedFlag,
-            episodeIndex: selectedEpisodeIndex,
-            progressSeconds: currentPlaybackSeconds()
-        )
+        let shouldAutoplay = shouldAutoplayAfterNetworkRecovery || vodInfo != nil
+        shouldRetryAfterNetworkRecovery = false
+        errorMessage = nil
+
+        if vodInfo != nil,
+           currentEpisodes.indices.contains(selectedEpisodeIndex) {
+            let episodeURL = normalizedEpisodeURL(currentEpisodes[selectedEpisodeIndex].url)
+            if SourceService.validPlayableURL(episodeURL) != nil {
+                shouldAutoplayAfterNetworkRecovery = true
+                resolvePlayableURLIfNeeded(episodeURL)
+                return
+            }
+        }
+
+        let state: VodPlaybackState?
+        if vodInfo != nil {
+            state = VodPlaybackState(
+                flag: selectedFlag,
+                episodeIndex: selectedEpisodeIndex,
+                progressSeconds: currentPlaybackSeconds()
+            )
+        } else {
+            state = lastPreferredPlaybackState
+        }
         await loadDetail(
             video: video,
-            preferredPlaybackState: wasPlaying ? state : nil,
-            autoplay: wasPlaying
+            preferredPlaybackState: state,
+            autoplay: shouldAutoplay
         )
-        guard vodInfo != nil else { return }
     }
 
     /// 在实际播放源详情成功后，异步从其他可搜索源补全缺失元数据。
@@ -666,6 +691,9 @@ class DetailViewModel: ObservableObject {
             return
         }
 
+        errorMessage = nil
+        shouldRetryAfterNetworkRecovery = false
+        shouldAutoplayAfterNetworkRecovery = true
         let keepCurrentPlayerMounted = isPlaying && playUrl != nil
         playableResolveTask?.cancel()
         playableResolveTask = nil
@@ -728,6 +756,7 @@ class DetailViewModel: ObservableObject {
             self.isPlaying = true
             self.isResolvingPlaybackURL = false
             self.errorMessage = nil
+            self.shouldRetryAfterNetworkRecovery = false
         }
     }
 
