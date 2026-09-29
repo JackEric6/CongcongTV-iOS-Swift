@@ -82,6 +82,22 @@ enum GuaziCrypto {
         guard decoded["probe"] as? String == "ok" else {
             throw GuaziCryptoError.decryptionFailed
         }
+
+        let encryptedArray = try aesEncrypt(
+            #"[{"name":"热门"}]"#,
+            key: sessionKey,
+            iv: sessionIV
+        )
+        let arrayResponse = try JSONSerialization.data(withJSONObject: [
+            "data": [
+                "keys": encryptedSession.base64EncodedString(),
+                "response_key": encryptedArray
+            ]
+        ])
+        guard let array = try decodeResponseValue(String(decoding: arrayResponse, as: UTF8.self)) as? [[String: Any]],
+              array.first?["name"] as? String == "热门" else {
+            throw GuaziCryptoError.decryptionFailed
+        }
     }
 
     static func createForm(parameters: [String: Any], token: String, time: Int64) throws -> [String: String] {
@@ -116,6 +132,13 @@ enum GuaziCrypto {
     }
 
     static func decodeResponse(_ raw: String) throws -> [String: Any] {
+        guard let object = try decodeResponseValue(raw) as? [String: Any] else {
+            throw GuaziCryptoError.invalidResponse
+        }
+        return object
+    }
+
+    static func decodeResponseValue(_ raw: String) throws -> Any {
         guard let data = raw.data(using: .utf8),
               let outer = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let responseData = outer["data"] as? [String: Any],
@@ -133,10 +156,11 @@ enum GuaziCrypto {
 
         let plain = try aesDecrypt(responseKey, key: key, iv: iv)
         guard let plainData = plain.data(using: .utf8),
-              let object = try JSONSerialization.jsonObject(with: plainData) as? [String: Any] else {
+              let value = try? JSONSerialization.jsonObject(with: plainData),
+              value is [String: Any] || value is [Any] else {
             throw GuaziCryptoError.decryptionFailed
         }
-        return object
+        return value
     }
 
     static func responseCode(_ raw: String) -> Int {

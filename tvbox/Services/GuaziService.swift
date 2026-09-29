@@ -156,7 +156,7 @@ actor GuaziService {
         return videos
     }
 
-    /// 片单来自瓜子 Android 首页接口的可展开栏目，保留接口返回顺序。
+    /// 片单来自瓜子首页导航及各栏目列表，保留接口返回的榜单顺序。
     func homeSorts() async -> [MovieSort.SortData] {
         if let cachedHomeSorts {
             return cachedHomeSorts
@@ -166,11 +166,69 @@ actor GuaziService {
             MovieSort.SortData(id: $0.id, name: $0.name)
         }
         do {
-            let home = try await request(
-                path: "/App/Index/appIndex",
+            let navigation = try await requestArray(
+                path: "/App/Index/indexPid",
                 parameters: [:]
             )
-            let playlists = GuaziPlaylistCatalog.playlists(from: home)
+            var visitedPIDs = Set<String>()
+            let pagePIDs = navigation.compactMap { item -> String? in
+                let type = string(item["type"])
+                let pid = string(item["pid"])
+                guard (type == "video" || type == "recommend"),
+                      !pid.isEmpty, pid != "0",
+                      visitedPIDs.insert(pid).inserted else {
+                    return nil
+                }
+                return pid
+            }
+            var pageDataByPID: [String: Data] = [:]
+            var nextPageIndex = 0
+            await withTaskGroup(of: (String, Data?).self) { group in
+                for _ in 0..<min(3, pagePIDs.count) {
+                    let pid = pagePIDs[nextPageIndex]
+                    nextPageIndex += 1
+                    group.addTask {
+                        guard let page = try? await self.request(
+                            path: "/App/IndexList/index",
+                            parameters: ["pid": pid]
+                        ),
+                        let data = try? JSONSerialization.data(withJSONObject: page) else {
+                            return (pid, nil)
+                        }
+                        return (pid, data)
+                    }
+                }
+
+                while let (pid, data) = await group.next() {
+                    if let data {
+                        pageDataByPID[pid] = data
+                    }
+                    guard nextPageIndex < pagePIDs.count else { continue }
+                    let nextPID = pagePIDs[nextPageIndex]
+                    nextPageIndex += 1
+                    group.addTask {
+                        guard let page = try? await self.request(
+                            path: "/App/IndexList/index",
+                            parameters: ["pid": nextPID]
+                        ),
+                        let data = try? JSONSerialization.data(withJSONObject: page) else {
+                            return (nextPID, nil)
+                        }
+                        return (nextPID, data)
+                    }
+                }
+            }
+
+            var playlists: [GuaziPlaylistCatalog.Playlist] = []
+            for item in navigation {
+                let pid = string(item["pid"])
+                guard let data = pageDataByPID[pid],
+                      let value = try? JSONSerialization.jsonObject(with: data),
+                      let page = value as? [String: Any] else {
+                    continue
+                }
+                playlists.append(contentsOf: GuaziPlaylistCatalog.playlists(from: page))
+            }
             playlistBySortID = Dictionary(
                 playlists.map { ($0.sort.id, $0) },
                 uniquingKeysWith: { first, _ in first }
@@ -196,6 +254,9 @@ actor GuaziService {
     ) async throws -> [Movie.Video] {
         if let playlist = playlistBySortID[sort.id] {
             guard page == 1 else { return [] }
+            if playlist.showID.isEmpty {
+                return playlist.embeddedVideos.compactMap { makeVideo(from: $0) }
+            }
             let response = try await request(
                 path: "/App/IndexList/hotsList",
                 parameters: [
@@ -235,16 +296,31 @@ actor GuaziService {
     }
 
     func detail(vodID: String) async throws -> VodInfo {
-        let detailResponse = try await request(
+        let apiToken = try await currentToken()
+        async let detailRequest = request(
             path: "/App/Resource/Vod/showOne",
             parameters: ["d_id": vodID]
         )
+        async let playInfoRequest: [String: Any]? = try? await request(
+            path: "/App/IndexPlay/playInfo",
+            parameters: [
+                "vod_id": vodID,
+                "token": apiToken,
+                "token_id": "",
+                "mobile_time": String(Int(Date().timeIntervalSince1970))
+            ]
+        )
+        let (detailResponse, playInfoResponse) = try await (detailRequest, playInfoRequest)
         let metadataObject = GuaziMetadataParser.payload(from: detailResponse)
         let detailMetadata = makeMetadata(from: metadataObject)
         var metadata = mergeMetadata(metadataCache[vodID], with: detailMetadata)
+        if let playInfoResponse {
+            let playInfoObject = GuaziMetadataParser.payload(from: playInfoResponse)
+            metadata = mergeMetadata(metadata, with: makeMetadata(from: playInfoObject))
+        }
 
-        // Detail responses can omit d_class. Recover it from the same Guazi
-        // search endpoint, matching the exact video ID and never mixing sources.
+        // playInfo 是瓜子播放器使用的详情接口；若它缺简介，再按精确 ID
+        // 从同一瓜子搜索接口补齐，绝不借用其他站点的元数据。
         if metadata.des.isEmpty, !metadata.name.isEmpty,
            let searchResponse = try? await request(
                path: "/App/Index/findMoreVod",
@@ -357,13 +433,33 @@ actor GuaziService {
     }
 
     private func request(path: String, parameters: [String: Any]) async throws -> [String: Any] {
+        guard let object = try await requestValue(path: path, parameters: parameters) as? [String: Any] else {
+            throw GuaziServiceError.invalidResponse
+        }
+        return object
+    }
+
+    private func requestArray(path: String, parameters: [String: Any]) async throws -> [[String: Any]] {
+        guard let array = try await requestValue(path: path, parameters: parameters) as? [[String: Any]] else {
+            throw GuaziServiceError.invalidResponse
+        }
+        return array
+    }
+
+    private func currentToken() async throws -> String {
         var token = UserDefaults.standard.string(forKey: Self.tokenKey) ?? ""
         if token.isEmpty {
             token = try await register()
         }
+        return token
+    }
+
+    private func requestValue(path: String, parameters: [String: Any]) async throws -> Any {
+        var token = try await currentToken()
+        var requestParameters = parameters
 
         do {
-            return try await performRequest(path: path, parameters: parameters, token: token)
+            return try await performRequest(path: path, parameters: requestParameters, token: token)
         } catch GuaziServiceError.authFailed {
             let currentToken = UserDefaults.standard.string(forKey: Self.tokenKey) ?? ""
             if currentToken.isEmpty || currentToken == token {
@@ -372,7 +468,10 @@ actor GuaziService {
             } else {
                 token = currentToken
             }
-            return try await performRequest(path: path, parameters: parameters, token: token)
+            if requestParameters["token"] != nil {
+                requestParameters["token"] = token
+            }
+            return try await performRequest(path: path, parameters: requestParameters, token: token)
         }
     }
 
@@ -402,7 +501,7 @@ actor GuaziService {
 
         for _ in 0..<2 {
             do {
-                let result = try await performRequest(
+                guard let result = try await performRequest(
                     path: "/App/Authentication/Device/signUp",
                     parameters: [
                         "old_key": stable,
@@ -411,7 +510,9 @@ actor GuaziService {
                         "code": ""
                     ],
                     token: ""
-                )
+                ) as? [String: Any] else {
+                    throw GuaziServiceError.invalidResponse
+                }
                 let token = string(result["token"])
                 if !token.isEmpty {
                     UserDefaults.standard.set(device, forKey: Self.deviceKey)
@@ -430,7 +531,7 @@ actor GuaziService {
         path: String,
         parameters: [String: Any],
         token: String
-    ) async throws -> [String: Any] {
+    ) async throws -> Any {
         guard let url = URL(string: GuaziCrypto.baseURL + path) else {
             throw GuaziServiceError.invalidURL
         }
@@ -476,7 +577,7 @@ actor GuaziService {
                     message.isEmpty ? "瓜子接口请求失败" : "瓜子接口错误：\(message)"
                 )
             }
-            return try GuaziCrypto.decodeResponse(raw)
+            return try GuaziCrypto.decodeResponseValue(raw)
         } catch let error as GuaziServiceError {
             throw error
         } catch {
@@ -559,11 +660,13 @@ actor GuaziService {
 
         let metadata = mergeMetadata(metadataCache[id], with: makeMetadata(from: object))
         metadataCache[id] = metadata
+        let name = metadata.name.isEmpty ? string(object["c_name"]) : metadata.name
+        let pic = metadata.pic.isEmpty ? string(object["c_pic"]) : metadata.pic
         var video = Movie.Video(
             id: id,
-            name: metadata.name,
-            pic: metadata.pic,
-            note: metadata.note,
+            name: name,
+            pic: pic,
+            note: metadata.note.isEmpty ? string(object["cf_name"]) : metadata.note,
             sourceKey: "guazi",
             doubanRating: metadata.rating
         )

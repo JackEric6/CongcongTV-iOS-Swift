@@ -34,39 +34,20 @@ struct GuaziMetadataParser {
 
     static func parse(_ value: Any) -> Values {
         let object = payload(from: value)
-        let director = string(object["vod_director"])
-
         return Values(
-            name: string(object["vod_name"]).isEmpty
-                ? string(object["d_name"])
-                : string(object["vod_name"]),
-            pic: string(object["vod_pic"]).isEmpty
-                ? string(object["d_pic"])
-                : string(object["vod_pic"]),
-            year: string(object["vod_year"]).isEmpty
-                ? string(object["d_year"])
-                : string(object["vod_year"]),
-            area: string(object["vod_area"]).isEmpty
-                ? string(object["d_area"])
-                : string(object["vod_area"]),
-            type: string(object["vod_class"]).isEmpty
-                ? (string(object["d_type"]).isEmpty
-                    ? string(object["d_class"])
-                    : string(object["d_type"]))
-                : string(object["vod_class"]),
-            director: director.isEmpty ? string(object["vod_directed"]) : director,
-            actor: string(object["vod_actor"]).isEmpty
-                ? string(object["d_actor"])
-                : string(object["vod_actor"]),
+            name: firstString(in: object, keys: ["vod_name", "d_name", "c_name", "title"]),
+            pic: firstString(in: object, keys: ["vod_pic", "d_pic", "c_pic", "pic"]),
+            year: firstString(in: object, keys: ["vod_year", "d_year"]),
+            area: firstString(in: object, keys: ["vod_area", "d_area"]),
+            type: firstString(in: object, keys: ["vod_class", "d_type", "d_class", "type_name"]),
+            director: firstString(in: object, keys: ["vod_director", "vod_directed"]),
+            actor: firstString(in: object, keys: ["vod_actor", "d_actor"]),
             description: description(in: object),
-            note: string(object["new_continue"]).isEmpty
-                ? (string(object["vod_remarks"]).isEmpty
-                    ? string(object["vod_title"])
-                    : string(object["vod_remarks"]))
-                : string(object["new_continue"]),
-            rating: string(object["vod_scroe"]).isEmpty
-                ? string(object["vod_score"])
-                : string(object["vod_scroe"])
+            note: firstString(
+                in: object,
+                keys: ["new_continue", "vod_remarks", "vod_title", "cf_name", "sub_title"]
+            ),
+            rating: firstString(in: object, keys: ["vod_scroe", "vod_score", "vod_douban_score"])
         )
     }
 
@@ -148,6 +129,14 @@ struct GuaziMetadataParser {
         }
         if let value = value as? NSNumber {
             return value.stringValue
+        }
+        return ""
+    }
+
+    private static func firstString(in object: [String: Any], keys: [String]) -> String {
+        for key in keys {
+            let value = string(object[key])
+            if !value.isEmpty { return value }
         }
         return ""
     }
