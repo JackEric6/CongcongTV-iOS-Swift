@@ -15,7 +15,7 @@ struct GuaziMetadataParser {
     }
 
     private static let descriptionKeys = [
-        "d_class", "d_content", "d_blurb", "d_desc", "d_description",
+        "d_content", "d_blurb", "d_desc", "d_description",
         "d_intro", "d_synopsis", "d_summary", "vod_content", "vod_blurb",
         "vod_desc", "vod_description", "vod_intro", "vod_summary",
         "synopsis", "summary", "intro", "introduction", "description",
@@ -50,7 +50,9 @@ struct GuaziMetadataParser {
                 ? string(object["d_area"])
                 : string(object["vod_area"]),
             type: string(object["vod_class"]).isEmpty
-                ? string(object["d_type"])
+                ? (string(object["d_type"]).isEmpty
+                    ? string(object["d_class"])
+                    : string(object["d_type"]))
                 : string(object["vod_class"]),
             director: director.isEmpty ? string(object["vod_directed"]) : director,
             actor: string(object["vod_actor"]).isEmpty

@@ -119,6 +119,8 @@ actor GuaziService {
     private static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     private let session: URLSession
     private var metadataCache: [String: Metadata] = [:]
+    private var playlistBySortID: [String: GuaziPlaylistCatalog.Playlist] = [:]
+    private var cachedHomeSorts: [MovieSort.SortData]?
     private var registrationTask: Task<String, Error>?
 
     private init() {
@@ -142,17 +144,68 @@ actor GuaziService {
             throw GuaziServiceError.invalidResponse
         }
         let videos = list.compactMap { item -> Movie.Video? in
-            guard let object = item as? [String: Any] else { return nil }
+            guard let object = item as? [String: Any],
+                  GuaziSearchMatcher.matches(
+                    keyword: keyword,
+                    title: string(object["vod_name"])
+                  ) else {
+                return nil
+            }
             return makeVideo(from: object)
         }
         return videos
     }
 
-    /// 瓜子没有 CMS 分类接口，首页分类由 Android 端适配器固定映射。
-    func homeSorts() -> [MovieSort.SortData] {
-        GuaziHomeCategoryOrder.sort(
-            Self.homeCategories.map { MovieSort.SortData(id: $0.id, name: $0.name) }
-        )
+    /// 片单来自瓜子 Android 首页栏目中的可展开列表，保留接口返回的排行顺序。
+    func homeSorts() async -> [MovieSort.SortData] {
+        if let cachedHomeSorts {
+            return cachedHomeSorts
+        }
+
+        let categories = Self.homeCategories.map {
+            MovieSort.SortData(id: $0.id, name: $0.name)
+        }
+        do {
+            let navigation = try await request(
+                path: "/App/Index/indexPid",
+                parameters: [:]
+            )
+            let playlistPIDs = GuaziPlaylistCatalog.playlistNavigationPIDs(from: navigation)
+            guard !playlistPIDs.isEmpty else {
+                return GuaziHomeCategoryOrder.sort(categories)
+            }
+            let pageRequests = playlistPIDs.map { pid in
+                Task {
+                    try await request(
+                        path: "/App/IndexList/index",
+                        parameters: ["pid": pid]
+                    )
+                }
+            }
+            var playlists: [GuaziPlaylistCatalog.Playlist] = []
+            var allPagesReceived = true
+            for pageRequest in pageRequests {
+                guard let home = try? await pageRequest.value else {
+                    allPagesReceived = false
+                    continue
+                }
+                playlists.append(contentsOf: GuaziPlaylistCatalog.playlists(from: home))
+            }
+            playlistBySortID = Dictionary(
+                playlists.map { ($0.sort.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let sorts = GuaziHomeCategoryOrder.sort(
+                playlists.map(\.sort) + categories
+            )
+            if allPagesReceived, !playlists.isEmpty {
+                cachedHomeSorts = sorts
+            }
+            return sorts
+        } catch {
+            // 热门栏目暂时不可用时仍保留普通分类，后续刷新可重新探测。
+            return GuaziHomeCategoryOrder.sort(categories)
+        }
     }
 
     /// 加载瓜子首页指定分类。接口返回结构与搜索接口不同，但同样走瓜子专用加密协议。
@@ -161,6 +214,20 @@ actor GuaziService {
         page: Int = 1,
         filters: [String: String]? = nil
     ) async throws -> [Movie.Video] {
+        if let playlist = playlistBySortID[sort.id] {
+            guard page == 1 else { return [] }
+            let response = try await request(
+                path: "/App/IndexList/hotsList",
+                parameters: [
+                    "show_id": playlist.showID,
+                    "pid": playlist.pid
+                ]
+            )
+            return GuaziPlaylistCatalog.videos(from: response).compactMap {
+                makeVideo(from: $0)
+            }
+        }
+
         guard let category = Self.homeCategories.first(where: { $0.id == sort.id }) else {
             return []
         }

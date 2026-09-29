@@ -35,10 +35,19 @@ jobs:
           swiftc -parse-as-library \
             tvbox/Models/MovieSort.swift \
             tvbox/Services/GuaziHomeCategoryOrder.swift \
+            tvbox/Services/GuaziPlaylistCatalog.swift \
             tvbox/Services/GuaziMetadataParser.swift \
             scripts/verify-guazi-metadata.swift \
             -o /tmp/verify-guazi-metadata
           /tmp/verify-guazi-metadata
+
+      - name: Verify Guazi search title filtering
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Services/GuaziSearchMatcher.swift \
+            scripts/verify-guazi-search.swift \
+            -o /tmp/verify-guazi-search
+          /tmp/verify-guazi-search
 
       - name: Build unsigned app
         run: |
