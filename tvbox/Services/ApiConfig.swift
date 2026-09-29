@@ -627,7 +627,7 @@ class ApiConfig: ObservableObject {
         let sourceName = sourceKey.caseInsensitiveCompare("guazi") == .orderedSame
             ? "瓜子"
             : (site.name ?? "未命名")
-        SourceBean(
+        return SourceBean(
             key: sourceKey,
             name: sourceName,
             api: KktvsResponseNormalizer.normalizeSourceAPI(
