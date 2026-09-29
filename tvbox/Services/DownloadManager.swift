@@ -187,11 +187,17 @@ final class DownloadManager: NSObject, ObservableObject {
             throw DownloadError.alreadyDownloading
         }
 
-        if let existing = items[request.identifier],
-           existing.status == .completed,
-           let localURL = existing.localURL,
-           fileManager.fileExists(atPath: localURL.path) {
-            return existing
+        if let existing = items[request.identifier], existing.status == .completed {
+            if let localURL = existing.localURL,
+               isPlayableLocalURL(localURL, mediaKind: existing.mediaKind) {
+                return existing
+            }
+            if let localURL = existing.localURL,
+               fileManager.fileExists(atPath: localURL.path) {
+                try? fileManager.removeItem(at: localURL)
+            }
+            items.removeValue(forKey: request.identifier)
+            saveManifest()
         }
 
         if let existing = items[request.identifier], existing.status == .paused {
@@ -382,12 +388,13 @@ final class DownloadManager: NSObject, ObservableObject {
 
     func item(identifier: String) -> DownloadItem? {
         guard let item = items[identifier] else { return nil }
-        if item.status == .completed,
-           let localURL = item.localURL,
-           fileManager.fileExists(atPath: localURL.path) {
-            return item
+        if item.status == .completed {
+            guard let localURL = item.localURL,
+                  isPlayableLocalURL(localURL, mediaKind: item.mediaKind) else {
+                return nil
+            }
         }
-        return item.status == .completed ? nil : item
+        return item
     }
 
     func localFileURL(identifier: String) -> URL? {
@@ -404,7 +411,17 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     func allItems() -> [DownloadItem] {
-        items.values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        items.values.map { item in
+            guard item.status == .completed,
+                  let localURL = item.localURL,
+                  !isPlayableLocalURL(localURL, mediaKind: item.mediaKind) else {
+                return item
+            }
+            var invalidItem = item
+            invalidItem.status = .failed("缓存文件无法识别为视频，请重新下载")
+            return invalidItem
+        }
+        .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
     /// AVAssetDownloadURLSession returns a `.movpkg` directory for HLS.
@@ -416,7 +433,12 @@ final class DownloadManager: NSObject, ObservableObject {
         if mediaKind == .hls {
             return isDirectory.boolValue || url.pathExtension.lowercased() == "movpkg"
         }
-        return !isDirectory.boolValue
+        guard !isDirectory.boolValue,
+              let prefix = DownloadPayloadValidator.prefix(at: url) else { return false }
+        return DownloadPayloadValidator.isSupportedMediaPayload(
+            prefix: prefix,
+            fileExtension: url.pathExtension
+        )
     }
 
     private func updateStatus(for identifier: String, status: DownloadStatus) {
@@ -764,11 +786,13 @@ final class DownloadManager: NSObject, ObservableObject {
             let segmentFile = segmentDirectory.appendingPathComponent(String(format: "%06d.seg", index))
             let attributes = try? fileManager.attributesOfItem(atPath: segmentFile.path)
             let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
-            if size > 0 {
+            let prefix = DownloadPayloadValidator.prefix(at: segmentFile)
+            if size > 0, let prefix, DownloadPayloadValidator.isMPEGTransportStream(prefix) {
                 segmentFiles[index] = segmentFile
                 completedCount += 1
                 completedBytes += size
             } else {
+                try? fileManager.removeItem(at: segmentFile)
                 pendingIndices.append(index)
             }
         }
@@ -841,8 +865,11 @@ final class DownloadManager: NSObject, ObservableObject {
 
         let outputAttributes = try? fileManager.attributesOfItem(atPath: outputPart.path)
         let outputSize = (outputAttributes?[.size] as? NSNumber)?.int64Value ?? 0
-        guard fileManager.fileExists(atPath: outputPart.path), outputSize > 0 else {
-            throw HLSDownloadError.invalid("合并后的离线文件为空")
+        guard fileManager.fileExists(atPath: outputPart.path),
+              outputSize > 0,
+              let outputPrefix = DownloadPayloadValidator.prefix(at: outputPart),
+              DownloadPayloadValidator.isMPEGTransportStream(outputPrefix) else {
+            throw HLSDownloadError.staleAddress("合并结果不是有效的视频分片，可能返回了资源站校验内容")
         }
         let destination = destinationURL(for: item, mimeType: "video/mp2t", forcedExtension: "ts")
         if fileManager.fileExists(atPath: destination.path) {
@@ -991,8 +1018,14 @@ final class DownloadManager: NSObject, ObservableObject {
                     // payload. Hand it to the existing AVAsset fallback.
                     throw HLSDownloadError.unsupported("分片返回了 HLS 播放列表，交由系统转换")
                 }
-                guard !Self.looksLikeTextError(data) else {
+                guard !DownloadPayloadValidator.isRejectedPayload(
+                    data,
+                    mimeType: http.mimeType
+                ) else {
                     throw HLSDownloadError.staleAddress("分片返回了错误页")
+                }
+                guard DownloadPayloadValidator.isMPEGTransportStream(data) else {
+                    throw HLSDownloadError.staleAddress("分片内容不是有效 MPEG-TS，可能返回了资源站校验内容")
                 }
                 try data.write(to: destination, options: .atomic)
                 return (index, destination, Int64(data.count))
@@ -1009,26 +1042,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private static func looksLikeTextError(_ data: Data) -> Bool {
-        let prefix = String(data: data.prefix(512), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        guard !prefix.isEmpty else { return false }
-
-        // #EXTM3U is a valid HLS playlist marker, not an error page. Keep it
-        // out of this predicate because Guazi may expose a nested playlist
-        // from a segment URL. Binary MPEG-TS/fMP4 payloads normally fail UTF-8
-        // decoding and are therefore accepted without any text heuristics.
-        if prefix.hasPrefix("{") || prefix.hasPrefix("[") {
-            // A media segment is binary; a JSON response is an error or an
-            // access-control response and must never be persisted as .ts.
-            return true
-        }
-        let htmlMarkers = [
-            "<html", "<!doctype", "<head", "<body", "<script",
-            "access denied", "request forbidden", "forbidden", "bad gateway",
-            "error 403", "error 404", "error 502"
-        ]
-        return htmlMarkers.contains(where: prefix.contains)
+        return DownloadPayloadValidator.isRejectedPayload(data)
     }
 
     private static func looksLikeHLSPlaylist(_ data: Data) -> Bool {
@@ -1309,6 +1323,26 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 self.activeTasks.removeValue(forKey: taskIdentifier)
                 self.progressSamples.removeValue(forKey: taskIdentifier)
                 self.updateStatus(for: identifier, status: .failed("服务器返回了网页而不是可播放媒体"))
+            }
+            return
+        }
+        let responseURL = downloadTask.response?.url ?? downloadTask.originalRequest?.url
+        let fileExtension = responseURL?.pathExtension ?? ""
+        guard let prefix = DownloadPayloadValidator.prefix(at: location),
+              DownloadPayloadValidator.isSupportedMediaPayload(
+                prefix: prefix,
+                mimeType: mimeType,
+                fileExtension: fileExtension
+              ) else {
+            Task { @MainActor [weak self] in
+                guard let self,
+                      let identifier = self.taskIDs.removeValue(forKey: taskIdentifier) else { return }
+                self.activeTasks.removeValue(forKey: taskIdentifier)
+                self.progressSamples.removeValue(forKey: taskIdentifier)
+                self.updateStatus(
+                    for: identifier,
+                    status: .failed("资源站返回的内容不是可识别的视频文件，可能是访问校验或错误响应")
+                )
             }
             return
         }

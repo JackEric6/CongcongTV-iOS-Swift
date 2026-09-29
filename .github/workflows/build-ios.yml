@@ -49,6 +49,14 @@ jobs:
             -o /tmp/verify-guazi-search
           /tmp/verify-guazi-search
 
+      - name: Verify downloaded media payload validation
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Services/DownloadPayloadValidator.swift \
+            scripts/verify-download-payload.swift \
+            -o /tmp/verify-download-payload
+          /tmp/verify-download-payload
+
       - name: Build unsigned app
         run: |
           set -o pipefail
