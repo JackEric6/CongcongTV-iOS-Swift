@@ -27,7 +27,7 @@ enum GuaziHomeCategoryOrder {
             orderedPlaylists.insert(orderedPlaylists.remove(at: hotIndex), at: 0)
         }
 
-        let orderedCategories = categories.compactMap { definition in
+        let orderedCategories = categories.compactMap { definition -> MovieSort.SortData? in
             let (id, name) = definition
             guard var category = categoriesByID[id] else { return nil }
             category.name = name
