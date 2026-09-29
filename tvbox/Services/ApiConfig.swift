@@ -623,12 +623,16 @@ class ApiConfig: ObservableObject {
 
     /// 解析配置数据
     private func makeSourceBean(from site: AppConfigData.SiteConfig) -> SourceBean {
+        let sourceKey = site.key ?? UUID().uuidString
+        let sourceName = sourceKey.caseInsensitiveCompare("guazi") == .orderedSame
+            ? "瓜子"
+            : (site.name ?? "未命名")
         SourceBean(
-            key: site.key ?? UUID().uuidString,
-            name: site.name ?? "未命名",
+            key: sourceKey,
+            name: sourceName,
             api: KktvsResponseNormalizer.normalizeSourceAPI(
                 site.api ?? "",
-                sourceKey: site.key ?? ""
+                sourceKey: sourceKey
             ),
             searchable: site.key == "yutu" && self.isYutuUnlocked
                 ? 1 : (site.searchable?.value ?? 1),
@@ -1056,7 +1060,7 @@ class ApiConfig: ObservableObject {
             // 资源文件缺失时仍保留搜索入口；瓜子请求由 GuaziService 接管 API。
             guazi = SourceBean(
                 key: "guazi",
-                name: "瓜子影视",
+                name: "瓜子",
                 api: "https://api.anctjd.com",
                 searchable: 1,
                 filterable: 0,

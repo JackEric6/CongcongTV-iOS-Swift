@@ -557,7 +557,7 @@
     },
     {
       "key": "guazi",
-      "name": "瓜子影视",
+      "name": "瓜子",
       "type": 1,
       "api": "https://api.anctjd.com",
       "searchable": 1,

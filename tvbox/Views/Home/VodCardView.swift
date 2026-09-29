@@ -35,7 +35,9 @@ struct VodCardView: View {
                     if usesYutuPosterLayout {
                         image
                             .resizable()
-                            .scaledToFit()
+                            // 玉兔部分海报返回的原始比例不一致；填充固定卡片比例，
+                            // 保持宽高比并裁掉多余边缘，避免海报缩成卡片内的小图。
+                            .aspectRatio(2 / 3, contentMode: .fill)
                     } else {
                         image
                             .resizable()
@@ -155,7 +157,7 @@ private struct SourceSpecificPosterFrame: ViewModifier {
         if isYutu {
             content
                 .frame(maxWidth: .infinity)
-                .aspectRatio(2/3, contentMode: .fit)
+                .aspectRatio(2/3, contentMode: .fill)
                 .clipped()
         } else {
             content

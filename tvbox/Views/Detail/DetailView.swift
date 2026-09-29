@@ -363,9 +363,6 @@ struct DetailView: View {
             HStack(alignment: .top, spacing: 10) {
                 videoDetails
                 Spacer(minLength: 0)
-                if !viewModel.isPlaying {
-                    playButton
-                }
                 downloadButton
                 collectButton
             }

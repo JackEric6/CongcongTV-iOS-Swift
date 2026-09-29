@@ -27,11 +27,11 @@ actor GuaziService {
     static let shared = GuaziService()
 
     private static let homeCategories: [(id: String, name: String, sub: String)] = [
-        ("1", "电影", "5"),
         ("2", "电视剧", "12"),
-        ("4", "动漫", "30"),
+        ("1", "电影", "5"),
+        ("64", "短剧", ""),
         ("3", "综艺", "22"),
-        ("64", "短剧", "")
+        ("4", "动漫", "30")
     ]
 
     struct PlayRequest: Hashable {
@@ -190,9 +190,11 @@ actor GuaziService {
             path: "/App/Resource/Vod/showOne",
             parameters: ["d_id": vodID]
         )
-        let metadata = metadataCache[vodID] ?? makeMetadata(from: metadataObject)
+        let detailMetadata = makeMetadata(from: metadataObject)
+        let metadata = mergeMetadata(metadataCache[vodID], with: detailMetadata)
+        metadataCache[vodID] = metadata
         var info = VodInfo(id: vodID)
-        info.name = metadata.name.isEmpty ? "瓜子影视 \(vodID)" : metadata.name
+        info.name = metadata.name.isEmpty ? "瓜子 \(vodID)" : metadata.name
         info.pic = metadata.pic
         info.note = metadata.note
         info.year = metadata.year
@@ -423,12 +425,75 @@ actor GuaziService {
                 ? string(object["vod_directed"])
                 : string(object["vod_director"]),
             actor: string(object["vod_actor"]),
-            des: string(object["d_class"]).isEmpty ? string(object["vod_content"]) : string(object["d_class"]),
+            des: description(from: object),
             note: string(object["new_continue"]).isEmpty
                 ? (string(object["vod_remarks"]).isEmpty ? string(object["vod_title"]) : string(object["vod_remarks"]))
                 : string(object["new_continue"]),
             rating: string(object["vod_scroe"]).isEmpty ? string(object["vod_score"]) : string(object["vod_scroe"])
         )
+    }
+
+    /// 详情接口和搜索接口返回的字段并不完全一致。只从瓜子影视的简介字段
+    /// 中取值，避免把 vurl_clouds 或播放参数中的 URL 混入影片简介。
+    private func description(from object: [String: Any]) -> String {
+        let keys = [
+            "vod_content", "vod_blurb", "vod_desc", "vod_description",
+            "synopsis", "summary", "intro", "introduction", "description",
+            "desc", "content", "d_class"
+        ]
+
+        for key in keys {
+            let value = cleanDescription(string(object[key]))
+            if !value.isEmpty { return value }
+        }
+
+        // 某些瓜子响应会把影片对象包在 detail/data/result/vod 等节点中。
+        let containers = ["detail", "data", "result", "vod", "info", "item", "vod_info"]
+        for key in containers {
+            guard let nested = object[key] as? [String: Any] else { continue }
+            let value = description(from: nested)
+            if !value.isEmpty { return value }
+        }
+
+        return ""
+    }
+
+    private func mergeMetadata(_ cached: Metadata?, with detail: Metadata) -> Metadata {
+        guard let cached else { return detail }
+        return Metadata(
+            name: detail.name.isEmpty ? cached.name : detail.name,
+            pic: detail.pic.isEmpty ? cached.pic : detail.pic,
+            year: detail.year.isEmpty ? cached.year : detail.year,
+            area: detail.area.isEmpty ? cached.area : detail.area,
+            type: detail.type.isEmpty ? cached.type : detail.type,
+            director: detail.director.isEmpty ? cached.director : detail.director,
+            actor: detail.actor.isEmpty ? cached.actor : detail.actor,
+            des: detail.des.isEmpty ? cached.des : detail.des,
+            note: detail.note.isEmpty ? cached.note : detail.note,
+            rating: detail.rating.isEmpty ? cached.rating : detail.rating
+        )
+    }
+
+    private func cleanDescription(_ raw: String) -> String {
+        guard !raw.isEmpty else { return "" }
+
+        var value = raw
+            .replacingOccurrences(of: "<br />", with: "\n", options: .caseInsensitive)
+            .replacingOccurrences(of: "<br/>", with: "\n", options: .caseInsensitive)
+            .replacingOccurrences(of: "<br>", with: "\n", options: .caseInsensitive)
+            .replacingOccurrences(of: "</p>", with: "\n", options: .caseInsensitive)
+            .replacingOccurrences(of: "&nbsp;", with: " ", options: .caseInsensitive)
+            .replacingOccurrences(of: "&amp;", with: "&", options: .caseInsensitive)
+            .replacingOccurrences(of: "&lt;", with: "<", options: .caseInsensitive)
+            .replacingOccurrences(of: "&gt;", with: ">", options: .caseInsensitive)
+            .replacingOccurrences(of: "&quot;", with: "\"", options: .caseInsensitive)
+            .replacingOccurrences(of: "&#39;", with: "'", options: .caseInsensitive)
+            .replacingOccurrences(of: "&#x27;", with: "'", options: .caseInsensitive)
+
+        value = value.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        value = value.replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
+        value = value.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// 生成与 OkHttp FormBody 等价的 UTF-8 表单体。

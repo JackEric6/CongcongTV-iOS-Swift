@@ -423,12 +423,12 @@ private struct FeedbackSuggestionView: View {
 
         if trimmedFeedback == "8801" {
             guard appState.apiConfig.unlockGuaziSource() else {
-                submissionMessage = "瓜子影视源暂不可用"
+                submissionMessage = "瓜子源暂不可用"
                 return
             }
             appState.applyLoadedConfigState(refreshHome: true)
             feedback = ""
-            submissionMessage = "瓜子影视源已切换为首页"
+            submissionMessage = "瓜子源已切换为首页"
             return
         }
 
