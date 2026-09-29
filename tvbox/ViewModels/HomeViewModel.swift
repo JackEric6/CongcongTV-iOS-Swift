@@ -436,6 +436,7 @@ class HomeViewModel: ObservableObject {
     /// 过滤父分类并按安卓版规则稳定排序，只保留首页可直接请求的子分类。
     private func visibleChildSorts(_ sourceSorts: [MovieSort.SortData], source: SourceBean) -> [MovieSort.SortData] {
         let isXigua = isXiguaSource(source)
+        let isGuazi = source.key.caseInsensitiveCompare("guazi") == .orderedSame
         var seen = Set<String>()
         let filtered = sourceSorts.filter { sort in
             let id = sort.id.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -450,7 +451,9 @@ class HomeViewModel: ObservableObject {
                     return false
                 }
             }
-            if obviousParentCategoryNames.contains(name) { return false }
+            // 瓜子适配器的首页分类本身就是可请求的一级分类，不能按西瓜的
+            // 父分类规则把“电影/电视剧/动漫/综艺”全部删掉。
+            if !isGuazi && obviousParentCategoryNames.contains(name) { return false }
             let dedupKey = "\(id)|\(name)"
             return seen.insert(dedupKey).inserted
         }

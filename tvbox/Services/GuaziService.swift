@@ -26,6 +26,14 @@ enum GuaziServiceError: LocalizedError {
 actor GuaziService {
     static let shared = GuaziService()
 
+    private static let homeCategories: [(id: String, name: String, sub: String)] = [
+        ("1", "电影", "5"),
+        ("2", "电视剧", "12"),
+        ("4", "动漫", "30"),
+        ("3", "综艺", "22"),
+        ("64", "短剧", "")
+    ]
+
     struct PlayRequest: Hashable {
         let vodID: String
         let cloudID: String
@@ -135,27 +143,46 @@ actor GuaziService {
         }
         let videos = list.compactMap { item -> Movie.Video? in
             guard let object = item as? [String: Any] else { return nil }
-            let id = string(object["vod_id"])
-            guard !id.isEmpty else { return nil }
-            let metadata = makeMetadata(from: object)
-            metadataCache[id] = metadata
-            var video = Movie.Video(
-                id: id,
-                name: metadata.name,
-                pic: metadata.pic,
-                note: metadata.note,
-                sourceKey: "guazi",
-                doubanRating: metadata.rating
-            )
-            video.year = metadata.year
-            video.area = metadata.area
-            video.type = metadata.type
-            video.director = metadata.director
-            video.actor = metadata.actor
-            video.des = metadata.des
-            return video
+            return makeVideo(from: object)
         }
         return videos
+    }
+
+    /// 瓜子没有 CMS 分类接口，首页分类由 Android 端适配器固定映射。
+    func homeSorts() -> [MovieSort.SortData] {
+        Self.homeCategories.map { MovieSort.SortData(id: $0.id, name: $0.name) }
+    }
+
+    /// 加载瓜子首页指定分类。接口返回结构与搜索接口不同，但同样走瓜子专用加密协议。
+    func category(
+        sort: MovieSort.SortData,
+        page: Int = 1,
+        filters: [String: String]? = nil
+    ) async throws -> [Movie.Video] {
+        guard let category = Self.homeCategories.first(where: { $0.id == sort.id }) else {
+            return []
+        }
+
+        let filter = filters ?? [:]
+        let result = try await request(
+            path: "/App/IndexList/indexList",
+            parameters: [
+                "area": filter["area"] ?? "0",
+                "sub": filter["sub"] ?? category.sub,
+                "year": filter["year"] ?? "0",
+                "pageSize": "30",
+                "sort": filter["sort"] ?? "d_id",
+                "page": String(max(1, page)),
+                "tid": category.id
+            ]
+        )
+        guard let list = result["list"] as? [Any] else {
+            throw GuaziServiceError.invalidResponse
+        }
+        return list.compactMap { item in
+            guard let object = item as? [String: Any] else { return nil }
+            return makeVideo(from: object)
+        }
     }
 
     func detail(vodID: String) async throws -> VodInfo {
@@ -390,12 +417,40 @@ actor GuaziService {
             year: string(object["vod_year"]),
             area: string(object["vod_area"]),
             type: string(object["vod_class"]),
-            director: string(object["vod_director"]),
+            director: string(object["vod_director"]).isEmpty
+                ? string(object["vod_directed"])
+                : string(object["vod_director"]),
             actor: string(object["vod_actor"]),
             des: string(object["d_class"]).isEmpty ? string(object["vod_content"]) : string(object["d_class"]),
-            note: string(object["new_continue"]).isEmpty ? string(object["vod_remarks"]) : string(object["new_continue"]),
+            note: string(object["new_continue"]).isEmpty
+                ? (string(object["vod_remarks"]).isEmpty ? string(object["vod_title"]) : string(object["vod_remarks"]))
+                : string(object["new_continue"]),
             rating: string(object["vod_scroe"]).isEmpty ? string(object["vod_score"]) : string(object["vod_scroe"])
         )
+    }
+
+    private func makeVideo(from object: [String: Any]) -> Movie.Video? {
+        let id = string(object["vod_id"])
+        guard !id.isEmpty else { return nil }
+
+        let metadata = makeMetadata(from: object)
+        metadataCache[id] = metadata
+        var video = Movie.Video(
+            id: id,
+            name: metadata.name,
+            pic: metadata.pic,
+            note: metadata.note,
+            sourceKey: "guazi",
+            doubanRating: metadata.rating
+        )
+        video.year = metadata.year
+        video.area = metadata.area
+        video.type = metadata.type
+        video.director = metadata.director
+        video.actor = metadata.actor
+        video.des = metadata.des
+        video.tid = string(object["t_id"]).isEmpty ? string(object["d_type"]) : string(object["t_id"])
+        return video
     }
 
     private func parseQuery(_ value: String) -> [String: String] {

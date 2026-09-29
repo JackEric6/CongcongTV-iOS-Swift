@@ -16,8 +16,8 @@ class SourceService {
     /// 获取指定源的分类列表和首页推荐
     func getSort(sourceBean: SourceBean) async throws -> (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]) {
         if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
-            // 瓜子没有标准 CMS 分类接口，搜索和详情走专用加密服务。
-            return (sorts: [], homeVideos: [])
+            // 瓜子没有标准 CMS 分类接口，首页分类走专用加密接口。
+            return (sorts: await GuaziService.shared.homeSorts(), homeVideos: [])
         }
         let api = sourceBean.api
         guard !api.isEmpty else {
@@ -196,7 +196,11 @@ class SourceService {
     /// 获取分类下的视频列表
     func getList(sourceBean: SourceBean, sortData: MovieSort.SortData, page: Int = 1, filters: [String: String]? = nil) async throws -> [Movie.Video] {
         if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
-            return []
+            return try await GuaziService.shared.category(
+                sort: sortData,
+                page: page,
+                filters: filters
+            )
         }
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
