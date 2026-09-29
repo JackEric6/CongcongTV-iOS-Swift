@@ -228,15 +228,17 @@ actor GuaziService {
             }
 
             func parsePlaylists(from pages: [String: Data]) -> [GuaziPlaylistCatalog.Playlist] {
-                navigation.flatMap { item in
+                var playlists: [GuaziPlaylistCatalog.Playlist] = []
+                for item in navigation {
                     let pid = string(item["pid"])
                     guard let data = pages[pid],
                           let value = try? JSONSerialization.jsonObject(with: data),
                           let page = value as? [String: Any] else {
-                        return []
+                        continue
                     }
-                    return GuaziPlaylistCatalog.playlists(from: page)
+                    playlists.append(contentsOf: GuaziPlaylistCatalog.playlists(from: page))
                 }
+                return playlists
             }
 
             var pageDataByPID = await fetchPages(initialPageIDs)
