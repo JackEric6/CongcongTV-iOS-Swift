@@ -374,11 +374,11 @@ actor GuaziService {
         request.setValue(GuaziCrypto.apiVersion, forHTTPHeaderField: "Ver")
         request.setValue(GuaziCrypto.versionCode, forHTTPHeaderField: "Version")
         request.setValue(GuaziCrypto.baseURL, forHTTPHeaderField: "Referer")
-        request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        // 与 Android OkHttp FormBody 使用相同的媒体类型；编码由下方的
+        // application/x-www-form-urlencoded 编码器负责，不能直接复用 URLQueryItem。
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
-        var components = URLComponents()
-        components.queryItems = form.map { URLQueryItem(name: $0.key, value: $0.value) }
-        request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+        request.httpBody = Self.formEncodedBody(form)
 
         do {
             let (data, response) = try await session.data(for: request)
@@ -395,7 +395,9 @@ actor GuaziService {
             let code = GuaziCrypto.responseCode(raw)
             guard code == 200 else {
                 let message = GuaziCrypto.responseMessage(raw)
-                if code == 401 || code == 403 || message.localizedCaseInsensitiveContains("token") {
+                if code == 401 || code == 403
+                    || message.localizedCaseInsensitiveContains("token")
+                    || message.localizedCaseInsensitiveContains("签名") {
                     throw GuaziServiceError.authFailed
                 }
                 throw GuaziServiceError.requestFailed(
@@ -427,6 +429,43 @@ actor GuaziService {
                 : string(object["new_continue"]),
             rating: string(object["vod_scroe"]).isEmpty ? string(object["vod_score"]) : string(object["vod_scroe"])
         )
+    }
+
+    /// 生成与 OkHttp FormBody 等价的 UTF-8 表单体。
+    /// URLComponents 遵循 RFC 3986 查询编码，可能保留裸 `+`；
+    /// application/x-www-form-urlencoded 接收端会把裸 `+` 解码为空格，
+    /// 恰好会破坏 RSA Base64 的 keys/token。这里统一编码为 `%2B`。
+    private static func formEncodedBody(_ fields: [String: String]) -> Data? {
+        // 保持与 Android GuaziCrypto.createForm 的 LinkedHashMap 顺序一致。
+        let orderedKeys = [
+            "token", "token_id", "phone_type", "time", "phone_model",
+            "keys", "request_key", "signature", "app_id", "ad_version"
+        ]
+        var keys = orderedKeys.filter { fields[$0] != nil }
+        keys.append(contentsOf: fields.keys.filter { !orderedKeys.contains($0) }.sorted())
+
+        let body = keys.compactMap { key -> String? in
+            guard let value = fields[key] else { return nil }
+            return "\(formEncode(key))=\(formEncode(value))"
+        }.joined(separator: "&")
+        return body.data(using: .utf8)
+    }
+
+    private static func formEncode(_ value: String) -> String {
+        var encoded = String()
+        encoded.reserveCapacity(value.utf8.count)
+        for byte in value.utf8 {
+            switch byte {
+            case 0x2A, 0x2D, 0x2E, 0x30...0x39,
+                 0x41...0x5A, 0x5F, 0x61...0x7A:
+                encoded.append(contentsOf: String(UnicodeScalar(byte)))
+            case 0x20:
+                encoded.append("+")
+            default:
+                encoded.append(String(format: "%%%02X", byte))
+            }
+        }
+        return encoded
     }
 
     private func makeVideo(from object: [String: Any]) -> Movie.Video? {
@@ -520,6 +559,6 @@ actor GuaziService {
     }
 
     private func newDeviceKey() -> String {
-        "congcong-" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        "avbox-" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
     }
 }

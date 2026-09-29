@@ -30,6 +30,7 @@ enum GuaziCrypto {
     static let apiVersion = "3.0.5.2"
     static let packageName = "com.xcf8fa289d.s53f6f7725.hc2d9bb51620260914"
     static let versionCode = "2608011"
+    static let phoneModel = "Android-TVBox"
 
     private static let signSalt = "*&zvdvdvddbfikkkumtmdwqppp?|4Y!s!2br"
     private static let publicKey = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDUM5+/y8sPsWkd1/RQS64X259EUwxFXFE5HlA65MqrxnPs0JqoSRojSDy5QhwvROlaD6TwRQHKMY2OAZ6SnQeUJsChTEFIR9qUkwrs3/MVUMxjsv6JS6Oe/juclyJGTgVmDhB55EafXsD0SQYVj/QXXsxR6ewR5E2kL52yAAD4yQIDAQAB"
@@ -105,7 +106,7 @@ enum GuaziCrypto {
             "token_id": "",
             "phone_type": "1",
             "time": String(time),
-            "phone_model": "iOS-CongcongTV",
+            "phone_model": phoneModel,
             "keys": keys,
             "request_key": requestKey,
             "signature": signature,
