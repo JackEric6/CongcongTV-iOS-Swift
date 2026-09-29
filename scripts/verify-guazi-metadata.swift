@@ -24,25 +24,15 @@ struct VerifyGuaziMetadata {
             fatalError("瓜子分类顺序不正确：\(orderedCategories.map(\.name))")
         }
 
-        let navigation: [String: Any] = [
-            "list": [
-                ["name": "电视剧", "type": "video", "pid": 4],
-                ["name": "排行榜", "type": "rank", "pid": 9],
-                ["name": "热门", "type": "video", "pid": 2],
-                ["name": "热门推荐", "type": "recommend", "pid": 99]
-            ]
-        ]
-        guard GuaziPlaylistCatalog.playlistNavigationPIDs(from: navigation) == ["4", "2", "1"] else {
-            fatalError("没有按 Android 首页协议识别瓜子推荐和视频导航")
-        }
-
         let homePage: [String: Any] = [
-            "list": [
-                ["type": "热门推荐", "p_type": "2", "pid": 1, "show_id": "hot"],
-                ["type": "不可展开栏目", "p_type": "1", "pid": 1, "show_id": "skip"],
-                ["type": "子级推荐榜", "p_type": "2", "pid": 1, "parent_id": "8", "show_id": "child"],
-                ["type": "本周国产剧排行榜", "p_type": "2", "pid": 4, "show_id": "series"],
-                ["type": "本周国产剧排行榜", "p_type": "2", "pid": 4, "show_id": "series"]
+            "data": [
+                "list": [
+                    ["type": "热门推荐", "p_type": "2", "pid": 1, "show_id": "hot"],
+                    ["type": "不可展开栏目", "p_type": "1", "pid": 1, "show_id": "skip"],
+                    ["type": "子级推荐榜", "p_type": "2", "pid": 1, "parent_id": "8", "show_id": "child"],
+                    ["type": "本周国产剧排行榜", "p_type": "2", "pid": 4, "show_id": "series"],
+                    ["type": "本周国产剧排行榜", "p_type": "2", "pid": 4, "show_id": "series"]
+                ]
             ]
         ]
         let playlists = GuaziPlaylistCatalog.playlists(from: homePage)
@@ -61,11 +51,11 @@ struct VerifyGuaziMetadata {
         }
 
         let response: [String: Any] = [
-            "data": [
-                "d_id": "123",
-                "d_name": "测试影片",
+            "vodInfo": [
+                "vod_id": "123",
+                "vod_name": "测试影片",
                 "d_class": "谍战，剧情",
-                "d_content": "<p>&nbsp;这是瓜子简介</p>"
+                "vod_use_content": "<p>&nbsp;这是安卓详情模型中的瓜子简介</p>"
             ],
             "vurl_clouds": [
                 ["content": "播放数据不得作为影片简介"]
@@ -74,7 +64,7 @@ struct VerifyGuaziMetadata {
         let metadata = GuaziMetadataParser.parse(response)
         guard metadata.name == "测试影片",
               metadata.type == "谍战，剧情",
-              metadata.description == "这是瓜子简介",
+              metadata.description == "这是安卓详情模型中的瓜子简介",
               metadata.description != "谍战，剧情" else {
             fatalError("瓜子嵌套元数据解析失败：\(metadata)")
         }

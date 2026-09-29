@@ -9,26 +9,6 @@ struct GuaziPlaylistCatalog {
         let pid: String
     }
 
-    /// Matches Android's home navigation: video tabs use their own pid, while
-    /// the recommendation tab is backed by the fixed homepage pid 1.
-    static func playlistNavigationPIDs(from response: [String: Any]) -> [String] {
-        var seen = Set<String>()
-        return list(in: response).compactMap { item in
-            let type = string(item["type"])
-            let pid: String
-            switch type {
-            case "video":
-                pid = string(item["pid"])
-            case "recommend":
-                pid = "1"
-            default:
-                return nil
-            }
-            guard !pid.isEmpty, seen.insert(pid).inserted else { return nil }
-            return pid
-        }
-    }
-
     static func playlists(from response: [String: Any]) -> [Playlist] {
         var seen = Set<String>()
         return list(in: response).compactMap { item in
@@ -57,7 +37,18 @@ struct GuaziPlaylistCatalog {
     }
 
     private static func list(in response: [String: Any]) -> [[String: Any]] {
-        (response["list"] as? [Any] ?? []).compactMap { $0 as? [String: Any] }
+        if let list = response["list"] as? [Any] {
+            return list.compactMap { $0 as? [String: Any] }
+        }
+
+        for key in ["data", "result", "payload"] {
+            guard let nested = response[key] as? [String: Any] else { continue }
+            let nestedList = list(in: nested)
+            if !nestedList.isEmpty {
+                return nestedList
+            }
+        }
+        return []
     }
 
     private static func string(_ value: Any?) -> String {

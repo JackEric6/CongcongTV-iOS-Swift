@@ -15,7 +15,7 @@ struct GuaziMetadataParser {
     }
 
     private static let descriptionKeys = [
-        "d_content", "d_blurb", "d_desc", "d_description",
+        "vod_use_content", "d_content", "d_blurb", "d_desc", "d_description",
         "d_intro", "d_synopsis", "d_summary", "vod_content", "vod_blurb",
         "vod_desc", "vod_description", "vod_intro", "vod_summary",
         "synopsis", "summary", "intro", "introduction", "description",

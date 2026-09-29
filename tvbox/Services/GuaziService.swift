@@ -156,7 +156,7 @@ actor GuaziService {
         return videos
     }
 
-    /// 片单来自瓜子 Android 首页栏目中的可展开列表，保留接口返回的排行顺序。
+    /// 片单来自瓜子 Android 首页接口的可展开栏目，保留接口返回顺序。
     func homeSorts() async -> [MovieSort.SortData] {
         if let cachedHomeSorts {
             return cachedHomeSorts
@@ -166,31 +166,11 @@ actor GuaziService {
             MovieSort.SortData(id: $0.id, name: $0.name)
         }
         do {
-            let navigation = try await request(
-                path: "/App/Index/indexPid",
+            let home = try await request(
+                path: "/App/Index/appIndex",
                 parameters: [:]
             )
-            let playlistPIDs = GuaziPlaylistCatalog.playlistNavigationPIDs(from: navigation)
-            guard !playlistPIDs.isEmpty else {
-                return GuaziHomeCategoryOrder.sort(categories)
-            }
-            let pageRequests = playlistPIDs.map { pid in
-                Task {
-                    try await request(
-                        path: "/App/IndexList/index",
-                        parameters: ["pid": pid]
-                    )
-                }
-            }
-            var playlists: [GuaziPlaylistCatalog.Playlist] = []
-            var allPagesReceived = true
-            for pageRequest in pageRequests {
-                guard let home = try? await pageRequest.value else {
-                    allPagesReceived = false
-                    continue
-                }
-                playlists.append(contentsOf: GuaziPlaylistCatalog.playlists(from: home))
-            }
+            let playlists = GuaziPlaylistCatalog.playlists(from: home)
             playlistBySortID = Dictionary(
                 playlists.map { ($0.sort.id, $0) },
                 uniquingKeysWith: { first, _ in first }
@@ -198,12 +178,12 @@ actor GuaziService {
             let sorts = GuaziHomeCategoryOrder.sort(
                 playlists.map(\.sort) + categories
             )
-            if allPagesReceived, !playlists.isEmpty {
+            if !playlists.isEmpty {
                 cachedHomeSorts = sorts
             }
             return sorts
         } catch {
-            // 热门栏目暂时不可用时仍保留普通分类，后续刷新可重新探测。
+            // 首页片单暂不可用时仍保留普通分类，后续刷新可重新探测。
             return GuaziHomeCategoryOrder.sort(categories)
         }
     }
