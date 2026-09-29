@@ -36,6 +36,7 @@ struct KSPlayerVodPlayerView: View {
             KSPlayerUIView(
                 url: url,
                 startPosition: max(0, startPosition),
+                playbackSessionToken: playbackSessionToken,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
                 onBack: onBack,
@@ -808,6 +809,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
     let url: URL
     let startPosition: Double
+    let playbackSessionToken: UUID?
     let onProgressChanged: ((Double, Double?) -> Void)?
     let onPlaybackEnded: (() -> Void)?
     let onBack: (() -> Void)?
