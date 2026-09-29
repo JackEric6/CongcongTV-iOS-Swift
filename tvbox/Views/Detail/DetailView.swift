@@ -243,6 +243,7 @@ struct DetailView: View {
                     urlString: url,
                     startPosition: effectiveStartPosition,
                     playbackSessionToken: playbackSessionToken,
+                    isResolvingPlayback: viewModel.isResolvingPlaybackURL,
                     onProgressChanged: { [playbackSessionToken] seconds, _ in
                         handlePlaybackProgress(seconds, sessionToken: playbackSessionToken)
                     },
@@ -274,7 +275,18 @@ struct DetailView: View {
                     vlcController: sharedVLCController
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay {
+                    if viewModel.isResolvingPlaybackURL {
+                        ProgressView()
+                            .tint(.white)
+                            .allowsHitTesting(false)
+                    }
+                }
             } else if viewModel.isLoading {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(1.15)
+            } else if viewModel.isResolvingPlaybackURL {
                 ProgressView()
                     .tint(.white)
                     .scaleEffect(1.15)
@@ -1026,6 +1038,10 @@ struct DetailView: View {
 
     /// 开始新的线路/剧集播放会话，令旧播放器回调失效，并重新计算本集的持久化阈值。
     private func beginPlaybackSession() {
+        NotificationCenter.default.post(
+            name: .congcongPlaybackSessionWillChange,
+            object: nil
+        )
         playbackSessionToken = UUID()
         lastPersistedProgress = 0
         didSkipOutroForEpisode = false

@@ -36,6 +36,8 @@ class DetailViewModel: ObservableObject {
     @Published var selectedEpisodeIndex: Int = 0
     /// 是否处于播放态。
     @Published var isPlaying = false
+    /// 正在解析下一集时保留当前播放器视图，避免全屏控制器被拆除并重建。
+    @Published private(set) var isResolvingPlaybackURL = false
     /// 当前实际播放地址（可能是原始地址，也可能是清晰度切换后的子流地址）。
     @Published var playUrl: String?
     /// 续播起始位置（秒）。
@@ -126,6 +128,7 @@ class DetailViewModel: ObservableObject {
             vodInfo = nil
             playUrl = nil
             isPlaying = false
+            isResolvingPlaybackURL = false
             errorMessage = SourceError.invalidResponse("未找到视频对应的数据源").localizedDescription
             shouldRetryAfterNetworkRecovery = false
             return
@@ -145,6 +148,7 @@ class DetailViewModel: ObservableObject {
         if !isReloadingSamePlayback {
             playUrl = nil
             isPlaying = false
+            isResolvingPlaybackURL = false
         }
         selectedFlag = ""
         selectedEpisodeIndex = 0
@@ -478,8 +482,12 @@ class DetailViewModel: ObservableObject {
             selectedEpisodeIndex = 0
             vodInfo?.playIndex = 0
             resetQualityState()
+            playableResolveTask?.cancel()
+            playableResolveTask = nil
+            playableResolveToken = UUID()
             playUrl = nil
             isPlaying = false
+            isResolvingPlaybackURL = false
             return
         }
 
@@ -512,6 +520,7 @@ class DetailViewModel: ObservableObject {
             guard SourceService.validPlayableURL(normalizedURL) != nil else {
                 playUrl = nil
                 isPlaying = false
+                isResolvingPlaybackURL = false
                 errorMessage = SourceError.invalidPlayableURL(episode.url).localizedDescription
                 return
             }
@@ -550,6 +559,7 @@ class DetailViewModel: ObservableObject {
         guard SourceService.validPlayableURL(episodeURL) != nil else {
             playUrl = nil
             isPlaying = false
+            isResolvingPlaybackURL = false
             errorMessage = SourceError.invalidPlayableURL(episodes[targetIndex].url).localizedDescription
             return
         }
@@ -652,9 +662,11 @@ class DetailViewModel: ObservableObject {
             playUrl = nil
             isPlaying = false
             errorMessage = SourceError.invalidPlayableURL(episodeURL).localizedDescription
+            isResolvingPlaybackURL = false
             return
         }
 
+        let keepCurrentPlayerMounted = isPlaying && playUrl != nil
         playableResolveTask?.cancel()
         playableResolveTask = nil
         let token = UUID()
@@ -666,13 +678,17 @@ class DetailViewModel: ObservableObject {
         guard !isDirectPlayableURL(normalized, for: source) else {
             playUrl = selectedPlayableURL(fallback: normalized)
             isPlaying = playUrl != nil
+            isResolvingPlaybackURL = false
             return
         }
 
         // 非直链地址可能是 /play/、/share/ 等 HTML 页面，绝不能先交给
-        // KSPlayer；否则会出现先创建错误播放器、随后重复创建真实播放器。
-        playUrl = nil
-        isPlaying = false
+        // KSPlayer；切集时保留已暂停的播放器视图，直到新地址解析完成后原位替换。
+        isResolvingPlaybackURL = true
+        if !keepCurrentPlayerMounted {
+            playUrl = nil
+            isPlaying = false
+        }
         playableResolveTask = Task { [weak self, source, normalized, token, requestSourceKey, requestFlag, requestEpisodeIndex] in
             guard let self else { return }
             let resolved: String
@@ -687,6 +703,7 @@ class DetailViewModel: ObservableObject {
                       self.selectedEpisodeIndex == requestEpisodeIndex else { return }
                 self.playUrl = nil
                 self.isPlaying = false
+                self.isResolvingPlaybackURL = false
                 self.errorMessage = error.localizedDescription
                 self.shouldRetryAfterNetworkRecovery = error.isNetworkConnectionError
                 return
@@ -702,12 +719,14 @@ class DetailViewModel: ObservableObject {
             guard let validURL = SourceService.validPlayableURL(finalURL) else {
                 self.playUrl = nil
                 self.isPlaying = false
+                self.isResolvingPlaybackURL = false
                 self.errorMessage = SourceError.invalidPlayableURL(finalURL).localizedDescription
                 return
             }
             self.updateQualityOptions(for: validURL, resetSelection: true)
             self.playUrl = validURL
             self.isPlaying = true
+            self.isResolvingPlaybackURL = false
             self.errorMessage = nil
         }
     }

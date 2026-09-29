@@ -116,6 +116,7 @@ struct PlayerView: View {
     let urlString: String
     var startPosition: Double = 0
     var playbackSessionToken: UUID? = nil
+    var isResolvingPlayback = false
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
@@ -171,6 +172,7 @@ struct PlayerView: View {
                 urlString: urlString,
                 startPosition: startPosition,
                 playbackSessionToken: playbackSessionToken,
+                isResolvingPlayback: isResolvingPlayback,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
                 onBack: onBack,

@@ -42,6 +42,13 @@ class HomeViewModel: ObservableObject {
     /// 瓜子首屏无内容时临时用西瓜展示；配置中的首选源仍保留为瓜子，刷新可重试。
     private var fallbackPreferredSourceKey: String?
     private let scrollPositionStoragePrefix = "congcong.home.scroll-position."
+    /// 仅用户点击标签后才置为 true；渐进加载和冷启动补选不能阻止最终首项收敛。
+    private var hasUserSelectedSort = false
+    /// 当前 ViewModel 的首次完整分类结果是否已经落地。
+    ///
+    /// 渐进回调可以先选中临时首项，但应用冷启动的最终结果必须只收敛一次；
+    /// 后续从详情、下载等页面返回时不能因为生命周期回调再次改动用户所在分类。
+    private var didCompleteInitialSortLoad = false
     
     init() {
         setupNetworkRestoredAutoRetry()
@@ -101,11 +108,38 @@ class HomeViewModel: ObservableObject {
             lastLoadFailedDueToNetwork = false
 
             let effectiveSorts = self.sorts
-            if selectedSort == nil || !effectiveSorts.contains(where: { $0.id == selectedSort?.id }) {
-                // 每次新建首页模型（包括冷启动）从当前源排序后的第一项开始；
-                // 同一次运行中已有的 selectedSort 则保留，便于从下载/收藏返回时恢复位置。
+            let selectedIsAvailable = selectedSort.map { selected in
+                effectiveSorts.contains { $0.id == selected.id }
+            } ?? false
+            let isInitialSortLoad = !didCompleteInitialSortLoad
+            if isInitialSortLoad && !hasUserSelectedSort {
+                // 冷启动必须以最终排序后的第一项为准，不能停留在渐进阶段的临时首项。
+                if let firstSort = effectiveSorts.first, selectedSort?.id != firstSort.id {
+                    selectedSort = firstSort
+                    categoryVideos = []
+                    currentPage = 1
+                    hasMore = true
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        await self.loadCategoryVideos(page: 1, sort: firstSort)
+                    }
+                } else if selectedSort == nil {
+                    selectedSort = effectiveSorts.first
+                }
+            } else if !selectedIsAvailable {
+                // 用户选择的标签在新源中不存在时，才回退到新源最终首项。
                 selectedSort = effectiveSorts.first
+                categoryVideos = []
+                currentPage = 1
+                hasMore = true
+                if let firstSort = selectedSort {
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        await self.loadCategoryVideos(page: 1, sort: firstSort)
+                    }
+                }
             }
+            didCompleteInitialSortLoad = true
             // 响应结构虽然合法，但完全没有可用分类或推荐时视为本次加载失败；
             // 这样上层会保留旧内容，下一次刷新仍可重试。
             if allSorts.isEmpty && sourceHomeVideos.isEmpty {
@@ -239,12 +273,13 @@ class HomeViewModel: ObservableObject {
         sorts = partialSorts
 
         // 首次加载时随首批栏目立即开始内容请求；后续排序更新不打断用户当前选择。
-        if selectedSort == nil || !selectedStillAvailable {
+        if !hasUserSelectedSort && (selectedSort == nil || !selectedStillAvailable) {
             selectedSort = partialSorts.first
         }
         guard categoryVideos.isEmpty,
               let sort = selectedSort,
               sort.id != "home",
+              partialSorts.contains(where: { $0.id == sort.id }),
               selectedSort?.id == sort.id else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -276,8 +311,13 @@ class HomeViewModel: ObservableObject {
     }
     
     /// 选择分类
-    func selectSort(_ sort: MovieSort.SortData) {
+    func selectSort(_ sort: MovieSort.SortData, userInitiated: Bool = true) {
         // 切分类时先重置分页状态，避免旧分类残留数据闪烁。
+        if userInitiated {
+            hasUserSelectedSort = true
+        } else if selectedSort?.id == sort.id, !categoryVideos.isEmpty {
+            return
+        }
         selectedSort = sort
         errorMessage = nil
         categoryVideos = []

@@ -5,11 +5,18 @@ import KSPlayer
 import AVKit
 import UIKit
 
+extension Notification.Name {
+    static let congcongPlaybackSessionWillChange = Notification.Name(
+        "CongcongPlaybackSessionWillChange"
+    )
+}
+
 /// SwiftUI adapter for KSPlayer's native iOS player view.
 struct KSPlayerVodPlayerView: View {
     let urlString: String
     var startPosition: Double = 0
     var playbackSessionToken: UUID? = nil
+    var isResolvingPlayback = false
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     /// Called when KSPlayer's native back button is pressed.
@@ -37,6 +44,7 @@ struct KSPlayerVodPlayerView: View {
                 url: url,
                 startPosition: max(0, startPosition),
                 playbackSessionToken: playbackSessionToken,
+                isResolvingPlayback: isResolvingPlayback,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
                 onBack: onBack,
@@ -107,6 +115,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private let deviceBatteryIconView = UIImageView()
     private let deviceBatteryLabel = UILabel()
     private var deviceStatusTimer: Timer?
+    private var playbackSessionObserver: NSObjectProtocol?
     var customControlsLayout: ((Bool) -> Void)?
     var customControlsRefresh: (() -> Void)?
     private var isSliderDragging = false
@@ -265,6 +274,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        installPlaybackSessionObserverIfNeeded()
         if window == nil {
             deviceStatusTimer?.invalidate()
             deviceStatusTimer = nil
@@ -276,6 +286,26 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     deinit {
         deviceStatusTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
+        if let playbackSessionObserver {
+            NotificationCenter.default.removeObserver(playbackSessionObserver)
+        }
+    }
+
+    private func installPlaybackSessionObserverIfNeeded() {
+        guard playbackSessionObserver == nil else { return }
+        playbackSessionObserver = NotificationCenter.default.addObserver(
+            forName: .congcongPlaybackSessionWillChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.pauseCurrentPlaybackForSessionChange()
+        }
+    }
+
+    private func pauseCurrentPlaybackForSessionChange() {
+        // Keep the current fullscreen frame mounted while the next URL resolves.
+        // replacePlayback stops and releases this layer before the new one starts.
+        playerLayer?.pause()
     }
 
     private func installDeviceStatusViewIfNeeded() {
@@ -604,6 +634,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                 progressHandler?(current, duration.isFinite && duration > 0 ? duration : 0)
             }
         }
+        layer?.pause()
         layer?.stop()
         playerLayer = nil
         pendingStartPosition = 0
@@ -617,10 +648,11 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // Never send the retired layer's final callback through the new session.
         playTimeDidChange = nil
 
-        // Keep the fullscreen host attached to this view while the new layer
-        // replaces the old one; clearing playerLayer first leaves a black frame.
-        super.set(url: url, options: options)
+        // Stop the old audio pipeline before KSPlayer constructs and auto-starts
+        // the replacement layer. Keep its view attached until set(url:) swaps it.
+        oldLayer?.pause()
         oldLayer?.stop()
+        super.set(url: url, options: options)
     }
 
     private func applyTransparentSurfaces() {
@@ -814,6 +846,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
     let url: URL
     let startPosition: Double
     let playbackSessionToken: UUID?
+    let isResolvingPlayback: Bool
     let onProgressChanged: ((Double, Double?) -> Void)?
     let onPlaybackEnded: (() -> Void)?
     let onBack: (() -> Void)?
@@ -866,8 +899,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             retainedView.customControlsLayout = { [weak coordinator = context.coordinator] isLandscape in
                 coordinator?.updateActionButtonsLayout(isLandscape: isLandscape)
             }
-            let sessionChanged = synchronizeCoordinator(context.coordinator, with: retainedView)
-            if sessionChanged || context.coordinator.url != url {
+            let shouldConfigure = synchronizeCoordinator(context.coordinator, with: retainedView)
+            if shouldConfigure {
                 configure(retainedView, coordinator: context.coordinator)
             }
             return retainedView
@@ -885,8 +918,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: CongcongKSVideoPlayerView, context: Context) {
-        let sessionChanged = synchronizeCoordinator(context.coordinator, with: view)
-        guard sessionChanged || context.coordinator.url != url else { return }
+        let shouldConfigure = synchronizeCoordinator(context.coordinator, with: view)
+        guard shouldConfigure else { return }
         configure(view, coordinator: context.coordinator)
     }
 
@@ -894,13 +927,16 @@ private struct KSPlayerUIView: UIViewRepresentable {
         _ coordinator: Coordinator,
         with view: CongcongKSVideoPlayerView
     ) -> Bool {
-        let sessionChanged = coordinator.playbackSessionToken != playbackSessionToken
-            || coordinator.url != url
-        if sessionChanged {
+        let tokenChanged = coordinator.playbackSessionToken != playbackSessionToken
+        let mediaChanged = coordinator.url != url
+        if tokenChanged {
             coordinator.playbackSessionToken = playbackSessionToken
         }
-        coordinator.onProgressChanged = onProgressChanged
-        coordinator.onPlaybackEnded = onPlaybackEnded
+        if isResolvingPlayback && (tokenChanged || mediaChanged) {
+            coordinator.pendingPlaybackReload = true
+        }
+        coordinator.onProgressChanged = isResolvingPlayback ? nil : onProgressChanged
+        coordinator.onPlaybackEnded = isResolvingPlayback ? nil : onPlaybackEnded
         coordinator.onBack = onBack
         coordinator.onPlayerAction = onPlayerAction
         coordinator.onPlayPrevious = onPlayPrevious
@@ -918,6 +954,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             canPlayNext: canPlayNext,
             canSelectEpisode: canSelectEpisode
         )
+        coordinator.setPlaybackResolving(isResolvingPlayback)
         let canPlayPrevious = self.canPlayPrevious
         let canPlayNext = self.canPlayNext
         let canSelectEpisode = self.canSelectEpisode
@@ -934,7 +971,12 @@ private struct KSPlayerUIView: UIViewRepresentable {
         view.customControlsLayout = { [weak coordinator] isLandscape in
             coordinator?.updateActionButtonsLayout(isLandscape: isLandscape)
         }
-        return sessionChanged
+        let shouldConfigure = !isResolvingPlayback
+            && (tokenChanged || mediaChanged || coordinator.pendingPlaybackReload)
+        if shouldConfigure {
+            coordinator.pendingPlaybackReload = false
+        }
+        return shouldConfigure
     }
 
     static func dismantleUIView(_ view: CongcongKSVideoPlayerView, coordinator: Coordinator) {
@@ -1023,6 +1065,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
     final class Coordinator: NSObject, PlayerControllerDelegate {
         var url: URL?
         var playbackSessionToken: UUID?
+        var pendingPlaybackReload = false
         var onProgressChanged: ((Double, Double?) -> Void)?
         var onPlaybackEnded: (() -> Void)?
         var onBack: (() -> Void)?
@@ -1250,6 +1293,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 }
             }
             toolbar.spacing = 6
+            toolbar.playButton.isEnabled = !isResolvingPlayback
             updateActionButtons(
                 canPlayPrevious: canPlayPrevious,
                 canPlayNext: canPlayNext,
@@ -1297,6 +1341,12 @@ private struct KSPlayerUIView: UIViewRepresentable {
         }
 
         private var controlsVisible = true
+        private var isResolvingPlayback = false
+
+        func setPlaybackResolving(_ isResolving: Bool) {
+            isResolvingPlayback = isResolving
+            playerView?.toolBar.playButton.isEnabled = !isResolving
+        }
 
         private func applyControlVisibility() {
             let alpha: CGFloat = controlsVisible ? 1 : 0

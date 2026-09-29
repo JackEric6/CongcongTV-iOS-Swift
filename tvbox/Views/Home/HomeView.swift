@@ -36,13 +36,10 @@ struct HomeView: View {
         }
         .task {
             await viewModel.loadSorts()
-            guard viewModel.categoryVideos.isEmpty else { return }
-            if let selected = viewModel.selectedSort,
-               viewModel.sorts.contains(where: { $0.id == selected.id }) {
-                viewModel.selectSort(selected)
-            } else if let first = viewModel.sorts.first {
-                viewModel.selectSort(first)
-            }
+            guard viewModel.categoryVideos.isEmpty,
+                  let selected = viewModel.selectedSort else { return }
+            // 只重试模型已经决定的分类，不在页面生命周期回调中重新选择标签。
+            viewModel.selectSort(selected, userInitiated: false)
         }
         .onAppear {
             viewModel.handleHomeAppearance()
@@ -53,13 +50,9 @@ struct HomeView: View {
             if loaded && viewModel.sorts.isEmpty && viewModel.homeVideos.isEmpty {
                 Task {
                     await viewModel.loadSorts()
-                    guard viewModel.categoryVideos.isEmpty else { return }
-                    if let selected = viewModel.selectedSort,
-                       viewModel.sorts.contains(where: { $0.id == selected.id }) {
-                        viewModel.selectSort(selected)
-                    } else if let first = viewModel.sorts.first {
-                        viewModel.selectSort(first)
-                    }
+                    guard viewModel.categoryVideos.isEmpty,
+                          let selected = viewModel.selectedSort else { return }
+                    viewModel.selectSort(selected, userInitiated: false)
                 }
             }
         }
