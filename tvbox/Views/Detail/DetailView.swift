@@ -644,7 +644,10 @@ struct DetailView: View {
         let sourceHeaders = apiConfig.getSource(key: video.sourceKey)?.headers ?? [:]
         let videoID = video.id
         let currentIndex = viewModel.selectedEpisodeIndex
-        let currentURL = episodeIndex == currentIndex ? viewModel.playUrl : nil
+        // 瓜子播放地址带有短时令牌；下载时必须从虚拟 PlayRequest
+        // 重新换取地址，不能复用播放器已经打开过的旧 CDN URL。
+        let isGuazi = sourceKey.caseInsensitiveCompare("guazi") == .orderedSame
+        let currentURL = !isGuazi && episodeIndex == currentIndex ? viewModel.playUrl : nil
 
         Task { @MainActor in
             let rawURL: String?
@@ -1043,7 +1046,8 @@ struct DetailView: View {
     private func beginPlaybackSession() {
         NotificationCenter.default.post(
             name: .congcongPlaybackSessionWillChange,
-            object: nil
+            object: nil,
+            userInfo: ["sessionToken": playbackSessionToken]
         )
         playbackSessionToken = UUID()
         lastPersistedProgress = 0

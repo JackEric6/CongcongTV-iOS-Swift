@@ -107,6 +107,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     /// 因此在 readyToPlay 后由宿主显式 seek 一次。
     fileprivate var pendingStartPosition: TimeInterval = 0
     fileprivate var didApplyStartPosition = false
+    /// SwiftUI 可能在 KSPlayer 全屏转场期间重新配置同一个 UIView。
+    /// 将媒体身份保存在原生视图上，避免把重挂载误判为新会话并重复 set(url:)。
+    fileprivate var configuredPlaybackURL: URL?
+    fileprivate var configuredPlaybackSessionToken: UUID?
     // Keep the selected rate independent from KSPlayer's transient menu/player
     // rebuilds. Applying a rate must never recreate the current media item.
     fileprivate var desiredPlaybackRate: Float = 1.0
@@ -297,8 +301,13 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
             forName: .congcongPlaybackSessionWillChange,
             object: nil,
             queue: nil
-        ) { [weak self] _ in
-            self?.pauseCurrentPlaybackForSessionChange()
+        ) { [weak self] notification in
+            guard let self,
+                  let token = notification.userInfo?["sessionToken"] as? UUID,
+                  self.configuredPlaybackSessionToken == token else {
+                return
+            }
+            self.pauseCurrentPlaybackForSessionChange()
         }
     }
 
@@ -639,6 +648,8 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         playerLayer = nil
         pendingStartPosition = 0
         didApplyStartPosition = false
+        configuredPlaybackURL = nil
+        configuredPlaybackSessionToken = nil
     }
 
     func replacePlayback(url: URL, options: KSOptions) {
@@ -994,8 +1005,18 @@ private struct KSPlayerUIView: UIViewRepresentable {
     private func configure(_ view: CongcongKSVideoPlayerView, coordinator: Coordinator) {
         coordinator.url = url
         coordinator.playbackSessionToken = playbackSessionToken
-        view.pendingStartPosition = max(0, startPosition)
-        view.didApplyStartPosition = false
+        let needsPlaybackReplacement = view.playerLayer == nil
+            || view.configuredPlaybackURL != url
+            || view.configuredPlaybackSessionToken != playbackSessionToken
+
+        // 全屏进出只是同一个播放器 UIView 的重挂载，不能重置进度或重新
+        // 安装媒体。否则 KSPlayer 会先从 0 开始，再执行一次恢复 seek。
+        if needsPlaybackReplacement {
+            view.pendingStartPosition = max(0, startPosition)
+            view.didApplyStartPosition = false
+            view.configuredPlaybackURL = url
+            view.configuredPlaybackSessionToken = playbackSessionToken
+        }
         // KSPlayer's AV player configures the audio session too, but doing it here
         // keeps background audio available across view reattachment.
         KSOptions.setAudioSession()
@@ -1017,7 +1038,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // 本应用只提供点播，不启用画中画；尤其不能让播放器在内联状态下
         // 因切后台或系统事件自动进入 PiP。
         options.canStartPictureInPictureAutomaticallyFromInline = false
-        view.replacePlayback(url: url, options: options)
+        if needsPlaybackReplacement {
+            view.replacePlayback(url: url, options: options)
+        }
         view.backgroundColor = .clear
         view.isOpaque = false
         view.contentOverlayView.backgroundColor = .clear

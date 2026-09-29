@@ -115,15 +115,23 @@ class DetailViewModel: ObservableObject {
         preferredPlaybackState: VodPlaybackState? = nil,
         autoplay: Bool = false
     ) async {
-        let isReloadingSamePlayback = autoplay
-            && preferredPlaybackState != nil
+        // SwiftUI's task modifier runs again when a detail page reappears.
+        // If this ViewModel still owns a valid playback session, keep the
+        // parsed detail and playable URL. Re-fetching here resets resume state
+        // and can replace the same CDN URL while the native player is being
+        // reattached after navigation or fullscreen dismissal.
+        let canReuseExistingPlayback = autoplay
             && lastVideo?.id == video.id
             && lastVideo?.sourceKey == video.sourceKey
+            && vodInfo != nil
             && isPlaying
             && playUrl != nil
         lastVideo = video
         shouldAutoplayAfterNetworkRecovery = autoplay
         lastPreferredPlaybackState = preferredPlaybackState
+        if canReuseExistingPlayback {
+            return
+        }
         let sourceKey = video.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
         // 海报携带了 sourceKey 时必须使用对应源，不能静默回退到首页源。
         let source = resolveSource(for: sourceKey)
@@ -152,11 +160,9 @@ class DetailViewModel: ObservableObject {
         errorMessage = nil
         shouldRetryAfterNetworkRecovery = false
         vodInfo = nil
-        if !isReloadingSamePlayback {
-            playUrl = nil
-            isPlaying = false
-            isResolvingPlaybackURL = false
-        }
+        playUrl = nil
+        isPlaying = false
+        isResolvingPlaybackURL = false
         selectedFlag = ""
         selectedEpisodeIndex = 0
         resetQualityState()

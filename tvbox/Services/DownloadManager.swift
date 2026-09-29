@@ -570,11 +570,22 @@ final class DownloadManager: NSObject, ObservableObject {
 
     private func downloadPlainHLS(identifier: String, item: DownloadItem, url: URL) async throws {
         let headers = Self.normalizedHeaders(item.headers)
-        var playlistURL = url
-        var playlist = try await Self.fetchHLSPlaylist(url: playlistURL, headers: headers)
-        if let variantURL = Self.highestVariantURL(baseURL: playlistURL, playlist: playlist) {
-            playlistURL = variantURL
-            playlist = try await Self.fetchHLSPlaylist(url: playlistURL, headers: headers)
+        let initialPlaylist = try await Self.fetchHLSPlaylist(url: url, headers: headers)
+        // URLSession follows redirects; relative URIs must be resolved against
+        // the final response URL, not the pre-redirect request URL.
+        var playlistURL = initialPlaylist.finalURL
+        var playlist = initialPlaylist.playlist
+        // Some Guazi CDN responses contain more than one level of variant
+        // playlist. Resolve the chain before treating the leaf playlist as a
+        // segment list; otherwise a nested #EXTM3U is mistaken for a bad
+        // segment response later in the download.
+        for _ in 0..<3 {
+            guard let variantURL = Self.highestVariantURL(baseURL: playlistURL, playlist: playlist) else {
+                break
+            }
+            let variantPlaylist = try await Self.fetchHLSPlaylist(url: variantURL, headers: headers)
+            playlistURL = variantPlaylist.finalURL
+            playlist = variantPlaylist.playlist
         }
         let segments = try Self.parsePlainTSPlaylist(baseURL: playlistURL, playlist: playlist)
         guard !segments.isEmpty else { throw HLSDownloadError.invalid("播放列表中没有可下载分片") }
@@ -697,7 +708,10 @@ final class DownloadManager: NSObject, ObservableObject {
         progressSamples.removeValue(forKey: progressKey)
     }
 
-    private static func fetchHLSPlaylist(url: URL, headers: [String: String]) async throws -> String {
+    private static func fetchHLSPlaylist(
+        url: URL,
+        headers: [String: String]
+    ) async throws -> (playlist: String, finalURL: URL) {
         var request = URLRequest(url: url)
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
         request.timeoutInterval = 30
@@ -712,7 +726,7 @@ final class DownloadManager: NSObject, ObservableObject {
               playlist.localizedCaseInsensitiveContains("#EXTM3U") else {
             throw HLSDownloadError.unsupported("服务器返回的不是有效 HLS 播放列表")
         }
-        return playlist
+        return (playlist, http.url ?? url)
     }
 
     private static func highestVariantURL(baseURL: URL, playlist: String) -> URL? {
@@ -795,7 +809,15 @@ final class DownloadManager: NSObject, ObservableObject {
                 guard (200...299).contains(http.statusCode) else {
                     throw HLSDownloadError.http(http.statusCode)
                 }
-                guard !data.isEmpty, !Self.looksLikeTextError(data) else {
+                guard !data.isEmpty else {
+                    throw HLSDownloadError.invalid("分片返回了错误页")
+                }
+                if Self.looksLikeHLSPlaylist(data) {
+                    // A segment URL returning another playlist is not a TS
+                    // payload. Hand it to the existing AVAsset fallback.
+                    throw HLSDownloadError.unsupported("分片返回了 HLS 播放列表，交由系统转换")
+                }
+                guard !Self.looksLikeTextError(data) else {
                     throw HLSDownloadError.invalid("分片返回了错误页")
                 }
                 try data.write(to: destination, options: .atomic)
@@ -816,8 +838,30 @@ final class DownloadManager: NSObject, ObservableObject {
         let prefix = String(data: data.prefix(512), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
-        return prefix.hasPrefix("#extm3u") || prefix.hasPrefix("<html")
-            || prefix.hasPrefix("<!doctype") || prefix.hasPrefix("{\"error")
+        guard !prefix.isEmpty else { return false }
+
+        // #EXTM3U is a valid HLS playlist marker, not an error page. Keep it
+        // out of this predicate because Guazi may expose a nested playlist
+        // from a segment URL. Binary MPEG-TS/fMP4 payloads normally fail UTF-8
+        // decoding and are therefore accepted without any text heuristics.
+        if prefix.hasPrefix("{") || prefix.hasPrefix("[") {
+            // A media segment is binary; a JSON response is an error or an
+            // access-control response and must never be persisted as .ts.
+            return true
+        }
+        let htmlMarkers = [
+            "<html", "<!doctype", "<head", "<body", "<script",
+            "access denied", "request forbidden", "forbidden", "bad gateway",
+            "error 403", "error 404", "error 502"
+        ]
+        return htmlMarkers.contains(where: prefix.contains)
+    }
+
+    private static func looksLikeHLSPlaylist(_ data: Data) -> Bool {
+        guard let text = String(data: data.prefix(512), encoding: .utf8) else { return false }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("#extm3u")
     }
 
     nonisolated private static func looksLikeHLS(response: URLResponse?, location: URL) -> Bool {
