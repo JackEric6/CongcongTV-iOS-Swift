@@ -9,6 +9,7 @@ import UIKit
 struct KSPlayerVodPlayerView: View {
     let urlString: String
     var startPosition: Double = 0
+    var playbackSessionToken: UUID? = nil
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     /// Called when KSPlayer's native back button is pressed.
@@ -105,6 +106,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private let deviceBatteryIconView = UIImageView()
     private let deviceBatteryLabel = UILabel()
     private var deviceStatusTimer: Timer?
+    private var playbackSessionObserver: NSObjectProtocol?
     var customControlsLayout: ((Bool) -> Void)?
     private var isSliderDragging = false
     private var sliderSeekCommitted = false
@@ -240,6 +242,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         currentTime: TimeInterval,
         totalTime: TimeInterval
     ) {
+        guard playerLayer === layer else { return }
         // IOSVideoPlayerView normally guards this internally, but its private
         // drag flag does not cover every KSSlider tracking path. Keep the
         // user's preview thumb from being overwritten by playback callbacks.
@@ -261,6 +264,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        installPlaybackSessionObserverIfNeeded()
         if window == nil {
             deviceStatusTimer?.invalidate()
             deviceStatusTimer = nil
@@ -272,6 +276,20 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     deinit {
         deviceStatusTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
+        if let playbackSessionObserver {
+            NotificationCenter.default.removeObserver(playbackSessionObserver)
+        }
+    }
+
+    private func installPlaybackSessionObserverIfNeeded() {
+        guard playbackSessionObserver == nil else { return }
+        playbackSessionObserver = NotificationCenter.default.addObserver(
+            forName: .congcongPlaybackSessionWillChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.stopCurrentPlayback(reportFinalProgress: false)
+        }
     }
 
     private func installDeviceStatusViewIfNeeded() {
@@ -389,6 +407,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     }
 
     override func player(layer: KSPlayerLayer, state: KSPlayerState) {
+        guard playerLayer === layer else { return }
         super.player(layer: layer, state: state)
         guard state == .readyToPlay else { return }
 
@@ -412,6 +431,13 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // KSPlayer 2.3.4 每次 readyToPlay 都会重建一次默认倍速菜单，默认只到 2x。
         // 在它完成初始化后覆盖菜单，避免切集或重连时选项又被恢复。
         rebuildPlaybackRateMenu()
+    }
+
+    override func player(layer: KSPlayerLayer, finish error: Error?) {
+        // An old layer can finish asynchronously while a new episode is being
+        // installed. Ignore it so it cannot advance the new episode again.
+        guard playerLayer === layer else { return }
+        super.player(layer: layer, finish: error)
     }
 
     private func normalizedPlaybackRate(_ raw: Float) -> Float {
@@ -571,20 +597,23 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
     /// Stop and release the current media item before installing another URL.
     /// Pausing alone leaves the old AVPlayerItem and audio pipeline alive.
-    func stopCurrentPlayback() {
+    func stopCurrentPlayback(reportFinalProgress: Bool = true) {
+        let layer = playerLayer
+        let progressHandler = playTimeDidChange
+        playTimeDidChange = nil
+        layer?.delegate = nil
+
         // SwiftUI dismantleUIView 可能先于 DetailView.onDisappear 触发；
         // 先把播放器最后的有效位置回传，避免页面退出时丢掉尾部进度。
-        if let player = playerLayer?.player {
+        if reportFinalProgress, let player = layer?.player {
             let current = player.currentPlaybackTime
             let duration = player.duration
             if current.isFinite, current > 0 {
-                playTimeDidChange?(current, duration.isFinite && duration > 0 ? duration : 0)
+                progressHandler?(current, duration.isFinite && duration > 0 ? duration : 0)
             }
         }
-        playerLayer?.delegate = nil
-        playerLayer?.stop()
+        layer?.stop()
         playerLayer = nil
-        playTimeDidChange = nil
         pendingStartPosition = 0
         didApplyStartPosition = false
     }
@@ -828,6 +857,13 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // the AVPlayer session is not torn down and recreated.
         if let retainedView = context.coordinator.retainedPlayerView {
             context.coordinator.configure(retainedView)
+            retainedView.customControlsLayout = { [weak coordinator = context.coordinator] isLandscape in
+                coordinator?.updateActionButtonsLayout(isLandscape: isLandscape)
+            }
+            let sessionChanged = synchronizeCoordinator(context.coordinator, with: retainedView)
+            if sessionChanged || context.coordinator.url != url {
+                configure(retainedView, coordinator: context.coordinator)
+            }
             return retainedView
         }
 
@@ -837,31 +873,52 @@ private struct KSPlayerUIView: UIViewRepresentable {
         view.customControlsLayout = { [weak coordinator = context.coordinator] isLandscape in
             coordinator?.updateActionButtonsLayout(isLandscape: isLandscape)
         }
+        _ = synchronizeCoordinator(context.coordinator, with: view)
         configure(view, coordinator: context.coordinator)
         return view
     }
 
     func updateUIView(_ view: CongcongKSVideoPlayerView, context: Context) {
-        context.coordinator.onProgressChanged = onProgressChanged
-        context.coordinator.onPlaybackEnded = onPlaybackEnded
-        context.coordinator.onBack = onBack
-        context.coordinator.onPlayerAction = onPlayerAction
-        context.coordinator.onPlayPrevious = onPlayPrevious
-        context.coordinator.onPlayNext = onPlayNext
-        context.coordinator.onSelectEpisode = onSelectEpisode
-        context.coordinator.onMarkIntro = onMarkIntro
-        context.coordinator.onMarkOutro = onMarkOutro
-        context.coordinator.onResetIntro = onResetIntro
-        context.coordinator.onResetOutro = onResetOutro
-        context.coordinator.updateMarkerLabels(intro: introLabel, outro: outroLabel)
-        context.coordinator.updateDanmakuMetadata(title: danmakuTitle, episode: danmakuEpisode)
-        context.coordinator.updateActionButtons(
+        let sessionChanged = synchronizeCoordinator(context.coordinator, with: view)
+        guard sessionChanged || context.coordinator.url != url else { return }
+        configure(view, coordinator: context.coordinator)
+    }
+
+    private func synchronizeCoordinator(
+        _ coordinator: Coordinator,
+        with view: CongcongKSVideoPlayerView
+    ) -> Bool {
+        let sessionChanged = coordinator.playbackSessionToken != playbackSessionToken
+        if sessionChanged {
+            // Stop and checkpoint the old session before replacing its callback
+            // closures, so its final progress is never recorded against the next episode.
+            view.stopCurrentPlayback()
+            coordinator.playbackSessionToken = playbackSessionToken
+        }
+        coordinator.onProgressChanged = onProgressChanged
+        coordinator.onPlaybackEnded = onPlaybackEnded
+        coordinator.onBack = onBack
+        coordinator.onPlayerAction = onPlayerAction
+        coordinator.onPlayPrevious = onPlayPrevious
+        coordinator.onPlayNext = onPlayNext
+        coordinator.onSelectEpisode = onSelectEpisode
+        coordinator.onMarkIntro = onMarkIntro
+        coordinator.onMarkOutro = onMarkOutro
+        coordinator.onResetIntro = onResetIntro
+        coordinator.onResetOutro = onResetOutro
+        coordinator.updateMarkerLabels(intro: introLabel, outro: outroLabel)
+        coordinator.updateDanmakuMetadata(title: danmakuTitle, episode: danmakuEpisode)
+        coordinator.installActionButtons(
+            on: view,
             canPlayPrevious: canPlayPrevious,
             canPlayNext: canPlayNext,
             canSelectEpisode: canSelectEpisode
         )
-        guard context.coordinator.url != url else { return }
-        configure(view, coordinator: context.coordinator)
+        coordinator.updateActionButtonsLayout(isLandscape: view.landscapeButton.isSelected)
+        view.customControlsLayout = { [weak coordinator] isLandscape in
+            coordinator?.updateActionButtonsLayout(isLandscape: isLandscape)
+        }
+        return sessionChanged
     }
 
     static func dismantleUIView(_ view: CongcongKSVideoPlayerView, coordinator: Coordinator) {
@@ -881,6 +938,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             view.stopCurrentPlayback()
         }
         coordinator.url = url
+        coordinator.playbackSessionToken = playbackSessionToken
         view.pendingStartPosition = max(0, startPosition)
         view.didApplyStartPosition = false
         // KSPlayer's AV player configures the audio session too, but doing it here
@@ -951,6 +1009,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
     final class Coordinator: NSObject, PlayerControllerDelegate {
         var url: URL?
+        var playbackSessionToken: UUID?
         var onProgressChanged: ((Double, Double?) -> Void)?
         var onPlaybackEnded: (() -> Void)?
         var onBack: (() -> Void)?
@@ -992,7 +1051,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private var canSelectEpisode = false
         private var isLandscape = false
         private var lastVolume: Float = 0.5
-        private var actionButtonsInstalled = false
+        private var verticalSeekConstraints: [NSLayoutConstraint] = []
 
         init(
             onProgressChanged: ((Double, Double?) -> Void)?,
@@ -1109,8 +1168,6 @@ private struct KSPlayerUIView: UIViewRepresentable {
             canPlayNext: Bool,
             canSelectEpisode: Bool
         ) {
-            guard !actionButtonsInstalled else { return }
-            actionButtonsInstalled = true
             playerView = view
             view.titleLabel.text = danmakuTitle
             view.titleLabel.textColor = .white
@@ -1132,14 +1189,18 @@ private struct KSPlayerUIView: UIViewRepresentable {
             verticalSeekStack.translatesAutoresizingMaskIntoConstraints = false
             verticalSeekStack.addArrangedSubview(verticalRewindButton)
             verticalSeekStack.addArrangedSubview(verticalForwardButton)
-            view.controllerView.addSubview(verticalSeekStack)
-            NSLayoutConstraint.activate([
-                verticalSeekStack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
-                verticalSeekStack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-                verticalSeekStack.widthAnchor.constraint(equalToConstant: 46),
-                verticalRewindButton.heightAnchor.constraint(equalToConstant: 42),
-                verticalForwardButton.heightAnchor.constraint(equalToConstant: 42)
-            ])
+            if verticalSeekStack.superview !== view.controllerView {
+                NSLayoutConstraint.deactivate(verticalSeekConstraints)
+                view.controllerView.addSubview(verticalSeekStack)
+                verticalSeekConstraints = [
+                    verticalSeekStack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
+                    verticalSeekStack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                    verticalSeekStack.widthAnchor.constraint(equalToConstant: 46),
+                    verticalRewindButton.heightAnchor.constraint(equalToConstant: 42),
+                    verticalForwardButton.heightAnchor.constraint(equalToConstant: 42)
+                ]
+                NSLayoutConstraint.activate(verticalSeekConstraints)
+            }
 
             self.canPlayPrevious = canPlayPrevious
             self.canPlayNext = canPlayNext
@@ -1159,14 +1220,21 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 outroButton,
                 view.landscapeButton
             ]
-            for arranged in toolbar.arrangedSubviews {
-                toolbar.removeArrangedSubview(arranged)
-                if !orderedViews.contains(where: { $0 === arranged }) {
-                    arranged.removeFromSuperview()
+            let currentToolbarViews = toolbar.arrangedSubviews
+            let needsToolbarSync = currentToolbarViews.count != orderedViews.count
+                || !zip(currentToolbarViews, orderedViews).allSatisfy { pair in
+                    pair.0 === pair.1
                 }
-            }
-            for arranged in orderedViews {
-                toolbar.addArrangedSubview(arranged)
+            if needsToolbarSync {
+                for arranged in toolbar.arrangedSubviews {
+                    toolbar.removeArrangedSubview(arranged)
+                    if !orderedViews.contains(where: { $0 === arranged }) {
+                        arranged.removeFromSuperview()
+                    }
+                }
+                for arranged in orderedViews {
+                    toolbar.addArrangedSubview(arranged)
+                }
             }
             toolbar.spacing = 6
             updateActionButtons(
@@ -1237,7 +1305,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             button.tintColor = .white
             button.accessibilityLabel = label
             button.translatesAutoresizingMaskIntoConstraints = false
-            button.widthAnchor.constraint(equalToConstant: 30).isActive = true
+            ensureWidthConstraint(button, constant: 30, relation: .equal)
             button.backgroundColor = .clear
             button.layer.backgroundColor = UIColor.clear.cgColor
             button.layer.shadowColor = UIColor.clear.cgColor
@@ -1246,6 +1314,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             button.layer.shadowOffset = .zero
             button.layer.cornerRadius = 0
             button.clipsToBounds = false
+            button.removeTarget(self, action: action, for: .primaryActionTriggered)
             button.addTarget(self, action: action, for: .primaryActionTriggered)
         }
 
@@ -1256,7 +1325,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             button.accessibilityLabel = label
             button.accessibilityHint = "轻点设置当前时间，长按清除标记"
             button.translatesAutoresizingMaskIntoConstraints = false
-            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 54).isActive = true
+            ensureWidthConstraint(button, constant: 54, relation: .greaterThanOrEqual)
             button.backgroundColor = .clear
             button.layer.backgroundColor = UIColor.clear.cgColor
             button.layer.shadowColor = UIColor.clear.cgColor
@@ -1265,10 +1334,32 @@ private struct KSPlayerUIView: UIViewRepresentable {
             button.layer.shadowOffset = .zero
             button.layer.cornerRadius = 0
             button.clipsToBounds = false
+            button.removeTarget(self, action: action, for: .primaryActionTriggered)
             button.addTarget(self, action: action, for: .primaryActionTriggered)
+            for gesture in button.gestureRecognizers ?? [] where gesture is UILongPressGestureRecognizer {
+                button.removeGestureRecognizer(gesture)
+            }
             let longPress = UILongPressGestureRecognizer(target: self, action: resetAction)
             longPress.minimumPressDuration = 0.65
             button.addGestureRecognizer(longPress)
+        }
+
+        private func ensureWidthConstraint(
+            _ button: UIButton,
+            constant: CGFloat,
+            relation: NSLayoutConstraint.Relation
+        ) {
+            let exists = button.constraints.contains {
+                ($0.firstItem as? UIView) === button
+                    && $0.firstAttribute == .width
+                    && $0.relation == relation
+                    && abs($0.constant - constant) < 0.01
+            }
+            guard !exists else { return }
+            let constraint = relation == .equal
+                ? button.widthAnchor.constraint(equalToConstant: constant)
+                : button.widthAnchor.constraint(greaterThanOrEqualToConstant: constant)
+            constraint.isActive = true
         }
 
         @objc private func previousPressed() {

@@ -115,6 +115,7 @@ final class SystemPlayerSessionController: ObservableObject {
 struct PlayerView: View {
     let urlString: String
     var startPosition: Double = 0
+    var playbackSessionToken: UUID? = nil
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
@@ -169,6 +170,7 @@ struct PlayerView: View {
             KSPlayerVodPlayerView(
                 urlString: urlString,
                 startPosition: startPosition,
+                playbackSessionToken: playbackSessionToken,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
                 onBack: onBack,

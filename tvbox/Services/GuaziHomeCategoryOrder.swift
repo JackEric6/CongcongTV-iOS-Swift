@@ -20,11 +20,14 @@ enum GuaziHomeCategoryOrder {
         "guazi-playlist:4:24066",
         "guazi-playlist:4:24057",
         "guazi-playlist:4:24067",
-        "guazi-playlist:16:embedded-0",
         "guazi-playlist:16:38579",
         "guazi-playlist:3:16560",
         "guazi-playlist:3:8",
         "guazi-playlist:6:6663"
+    ]
+
+    private static let hiddenPlaylistIDs: Set<String> = [
+        "guazi-playlist:16:embedded-0"
     ]
 
     static func sort(_ source: [MovieSort.SortData]) -> [MovieSort.SortData] {
@@ -35,6 +38,7 @@ enum GuaziHomeCategoryOrder {
         var seenPlaylistIDs = Set<String>()
         let playlists = source.filter {
             $0.id.hasPrefix(GuaziPlaylistCatalog.playlistIDPrefix)
+                && !hiddenPlaylistIDs.contains($0.id)
                 && seenPlaylistIDs.insert($0.id).inserted
         }
         var playlistsByID = Dictionary(

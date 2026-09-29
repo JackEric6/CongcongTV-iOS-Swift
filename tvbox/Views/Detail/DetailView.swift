@@ -6,6 +6,12 @@ import AppKit
 import UIKit
 #endif
 
+extension Notification.Name {
+    static let congcongPlaybackSessionWillChange = Notification.Name(
+        "CongcongPlaybackSessionWillChange"
+    )
+}
+
 /// 详情页 - 对应 Android 版 DetailActivity
 struct DetailView: View {
     let video: Movie.Video
@@ -188,9 +194,13 @@ struct DetailView: View {
                     onProgressChanged: { [playbackSessionToken] seconds, _ in
                         handlePlaybackProgress(seconds, sessionToken: playbackSessionToken)
                     },
-                    onPlaybackEnded: playNextEpisodeIfNeeded,
+                    onPlaybackEnded: { [playbackSessionToken] in
+                        playNextEpisodeIfNeeded(sessionToken: playbackSessionToken)
+                    },
                     canPlayNext: canPlayNextEpisode,
-                    onPlayNext: playNextEpisodeIfNeeded,
+                    onPlayNext: { [playbackSessionToken] in
+                        playNextEpisodeIfNeeded(sessionToken: playbackSessionToken)
+                    },
                     danmakuTitle: viewModel.vodInfo?.name ?? video.name,
                     danmakuEpisode: currentDanmakuEpisode,
                     systemController: sharedSystemController,
@@ -238,16 +248,23 @@ struct DetailView: View {
                 PlayerView(
                     urlString: url,
                     startPosition: effectiveStartPosition,
+                    playbackSessionToken: playbackSessionToken,
                     onProgressChanged: { [playbackSessionToken] seconds, _ in
                         handlePlaybackProgress(seconds, sessionToken: playbackSessionToken)
                     },
-                    onPlaybackEnded: playNextEpisodeIfNeeded,
+                    onPlaybackEnded: { [playbackSessionToken] in
+                        playNextEpisodeIfNeeded(sessionToken: playbackSessionToken)
+                    },
                     onToggleFullScreen: inlineFullScreenHandler,
                     onBack: { dismiss() },
                     canPlayPrevious: viewModel.selectedEpisodeIndex > 0,
-                    onPlayPrevious: playPreviousEpisode,
+                    onPlayPrevious: { [playbackSessionToken] in
+                        playPreviousEpisode(sessionToken: playbackSessionToken)
+                    },
                     canPlayNext: canPlayNextEpisode,
-                    onPlayNext: playNextEpisodeIfNeeded,
+                    onPlayNext: { [playbackSessionToken] in
+                        playNextEpisodeIfNeeded(sessionToken: playbackSessionToken)
+                    },
                     canSelectEpisode: viewModel.currentEpisodes.count > 1,
                     onSelectEpisode: handlePlayerEpisodeSelection,
                     onMarkIntro: markIntro,
@@ -1015,6 +1032,13 @@ struct DetailView: View {
 
     /// 开始新的线路/剧集播放会话，令旧播放器回调失效，并重新计算本集的持久化阈值。
     private func beginPlaybackSession() {
+        // The native KSPlayer view can be hosted by its own full-screen
+        // controller while SwiftUI temporarily removes the inline representable.
+        // Stop that exact session before changing episode/URL state.
+        NotificationCenter.default.post(
+            name: .congcongPlaybackSessionWillChange,
+            object: nil
+        )
         playbackSessionToken = UUID()
         lastPersistedProgress = 0
         didSkipOutroForEpisode = false
@@ -1058,27 +1082,31 @@ struct DetailView: View {
         refreshCollectState()
     }
 
-    private func playNextEpisodeIfNeeded() {
+    private func playNextEpisodeIfNeeded(sessionToken: UUID? = nil) {
+        guard sessionToken == nil || sessionToken == playbackSessionToken else { return }
         flushPlaybackHistoryBeforeSwitch()
+        guard canPlayNextEpisode else { return }
+        beginPlaybackSession()
         var moved = false
         withAnimation {
             moved = viewModel.playNext()
         }
 
         if moved {
-            beginPlaybackSession()
             saveHistoryForCurrentEpisode()
         }
     }
 
-    private func playPreviousEpisode() {
+    private func playPreviousEpisode(sessionToken: UUID? = nil) {
+        guard sessionToken == nil || sessionToken == playbackSessionToken else { return }
         flushPlaybackHistoryBeforeSwitch()
+        guard viewModel.selectedEpisodeIndex > 0 else { return }
+        beginPlaybackSession()
         var moved = false
         withAnimation {
             moved = viewModel.playPrevious()
         }
         if moved {
-            beginPlaybackSession()
             saveHistoryForCurrentEpisode()
         }
     }

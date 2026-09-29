@@ -27,7 +27,6 @@ struct VerifyGuaziMetadata {
             "guazi-playlist:4:24066",
             "guazi-playlist:4:24057",
             "guazi-playlist:4:24067",
-            "guazi-playlist:16:embedded-0",
             "guazi-playlist:16:38579",
             "guazi-playlist:3:16560",
             "guazi-playlist:3:8",
@@ -36,13 +35,16 @@ struct VerifyGuaziMetadata {
         let playlistNames = [
             "精选推荐", "综艺榜单", "TC抢先看（请勿相信视频内广告/网址/二维码）",
             "热播综艺", "电影榜单", "Netflix新片榜", "动漫榜一", "动漫榜二",
-            "动漫榜三", "动漫榜四", "内嵌精选", "精选榜", "综艺精选",
-            "综艺榜", "电影榜"
+            "动漫榜三", "动漫榜四", "精选榜", "综艺精选", "综艺榜", "电影榜"
         ]
         let unprioritizedIDs = ["guazi-playlist:9:extra-a", "guazi-playlist:9:extra-b"]
         let playlistInput = Array(zip(prioritizedIDs, playlistNames).map {
             MovieSort.SortData(id: $0.0, name: $0.1)
         }.reversed())
+        let hiddenPlaylist = MovieSort.SortData(
+            id: "guazi-playlist:16:embedded-0",
+            name: "热门短剧"
+        )
         let trailingPlaylists = unprioritizedIDs.map {
             MovieSort.SortData(id: $0, name: $0)
         }
@@ -51,12 +53,14 @@ struct VerifyGuaziMetadata {
         ]
         let orderingInput = trailingPlaylists
             + playlistInput
+            + [hiddenPlaylist]
             + duplicatePriority
             + Array(shuffledCategories.reversed())
         let orderedHomeItems = GuaziHomeCategoryOrder.sort(orderingInput)
         let expectedHomeIDs = prioritizedIDs + unprioritizedIDs
         guard Array(orderedHomeItems.prefix(expectedHomeIDs.count)).map(\.id) == expectedHomeIDs,
               orderedHomeItems.first(where: { $0.id == "guazi-playlist:3:19260" })?.name == "TC抢先看",
+              !orderedHomeItems.contains(where: { $0.id == hiddenPlaylist.id }),
               Array(orderedHomeItems.dropFirst(prioritizedIDs.count).prefix(unprioritizedIDs.count)).map(\.id) == unprioritizedIDs,
               Array(orderedHomeItems.suffix(expectedCategories.count)).map(\.name) == expectedCategories else {
             fatalError("瓜子首页片单优先级、顺序或固定分类顺序不正确：\(orderedHomeItems)")
