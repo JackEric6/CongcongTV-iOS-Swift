@@ -111,6 +111,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private var startPositionRetryCount = 0
     private let startPositionCoverView = UIView()
     private var startPositionCoverInstalled = false
+    fileprivate var hasStartedCurrentPlayback = false
     /// SwiftUI 可能在 KSPlayer 全屏转场期间重新配置同一个 UIView。
     /// 将媒体身份保存在原生视图上，避免把重挂载误判为新会话并重复 set(url:)。
     fileprivate var configuredPlaybackURL: URL?
@@ -280,6 +281,13 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         super.player(layer: layer, currentTime: currentTime, totalTime: totalTime)
     }
 
+    override func resetPlayer() {
+        super.resetPlayer()
+        // resetPlayer() restores KSPlayer's default replay button visibility;
+        // this app uses the toolbar button as the sole play/pause affordance.
+        replayButton.isHidden = true
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         installPlaybackSessionObserverIfNeeded()
@@ -438,6 +446,15 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     override func player(layer: KSPlayerLayer, state: KSPlayerState) {
         guard playerLayer === layer else { return }
         super.player(layer: layer, state: state)
+        // KSPlayer's centered replay button is redundant with the toolbar
+        // play button in this app. It is especially distracting while a new
+        // episode is preparing because the native paused callback briefly
+        // makes it visible before autoplay resumes.
+        replayButton.isHidden = true
+        if state == .playing || state == .error {
+            hasStartedCurrentPlayback = true
+            customControlsRefresh?()
+        }
         if state == .error {
             toolBar.playButton.isEnabled = true
             startPositionCoverView.isHidden = true
@@ -481,6 +498,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         pendingStartPosition = max(0, startPosition.isFinite ? startPosition : 0)
         didApplyStartPosition = false
         didStartInitialPlayback = false
+        hasStartedCurrentPlayback = false
         startPositionRetryCount = 0
         installStartPositionCoverIfNeeded()
         startPositionCoverView.isHidden = pendingStartPosition <= 0.5
@@ -1454,6 +1472,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
         func setPlaybackResolving(_ isResolving: Bool) {
             isResolvingPlayback = isResolving
             playerView?.toolBar.playButton.isEnabled = !isResolving
+            // A URL replacement can report paused before autoplay begins.
+            // Hide the transient play triangle until this item starts or errors.
+            applyControlVisibility()
         }
 
         private func applyControlVisibility() {
@@ -1462,6 +1483,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 self.verticalSeekStack.alpha = self.controlsVisible && !self.isLandscape ? 1 : 0
                 self.playerView?.routeButton.alpha = alpha
                 self.playerView?.routeButton.isHidden = !self.controlsVisible
+                self.playerView?.toolBar.playButton.alpha = self.controlsVisible
+                    && !self.isResolvingPlayback
+                    && self.playerView?.hasStartedCurrentPlayback == true ? 1 : 0
                 self.playerView?.toolBar.playbackRateButton.alpha = alpha
                 self.playerView?.toolBar.playbackRateButton.isHidden = !self.controlsVisible
                 self.introButton.alpha = alpha
