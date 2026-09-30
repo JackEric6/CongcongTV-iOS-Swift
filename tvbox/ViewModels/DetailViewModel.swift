@@ -70,6 +70,10 @@ class DetailViewModel: ObservableObject {
     /// KKT影视播放器页解析任务，避免切换剧集后旧地址回写。
     private var playableResolveTask: Task<Void, Never>?
     private var playableResolveToken = UUID()
+    /// 详情加载令牌，用于忽略已过期的渐进回调。
+    private var detailLoadToken = UUID()
+    /// 当前详情请求是否已用首批可播放数据建立过播放会话。
+    private var initializedDetailLoadToken: UUID?
     private var currentSource: SourceBean?
     /// 跨资源站元数据补全任务。播放源详情先落地，补全任务只允许填写空元数据字段。
     private var metadataEnrichmentTask: Task<Void, Never>?
@@ -134,6 +138,9 @@ class DetailViewModel: ObservableObject {
         if canReuseExistingPlayback {
             return
         }
+        let loadToken = UUID()
+        detailLoadToken = loadToken
+        initializedDetailLoadToken = nil
         episodeProgress = preferredPlaybackState?.episodeProgress ?? [:]
         if let preferredPlaybackState {
             episodeProgress[Self.playbackProgressKey(
@@ -175,114 +182,184 @@ class DetailViewModel: ObservableObject {
         selectedFlag = ""
         selectedEpisodeIndex = 0
         resetQualityState()
-        defer { isLoading = false }
 
         do {
-            guard let info = try await sourceService.getDetail(sourceBean: source, vodId: video.id) else {
+            guard let info = try await sourceService.getDetail(
+                sourceBean: source,
+                vodId: video.id,
+                preferredPlaybackFlag: preferredPlaybackState?.flag,
+                onGuaziDetailProgress: { [weak self] partialInfo in
+                    self?.applyDetailSnapshot(
+                        partialInfo,
+                        video: video,
+                        source: source,
+                        preferredPlaybackState: preferredPlaybackState,
+                        autoplay: autoplay,
+                        loadToken: loadToken
+                    )
+                }
+            ) else {
                 throw SourceError.invalidResponse("详情响应为空")
             }
             try Task.checkCancellation()
-            let displayInfo = Self.mergeMissingMetadata(info, from: video)
-            self.vodInfo = displayInfo
-
-            // Some CMS responses advertise a play flag or episode index
-            // that is not present in playUrlMap. Keep the detail page
-            // usable, but never let that malformed state reach the
-            // player/episode views.
-            let availableFlags = displayInfo.playFlags.filter {
-                !displayInfo.playUrlMap[$0, default: []].isEmpty
-            }
-            let preferredFlag = displayInfo.playFlag.isEmpty
-                ? displayInfo.playFlags.first
-                : displayInfo.playFlag
-            let safeFlag = preferredFlag.flatMap { availableFlags.contains($0) ? $0 : nil }
-                ?? availableFlags.first
-                ?? displayInfo.playFlags.first
-                ?? ""
-            self.selectedFlag = safeFlag
-            self.vodInfo?.playFlag = safeFlag
-
-            let safeEpisodes = displayInfo.playUrlMap[safeFlag] ?? []
-            let safeIndex = safeEpisodes.isEmpty
-                ? 0
-                : min(max(displayInfo.playIndex, 0), safeEpisodes.count - 1)
-            self.selectedEpisodeIndex = safeIndex
-            self.vodInfo?.playIndex = safeIndex
-            self.resumeSeconds = 0
-            self.realtimeProgressSeconds = 0
-            self.hasRealtimeProgressSnapshot = false
-            self.pendingResumeProtection = nil
-            if safeEpisodes.indices.contains(safeIndex) {
-                let episode = safeEpisodes[safeIndex]
-                updateQualityOptions(
-                    for: normalizedEpisodeURL(episode.url),
-                    resetSelection: true
-                )
-            } else {
-                resetQualityState()
-            }
-
-            // 详情解析完成后只初始化一次播放会话。历史状态优先于源站默认
-            // playIndex；无历史时固定从第一集开始，避免先创建第一集播放器
-            // 再切换到历史集造成重复拉流和首屏延迟。
-            if autoplay {
-                let playbackFlag: String
-                if let preferredPlaybackState,
-                   availableFlags.contains(preferredPlaybackState.flag),
-                   !(displayInfo.playUrlMap[preferredPlaybackState.flag] ?? []).isEmpty {
-                    playbackFlag = preferredPlaybackState.flag
-                } else {
-                    playbackFlag = safeFlag
-                }
-
-                let playbackEpisodes = displayInfo.playUrlMap[playbackFlag] ?? []
-                let playbackIndex: Int
-                if let preferredPlaybackState,
-                   playbackFlag == preferredPlaybackState.flag,
-                   !playbackEpisodes.isEmpty {
-                    playbackIndex = min(
-                        max(preferredPlaybackState.episodeIndex, 0),
-                        playbackEpisodes.count - 1
-                    )
-                } else {
-                    playbackIndex = 0
-                }
-
-                self.selectedFlag = playbackFlag
-                self.vodInfo?.playFlag = playbackFlag
-                self.selectedEpisodeIndex = playbackIndex
-                self.vodInfo?.playIndex = playbackIndex
-                let progress = preferredPlaybackState?.progress(
-                    for: playbackFlag,
-                    episodeIndex: playbackIndex
-                ) ?? 0
-                self.resumeSeconds = progress
-                self.realtimeProgressSeconds = progress
-                self.hasRealtimeProgressSnapshot = false
-                self.pendingResumeProtection = progress > 0
-                    ? (position: progress, deadline: Date().addingTimeInterval(4))
-                    : nil
-
-                if playbackEpisodes.indices.contains(playbackIndex) {
-                    let normalizedURL = normalizedEpisodeURL(playbackEpisodes[playbackIndex].url)
-                    if SourceService.validPlayableURL(normalizedURL) != nil {
-                        updateQualityOptions(for: normalizedURL, resetSelection: true)
-                        resolvePlayableURLIfNeeded(normalizedURL)
-                    }
-                }
-            }
-            startMetadataEnrichment(
-                originalVideo: video,
-                playbackInfo: displayInfo,
-                playbackSource: source,
-                token: metadataToken
+            guard detailLoadToken == loadToken else { return }
+            applyDetailSnapshot(
+                info,
+                video: video,
+                source: source,
+                preferredPlaybackState: preferredPlaybackState,
+                autoplay: autoplay,
+                loadToken: loadToken
             )
-            shouldRetryAfterNetworkRecovery = false
+            isLoading = false
         } catch {
             guard !(error is CancellationError) else { return }
+            guard detailLoadToken == loadToken else { return }
+            isLoading = false
             errorMessage = error.localizedDescription
             shouldRetryAfterNetworkRecovery = error.isNetworkConnectionError
         }
+    }
+
+    /// 首条可播线路到达时立即初始化播放器；完整详情返回时只补充数据，
+    /// 不重置播放 URL、历史进度或当前集，避免首屏等待全部线路请求结束。
+    private func applyDetailSnapshot(
+        _ info: VodInfo,
+        video: Movie.Video,
+        source: SourceBean,
+        preferredPlaybackState: VodPlaybackState?,
+        autoplay: Bool,
+        loadToken: UUID
+    ) {
+        guard detailLoadToken == loadToken else { return }
+        let displayInfo = Self.mergeMissingMetadata(info, from: video)
+
+        if initializedDetailLoadToken == loadToken {
+            guard var currentInfo = vodInfo else { return }
+            if !displayInfo.playFlags.isEmpty {
+                currentInfo.playFlags = displayInfo.playFlags
+            }
+            for (flag, episodes) in displayInfo.playUrlMap {
+                currentInfo.playUrlMap[flag] = episodes
+            }
+            currentInfo.name = displayInfo.name.isEmpty ? currentInfo.name : displayInfo.name
+            currentInfo.pic = displayInfo.pic.isEmpty ? currentInfo.pic : displayInfo.pic
+            currentInfo.note = displayInfo.note.isEmpty ? currentInfo.note : displayInfo.note
+            currentInfo.year = displayInfo.year.isEmpty ? currentInfo.year : displayInfo.year
+            currentInfo.area = displayInfo.area.isEmpty ? currentInfo.area : displayInfo.area
+            currentInfo.typeName = displayInfo.typeName.isEmpty ? currentInfo.typeName : displayInfo.typeName
+            currentInfo.director = displayInfo.director.isEmpty ? currentInfo.director : displayInfo.director
+            currentInfo.actor = displayInfo.actor.isEmpty ? currentInfo.actor : displayInfo.actor
+            currentInfo.des = displayInfo.des.isEmpty ? currentInfo.des : displayInfo.des
+            currentInfo.doubanRating = displayInfo.doubanRating.isEmpty
+                ? currentInfo.doubanRating
+                : displayInfo.doubanRating
+
+            if !currentInfo.playUrlMap[selectedFlag, default: []].isEmpty {
+                currentInfo.playFlag = selectedFlag
+                currentInfo.playIndex = min(
+                    selectedEpisodeIndex,
+                    currentInfo.playUrlMap[selectedFlag, default: []].count - 1
+                )
+            }
+            vodInfo = currentInfo
+            isLoading = false
+            return
+        }
+
+        initializedDetailLoadToken = loadToken
+        vodInfo = displayInfo
+
+        // Some CMS responses advertise a play flag or episode index
+        // that is not present in playUrlMap. Keep malformed state away
+        // from player and episode views.
+        let availableFlags = displayInfo.playFlags.filter {
+            !displayInfo.playUrlMap[$0, default: []].isEmpty
+        }
+        let advertisedFlag = displayInfo.playFlag.isEmpty
+            ? displayInfo.playFlags.first
+            : displayInfo.playFlag
+        let safeFlag = advertisedFlag.flatMap { availableFlags.contains($0) ? $0 : nil }
+            ?? availableFlags.first
+            ?? displayInfo.playFlags.first
+            ?? ""
+        selectedFlag = safeFlag
+        vodInfo?.playFlag = safeFlag
+
+        let safeEpisodes = displayInfo.playUrlMap[safeFlag] ?? []
+        let safeIndex = safeEpisodes.isEmpty
+            ? 0
+            : min(max(displayInfo.playIndex, 0), safeEpisodes.count - 1)
+        selectedEpisodeIndex = safeIndex
+        vodInfo?.playIndex = safeIndex
+        resumeSeconds = 0
+        realtimeProgressSeconds = 0
+        hasRealtimeProgressSnapshot = false
+        pendingResumeProtection = nil
+        if safeEpisodes.indices.contains(safeIndex) {
+            updateQualityOptions(
+                for: normalizedEpisodeURL(safeEpisodes[safeIndex].url),
+                resetSelection: true
+            )
+        } else {
+            resetQualityState()
+        }
+
+        // 续播线路优先由 GuaziService 提前请求；存在历史时直接从该集起播。
+        if autoplay {
+            let playbackFlag: String
+            if let preferredPlaybackState,
+               availableFlags.contains(preferredPlaybackState.flag),
+               !(displayInfo.playUrlMap[preferredPlaybackState.flag] ?? []).isEmpty {
+                playbackFlag = preferredPlaybackState.flag
+            } else {
+                playbackFlag = safeFlag
+            }
+
+            let playbackEpisodes = displayInfo.playUrlMap[playbackFlag] ?? []
+            let playbackIndex: Int
+            if let preferredPlaybackState,
+               playbackFlag == preferredPlaybackState.flag,
+               !playbackEpisodes.isEmpty {
+                playbackIndex = min(
+                    max(preferredPlaybackState.episodeIndex, 0),
+                    playbackEpisodes.count - 1
+                )
+            } else {
+                playbackIndex = 0
+            }
+
+            selectedFlag = playbackFlag
+            vodInfo?.playFlag = playbackFlag
+            selectedEpisodeIndex = playbackIndex
+            vodInfo?.playIndex = playbackIndex
+            let progress = preferredPlaybackState?.progress(
+                for: playbackFlag,
+                episodeIndex: playbackIndex
+            ) ?? 0
+            resumeSeconds = progress
+            realtimeProgressSeconds = progress
+            hasRealtimeProgressSnapshot = false
+            pendingResumeProtection = progress > 0
+                ? (position: progress, deadline: Date().addingTimeInterval(4))
+                : nil
+
+            if playbackEpisodes.indices.contains(playbackIndex) {
+                let normalizedURL = normalizedEpisodeURL(playbackEpisodes[playbackIndex].url)
+                if SourceService.validPlayableURL(normalizedURL) != nil {
+                    updateQualityOptions(for: normalizedURL, resetSelection: true)
+                    resolvePlayableURLIfNeeded(normalizedURL)
+                }
+            }
+        }
+        startMetadataEnrichment(
+            originalVideo: video,
+            playbackInfo: displayInfo,
+            playbackSource: source,
+            token: metadataEnrichmentToken
+        )
+        shouldRetryAfterNetworkRecovery = false
+        isLoading = false
     }
 
     /// 网络恢复后重新验证当前详情源；只恢复此前因网络失败的请求。

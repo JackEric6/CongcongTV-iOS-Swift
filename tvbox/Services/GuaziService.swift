@@ -109,7 +109,7 @@ actor GuaziService {
         }
     }
 
-    private struct Metadata {
+    private struct Metadata: Sendable {
         let name: String
         let pic: String
         let year: String
@@ -120,6 +120,18 @@ actor GuaziService {
         let des: String
         let note: String
         let rating: String
+    }
+
+    private struct CloudSource: Sendable {
+        let index: Int
+        let id: String
+        let name: String
+    }
+
+    private struct CloudEpisodes: Sendable {
+        let index: Int
+        let name: String
+        let episodes: [VodInfo.Episode]
     }
 
     private static let tokenKey = "congcong.guazi.api.token"
@@ -373,12 +385,12 @@ actor GuaziService {
         }
     }
 
-    func detail(vodID: String) async throws -> VodInfo {
+    func detail(
+        vodID: String,
+        preferredFlag: String? = nil,
+        onProgress: (@MainActor @Sendable (VodInfo) -> Void)? = nil
+    ) async throws -> VodInfo {
         let apiToken = try await currentToken()
-        async let detailRequest = request(
-            path: "/App/Resource/Vod/showOne",
-            parameters: ["d_id": vodID]
-        )
         async let playInfoRequest: [String: Any]? = try? await request(
             path: "/App/IndexPlay/playInfo",
             parameters: [
@@ -388,17 +400,135 @@ actor GuaziService {
                 "mobile_time": String(Int(Date().timeIntervalSince1970))
             ]
         )
-        let (detailResponse, playInfoResponse) = try await (detailRequest, playInfoRequest)
+        let detailResponse = try await request(
+            path: "/App/Resource/Vod/showOne",
+            parameters: ["d_id": vodID]
+        )
         let metadataObject = GuaziMetadataParser.payload(from: detailResponse)
-        let detailMetadata = makeMetadata(from: metadataObject)
-        var metadata = mergeMetadata(metadataCache[vodID], with: detailMetadata)
-        if let playInfoResponse {
+        var metadata = mergeMetadata(
+            metadataCache[vodID],
+            with: makeMetadata(from: metadataObject)
+        )
+        let clouds = array(detailResponse["vurl_clouds"] ?? metadataObject["vurl_clouds"])
+            .enumerated()
+            .compactMap { index, value -> CloudSource? in
+                guard let cloud = value as? [String: Any] else { return nil }
+                let id = string(cloud["id"])
+                guard !id.isEmpty else { return nil }
+                let name = string(cloud["name"])
+                return CloudSource(
+                    index: index,
+                    id: id,
+                    name: name.isEmpty ? "瓜子线路" : name
+                )
+            }
+        let preferred = preferredFlag?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var episodesByIndex: [Int: CloudEpisodes] = [:]
+        var attemptedCloudIndexes = Set<Int>()
+
+        // Continuation should favor the previously selected Guazi line, but a
+        // slow default line must not serialize first playback for new titles.
+        if !preferred.isEmpty, let preferredCloud = clouds.first(where: { $0.name == preferred }) {
+            try Task.checkCancellation()
+            attemptedCloudIndexes.insert(preferredCloud.index)
+            if let episodes = try? await fetchEpisodes(
+                vodID: vodID,
+                cloud: preferredCloud
+            ), !episodes.isEmpty {
+                episodesByIndex[preferredCloud.index] = CloudEpisodes(
+                    index: preferredCloud.index,
+                    name: preferredCloud.name,
+                    episodes: episodes
+                )
+                metadataCache[vodID] = metadata
+                await onProgress?(makeVodInfo(
+                    id: vodID,
+                    metadata: metadata,
+                    cloudEpisodes: Array(episodesByIndex.values),
+                    preferredFlag: preferred
+                ))
+            }
+        }
+        try Task.checkCancellation()
+
+        let remainingClouds = clouds.filter { !attemptedCloudIndexes.contains($0.index) }
+        let initialMetadata = metadata
+        let hasPreferredEpisodes = !episodesByIndex.isEmpty
+        let additionalEpisodes = await withTaskGroup(
+            of: CloudEpisodes?.self,
+            returning: [CloudEpisodes].self
+        ) { group in
+            let concurrencyLimit = min(4, remainingClouds.count)
+            var nextCloudIndex = 0
+            var didPublishInitialEpisodes = hasPreferredEpisodes
+
+            for _ in 0..<concurrencyLimit {
+                let cloud = remainingClouds[nextCloudIndex]
+                nextCloudIndex += 1
+                group.addTask { [self] in
+                    guard !Task.isCancelled else { return nil }
+                    guard let episodes = try? await self.fetchEpisodes(
+                        vodID: vodID,
+                        cloud: cloud
+                    ), !episodes.isEmpty else {
+                        return nil
+                    }
+                    return CloudEpisodes(
+                        index: cloud.index,
+                        name: cloud.name,
+                        episodes: episodes
+                    )
+                }
+            }
+            var results: [CloudEpisodes] = []
+            for await result in group {
+                if let result {
+                    results.append(result)
+                    if !didPublishInitialEpisodes {
+                        didPublishInitialEpisodes = true
+                        metadataCache[vodID] = initialMetadata
+                        await onProgress?(makeVodInfo(
+                            id: vodID,
+                            metadata: initialMetadata,
+                            cloudEpisodes: [result],
+                            preferredFlag: preferred
+                        ))
+                    }
+                }
+                if nextCloudIndex < remainingClouds.count {
+                    let cloud = remainingClouds[nextCloudIndex]
+                    nextCloudIndex += 1
+                    group.addTask { [self] in
+                        guard !Task.isCancelled else { return nil }
+                        guard let episodes = try? await self.fetchEpisodes(
+                            vodID: vodID,
+                            cloud: cloud
+                        ), !episodes.isEmpty else {
+                            return nil
+                        }
+                        return CloudEpisodes(
+                            index: cloud.index,
+                            name: cloud.name,
+                            episodes: episodes
+                        )
+                    }
+                }
+            }
+            return results
+        }
+        for result in additionalEpisodes {
+            episodesByIndex[result.index] = result
+        }
+        guard !episodesByIndex.isEmpty else {
+            throw GuaziServiceError.invalidResponse
+        }
+
+        if let playInfoResponse = await playInfoRequest {
             let playInfoObject = GuaziMetadataParser.payload(from: playInfoResponse)
             metadata = mergeMetadata(metadata, with: makeMetadata(from: playInfoObject))
         }
 
-        // playInfo 是瓜子播放器使用的详情接口；若它缺简介，再按精确 ID
-        // 从同一瓜子搜索接口补齐，绝不借用其他站点的元数据。
+        // 补充简介仅在首条线路已交给播放器后执行，不再阻塞点击海报后的起播。
         if metadata.des.isEmpty, !metadata.name.isEmpty,
            let searchResponse = try? await request(
                path: "/App/Index/findMoreVod",
@@ -417,8 +547,35 @@ actor GuaziService {
 
         metadata = mergeMetadata(metadataCache[vodID], with: metadata)
         metadataCache[vodID] = metadata
-        var info = VodInfo(id: vodID)
-        info.name = metadata.name.isEmpty ? "瓜子 \(vodID)" : metadata.name
+        let info = makeVodInfo(
+            id: vodID,
+            metadata: metadata,
+            cloudEpisodes: Array(episodesByIndex.values),
+            preferredFlag: preferred
+        )
+        return info
+    }
+
+    private func fetchEpisodes(vodID: String, cloud: CloudSource) async throws -> [VodInfo.Episode] {
+        try Task.checkCancellation()
+        let response = try await request(
+            path: "/App/Resource/Vurl/show",
+            parameters: [
+                "vurl_cloud_id": cloud.id,
+                "vod_d_id": vodID
+            ]
+        )
+        return buildEpisodes(vodID: vodID, cloudID: cloud.id, response: response)
+    }
+
+    private func makeVodInfo(
+        id: String,
+        metadata: Metadata,
+        cloudEpisodes: [CloudEpisodes],
+        preferredFlag: String
+    ) -> VodInfo {
+        var info = VodInfo(id: id)
+        info.name = metadata.name.isEmpty ? "瓜子 \(id)" : metadata.name
         info.pic = metadata.pic
         info.note = metadata.note
         info.year = metadata.year
@@ -430,29 +587,13 @@ actor GuaziService {
         info.doubanRating = metadata.rating
         info.sourceKey = "guazi"
 
-        let clouds = array(detailResponse["vurl_clouds"] ?? metadataObject["vurl_clouds"])
-        for cloudValue in clouds {
-            guard let cloud = cloudValue as? [String: Any] else { continue }
-            let cloudID = string(cloud["id"])
-            guard !cloudID.isEmpty else { continue }
-            let episodeResponse = try await request(
-                path: "/App/Resource/Vurl/show",
-                parameters: [
-                    "vurl_cloud_id": cloudID,
-                    "vod_d_id": vodID
-                ]
-            )
-            let episodes = buildEpisodes(
-                vodID: vodID,
-                cloudID: cloudID,
-                response: episodeResponse
-            )
-            guard !episodes.isEmpty else { continue }
-            let name = string(cloud["name"]).isEmpty ? "瓜子线路" : string(cloud["name"])
-            info.playFlags.append(name)
-            info.playUrlMap[name] = episodes
+        for cloud in cloudEpisodes.sorted(by: { $0.index < $1.index }) {
+            info.playFlags.append(cloud.name)
+            info.playUrlMap[cloud.name] = cloud.episodes
         }
-        info.playFlag = info.playFlags.first ?? ""
+        info.playFlag = info.playFlags.contains(preferredFlag)
+            ? preferredFlag
+            : (info.playFlags.first ?? "")
         return info
     }
 

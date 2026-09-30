@@ -1,7 +1,7 @@
 import Foundation
 
 /// 视频详情模型 - 对应 Android 版 VodInfo.java
-struct VodInfo: Codable, Identifiable {
+struct VodInfo: Codable, Identifiable, Sendable {
     /// 视频唯一 ID。
     var id: String
     /// 标题。
@@ -38,7 +38,7 @@ struct VodInfo: Codable, Identifiable {
     var playIndex: Int = 0
     
     /// 单集信息
-    struct Episode: Codable, Identifiable, Hashable {
+    struct Episode: Codable, Identifiable, Hashable, Sendable {
         var id: String { name }
         /// 集标题。
         let name: String

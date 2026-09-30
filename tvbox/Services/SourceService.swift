@@ -340,9 +340,18 @@ class SourceService {
     // MARK: - 获取详情
 
     /// 获取视频详情
-    func getDetail(sourceBean: SourceBean, vodId: String) async throws -> VodInfo? {
+    func getDetail(
+        sourceBean: SourceBean,
+        vodId: String,
+        preferredPlaybackFlag: String? = nil,
+        onGuaziDetailProgress: (@MainActor @Sendable (VodInfo) -> Void)? = nil
+    ) async throws -> VodInfo? {
         if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
-            return try await GuaziService.shared.detail(vodID: vodId)
+            return try await GuaziService.shared.detail(
+                vodID: vodId,
+                preferredFlag: preferredPlaybackFlag,
+                onProgress: onGuaziDetailProgress
+            )
         }
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
