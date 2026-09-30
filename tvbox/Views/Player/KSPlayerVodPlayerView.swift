@@ -111,7 +111,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private var startPositionRetryCount = 0
     private let startPositionCoverView = UIView()
     private var startPositionCoverInstalled = false
-    fileprivate var hasStartedCurrentPlayback = false
+    fileprivate var canShowPlaybackControl = false
     /// SwiftUI 可能在 KSPlayer 全屏转场期间重新配置同一个 UIView。
     /// 将媒体身份保存在原生视图上，避免把重挂载误判为新会话并重复 set(url:)。
     fileprivate var configuredPlaybackURL: URL?
@@ -262,6 +262,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         totalTime: TimeInterval
     ) {
         guard playerLayer === layer else { return }
+        updatePlaybackControlIfPlaying(layer: layer)
         // IOSVideoPlayerView normally guards this internally, but its private
         // drag flag does not cover every KSSlider tracking path. Keep the
         // user's preview thumb from being overwritten by playback callbacks.
@@ -451,11 +452,19 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // episode is preparing because the native paused callback briefly
         // makes it visible before autoplay resumes.
         replayButton.isHidden = true
-        if state == .bufferFinished || state == .error {
-            hasStartedCurrentPlayback = true
-            customControlsRefresh?()
+        if state == .bufferFinished {
+            updatePlaybackControlIfPlaying(layer: layer)
+            if !canShowPlaybackControl, didStartInitialPlayback {
+                requestInitialPlayback(layer: layer)
+            }
+        } else if state == .paused, !canShowPlaybackControl, didStartInitialPlayback {
+            // A transient paused callback can arrive between readyToPlay and
+            // autoplay. The startup play control stays hidden; retry autoplay.
+            requestInitialPlayback(layer: layer)
         }
         if state == .error {
+            canShowPlaybackControl = true
+            customControlsRefresh?()
             toolBar.playButton.isEnabled = true
             startPositionCoverView.isHidden = true
         }
@@ -498,11 +507,14 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         pendingStartPosition = max(0, startPosition.isFinite ? startPosition : 0)
         didApplyStartPosition = false
         didStartInitialPlayback = false
-        hasStartedCurrentPlayback = false
+        canShowPlaybackControl = false
         startPositionRetryCount = 0
         installStartPositionCoverIfNeeded()
         startPositionCoverView.isHidden = pendingStartPosition <= 0.5
         toolBar.playButton.isEnabled = pendingStartPosition <= 0.5
+        toolBar.playButton.alpha = 0
+        replayButton.isHidden = true
+        customControlsRefresh?()
     }
 
     private func startInitialPlaybackIfNeeded(layer: KSPlayerLayer) {
@@ -559,8 +571,20 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                   let layer,
                   self.playerLayer === layer,
                   self.didStartInitialPlayback else { return }
+            guard !layer.player.isPlaying else {
+                self.updatePlaybackControlIfPlaying(layer: layer)
+                return
+            }
             self.play()
         }
+    }
+
+    private func updatePlaybackControlIfPlaying(layer: KSPlayerLayer) {
+        guard playerLayer === layer, layer.player.isPlaying else { return }
+        guard !canShowPlaybackControl else { return }
+        canShowPlaybackControl = true
+        toolBar.playButton.isSelected = true
+        customControlsRefresh?()
     }
 
     override func player(layer: KSPlayerLayer, finish error: Error?) {
@@ -748,9 +772,12 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         pendingStartPosition = 0
         didApplyStartPosition = false
         didStartInitialPlayback = false
+        canShowPlaybackControl = false
         startPositionRetryCount = 0
         startPositionCoverView.isHidden = true
         toolBar.playButton.isEnabled = true
+        toolBar.playButton.alpha = 0
+        replayButton.isHidden = true
         configuredPlaybackURL = nil
         configuredPlaybackSessionToken = nil
     }
@@ -1483,11 +1510,11 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 self.verticalSeekStack.alpha = self.controlsVisible && !self.isLandscape ? 1 : 0
                 self.playerView?.routeButton.alpha = alpha
                 self.playerView?.routeButton.isHidden = !self.controlsVisible
-                let hasStartedPlayback = (self.playerView as? CongcongKSVideoPlayerView)?
-                    .hasStartedCurrentPlayback == true
+                let canShowPlaybackControl = (self.playerView as? CongcongKSVideoPlayerView)?
+                    .canShowPlaybackControl == true
                 self.playerView?.toolBar.playButton.alpha = self.controlsVisible
                     && !self.isResolvingPlayback
-                    && hasStartedPlayback ? 1 : 0
+                    && canShowPlaybackControl ? 1 : 0
                 self.playerView?.toolBar.playbackRateButton.alpha = alpha
                 self.playerView?.toolBar.playbackRateButton.isHidden = !self.controlsVisible
                 self.introButton.alpha = alpha
