@@ -114,9 +114,11 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     fileprivate var canShowPlaybackControl = false
     fileprivate var hasDisplayedCurrentVideoFrame = false
     fileprivate var canShowPlayerControls: Bool {
-        canShowPlaybackControl && (hasDisplayedCurrentVideoFrame || playbackFailed)
+        canShowPlaybackControl
+            && ((hasDisplayedCurrentVideoFrame && hasPlaybackAdvanced) || playbackFailed)
     }
     private var playbackFailed = false
+    private var hasPlaybackAdvanced = false
     private weak var observedVideoLayer: AVPlayerLayer?
     private var firstFrameObservation: NSKeyValueObservation?
     private var firstFrameStartPosition: TimeInterval = 0
@@ -478,7 +480,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                 }
             }
         case .paused:
-            if hasDisplayedCurrentVideoFrame {
+            if hasDisplayedCurrentVideoFrame, hasPlaybackAdvanced {
                 hidePlaybackLoadingIndicator()
             } else {
                 showPlaybackLoadingIndicator()
@@ -543,6 +545,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         canShowPlaybackControl = false
         hasDisplayedCurrentVideoFrame = false
         playbackFailed = false
+        hasPlaybackAdvanced = false
         firstFrameObservation?.invalidate()
         firstFrameObservation = nil
         observedVideoLayer = nil
@@ -576,6 +579,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         let target = toolBar.totalTime > 0
             ? min(requestedPosition, toolBar.totalTime)
             : requestedPosition
+        firstFrameStartPosition = target
         layer.seek(time: target, autoPlay: true) { [weak self, weak layer] success in
             DispatchQueue.main.async {
                 guard let self, let layer, self.playerLayer === layer else { return }
@@ -611,14 +615,26 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private func requestInitialPlayback(layer: KSPlayerLayer) {
         guard playerLayer === layer,
               didStartInitialPlayback,
-              !hasDisplayedCurrentVideoFrame,
+              !(hasDisplayedCurrentVideoFrame && hasPlaybackAdvanced && layer.player.isPlaying),
               autoplayRetryWorkItem == nil else { return }
+        if layer.player.isReadyToPlay, !layer.player.isPlaying {
+            showPlaybackLoadingIndicator()
+            play()
+        }
+        if layer.player.isPlaying, hasDisplayedCurrentVideoFrame {
+            updatePlaybackControlIfPlaying(layer: layer)
+            if hasPlaybackAdvanced {
+                return
+            }
+        }
         let workItem = DispatchWorkItem { [weak self, weak layer] in
             guard let self,
                   let layer,
                   self.playerLayer === layer,
                   self.didStartInitialPlayback,
-                  !self.hasDisplayedCurrentVideoFrame else { return }
+                  !(self.hasDisplayedCurrentVideoFrame
+                    && self.hasPlaybackAdvanced
+                    && layer.player.isPlaying) else { return }
             self.autoplayRetryWorkItem = nil
             guard layer.state != .error else {
                 self.hidePlaybackLoadingIndicator()
@@ -626,11 +642,14 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
             }
             if layer.player.isPlaying {
                 self.updatePlaybackControlIfPlaying(layer: layer)
-                return
-            }
-            self.showPlaybackLoadingIndicator()
-            if layer.player.isReadyToPlay {
-                self.play()
+                if self.hasDisplayedCurrentVideoFrame, self.hasPlaybackAdvanced {
+                    return
+                }
+            } else {
+                self.showPlaybackLoadingIndicator()
+                if layer.player.isReadyToPlay {
+                    self.play()
+                }
             }
             self.requestInitialPlayback(layer: layer)
         }
@@ -650,8 +669,15 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
 
         if layer.player.tracks(mediaType: .video).isEmpty {
             hasDisplayedCurrentVideoFrame = true
+            hasPlaybackAdvanced = true
         } else {
             installFirstFrameObservation(for: layer)
+            if !hasPlaybackAdvanced {
+                let currentTime = layer.player.currentPlaybackTime
+                if currentTime.isFinite, currentTime - firstFrameStartPosition >= 0.08 {
+                    hasPlaybackAdvanced = true
+                }
+            }
             // Non-AVPlayer KSPlayer backends do not expose AVPlayerLayer's
             // first-frame signal. Only infer readiness after playback time
             // has actually advanced from this session's start point.
@@ -659,10 +685,11 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                 let currentTime = layer.player.currentPlaybackTime
                 if currentTime.isFinite, currentTime - firstFrameStartPosition >= 0.25 {
                     hasDisplayedCurrentVideoFrame = true
+                    hasPlaybackAdvanced = true
                 }
             }
         }
-        if hasDisplayedCurrentVideoFrame {
+        if hasDisplayedCurrentVideoFrame, hasPlaybackAdvanced {
             autoplayRetryWorkItem?.cancel()
             autoplayRetryWorkItem = nil
             hidePlaybackLoadingIndicator()
@@ -703,14 +730,30 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
               observedVideoLayer === renderLayer,
               layer.player.view?.layer === renderLayer else { return }
         hasDisplayedCurrentVideoFrame = true
-        autoplayRetryWorkItem?.cancel()
-        autoplayRetryWorkItem = nil
-        if layer.player.isPlaying, !canShowPlaybackControl {
-            canShowPlaybackControl = true
-            toolBar.playButton.isSelected = true
-            customControlsRefresh?()
+        if !hasPlaybackAdvanced {
+            let currentTime = layer.player.currentPlaybackTime
+            if currentTime.isFinite, currentTime - firstFrameStartPosition >= 0.08 {
+                hasPlaybackAdvanced = true
+            }
         }
-        hidePlaybackLoadingIndicator()
+        if layer.player.isPlaying, hasPlaybackAdvanced {
+            autoplayRetryWorkItem?.cancel()
+            autoplayRetryWorkItem = nil
+            if !canShowPlaybackControl {
+                canShowPlaybackControl = true
+                toolBar.playButton.isSelected = true
+            }
+            customControlsRefresh?()
+            hidePlaybackLoadingIndicator()
+        } else {
+            // AVPlayerLayer may expose a paused frame before the playback
+            // clock advances. Keep the loader over that still frame and start
+            // playback immediately; hide the loader on the first time tick.
+            autoplayRetryWorkItem?.cancel()
+            autoplayRetryWorkItem = nil
+            showPlaybackLoadingIndicator()
+            requestInitialPlayback(layer: layer)
+        }
     }
 
     private func showPlaybackLoadingIndicator() {
@@ -916,6 +959,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         canShowPlaybackControl = false
         hasDisplayedCurrentVideoFrame = false
         playbackFailed = false
+        hasPlaybackAdvanced = false
         startPositionRetryCount = 0
         startPositionCoverView.isHidden = true
         toolBar.playButton.isEnabled = true
