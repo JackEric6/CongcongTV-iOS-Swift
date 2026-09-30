@@ -107,6 +107,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     /// 因此在 readyToPlay 后由宿主显式 seek 一次。
     fileprivate var pendingStartPosition: TimeInterval = 0
     fileprivate var didApplyStartPosition = false
+    private var didStartInitialPlayback = false
+    private var startPositionRetryCount = 0
+    private let startPositionCoverView = UIView()
+    private var startPositionCoverInstalled = false
     /// SwiftUI 可能在 KSPlayer 全屏转场期间重新配置同一个 UIView。
     /// 将媒体身份保存在原生视图上，避免把重挂载误判为新会话并重复 set(url:)。
     fileprivate var configuredPlaybackURL: URL?
@@ -440,18 +444,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // the rate to the current backend; do not call set(url:) or seek.
         applyPlaybackRate(desiredPlaybackRate, persist: false, rebuildMenu: false)
 
-        if !didApplyStartPosition,
-           pendingStartPosition > 0,
-           pendingStartPosition.isFinite {
-            didApplyStartPosition = true
-            let target = pendingStartPosition
-            playerLayer?.seek(time: target, autoPlay: true) { [weak self] success in
-                if !success {
-                    // 某些流在第一次 ready 回调时仍不可 seek，允许下一次 ready 重试。
-                    self?.didApplyStartPosition = false
-                }
-            }
-        }
+        startInitialPlaybackIfNeeded(layer: layer)
 
         // KSPlayer 2.3.4 每次 readyToPlay 都会重建一次默认倍速菜单，默认只到 2x。
         // 在它完成初始化后覆盖菜单，避免切集或重连时选项又被恢复。
@@ -461,6 +454,75 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
             self.isMaskShow = true
             self.customControlsLayout?(self.landscapeButton.isSelected)
             self.customControlsRefresh?()
+        }
+    }
+
+    private func installStartPositionCoverIfNeeded() {
+        guard !startPositionCoverInstalled else { return }
+        startPositionCoverInstalled = true
+        startPositionCoverView.translatesAutoresizingMaskIntoConstraints = false
+        startPositionCoverView.backgroundColor = .black
+        startPositionCoverView.isOpaque = true
+        startPositionCoverView.layer.zPosition = 400
+        contentOverlayView.addSubview(startPositionCoverView)
+        NSLayoutConstraint.activate([
+            startPositionCoverView.leadingAnchor.constraint(equalTo: contentOverlayView.leadingAnchor),
+            startPositionCoverView.trailingAnchor.constraint(equalTo: contentOverlayView.trailingAnchor),
+            startPositionCoverView.topAnchor.constraint(equalTo: contentOverlayView.topAnchor),
+            startPositionCoverView.bottomAnchor.constraint(equalTo: contentOverlayView.bottomAnchor)
+        ])
+    }
+
+    fileprivate func prepareInitialPlayback(startPosition: TimeInterval) {
+        pendingStartPosition = max(0, startPosition.isFinite ? startPosition : 0)
+        didApplyStartPosition = false
+        didStartInitialPlayback = false
+        startPositionRetryCount = 0
+        installStartPositionCoverIfNeeded()
+        startPositionCoverView.isHidden = pendingStartPosition <= 0.5
+    }
+
+    private func startInitialPlaybackIfNeeded(layer: KSPlayerLayer) {
+        guard !didStartInitialPlayback else { return }
+        guard pendingStartPosition > 0.5, pendingStartPosition.isFinite else {
+            didStartInitialPlayback = true
+            startPositionCoverView.isHidden = true
+            play()
+            return
+        }
+        guard !didApplyStartPosition else { return }
+
+        didApplyStartPosition = true
+        let requestedPosition = pendingStartPosition
+        let target = toolBar.totalTime > 0
+            ? min(requestedPosition, toolBar.totalTime)
+            : requestedPosition
+        layer.seek(time: target, autoPlay: false) { [weak self, weak layer] success in
+            DispatchQueue.main.async {
+                guard let self, let layer, self.playerLayer === layer else { return }
+                if success {
+                    self.didStartInitialPlayback = true
+                    self.pendingStartPosition = 0
+                    self.startPositionCoverView.isHidden = true
+                    self.play()
+                    return
+                }
+
+                self.didApplyStartPosition = false
+                self.startPositionRetryCount += 1
+                guard self.startPositionRetryCount <= 8 else {
+                    // 不可 seek 的流不能让播放器永久停留在遮罩下。
+                    self.pendingStartPosition = 0
+                    self.didStartInitialPlayback = true
+                    self.startPositionCoverView.isHidden = true
+                    self.play()
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak layer] in
+                    guard let self, let layer, self.playerLayer === layer else { return }
+                    self.startInitialPlaybackIfNeeded(layer: layer)
+                }
+            }
         }
     }
 
@@ -648,6 +710,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         playerLayer = nil
         pendingStartPosition = 0
         didApplyStartPosition = false
+        didStartInitialPlayback = false
+        startPositionRetryCount = 0
+        startPositionCoverView.isHidden = true
         configuredPlaybackURL = nil
         configuredPlaybackSessionToken = nil
     }
@@ -1012,8 +1077,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // 全屏进出只是同一个播放器 UIView 的重挂载，不能重置进度或重新
         // 安装媒体。否则 KSPlayer 会先从 0 开始，再执行一次恢复 seek。
         if needsPlaybackReplacement {
-            view.pendingStartPosition = max(0, startPosition)
-            view.didApplyStartPosition = false
+            view.prepareInitialPlayback(startPosition: startPosition)
             view.configuredPlaybackURL = url
             view.configuredPlaybackSessionToken = playbackSessionToken
         }
@@ -1021,13 +1085,15 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // keeps background audio available across view reattachment.
         KSOptions.setAudioSession()
         KSOptions.canBackgroundPlay = true
-        KSOptions.isAutoPlay = true
+        // Disable KSPlayer's eager autoplay. A resumed episode must seek before
+        // its first visible frame; fresh playback starts from readyToPlay below.
+        KSOptions.isAutoPlay = false
         // KSPlayer 原生 pan 手势：横向调进度，左侧纵向调亮度，右侧纵向调音量。
         // 显式开启，避免外部全局配置或旧版本默认值把这些交互关闭。
         KSOptions.enableBrightnessGestures = true
         KSOptions.enableVolumeGestures = true
         let options = KSOptions()
-        options.startPlayTime = startPosition
+        options.startPlayTime = 0
         let savedRate = UserDefaults.standard.object(forKey: HawkConfig.PLAY_SPEED) as? Double ?? 1.0
         let initialRate = Self.normalizedPlaybackRate(
             from: savedRate
@@ -1077,7 +1143,6 @@ private struct KSPlayerUIView: UIViewRepresentable {
             coordinator.updateDanmakuTime(currentTime: current, duration: total > 0 ? total : 0)
             coordinator.onProgressChanged?(current, total > 0 ? total : nil)
         }
-        view.play()
     }
 
     private static func normalizedPlaybackRate(from raw: Double) -> Float {

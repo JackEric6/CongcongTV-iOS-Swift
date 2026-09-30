@@ -57,6 +57,14 @@ jobs:
             -o /tmp/verify-download-payload
           /tmp/verify-download-payload
 
+      - name: Verify offline HLS manifest handling
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Services/HLSOfflineManifest.swift \
+            scripts/verify-hls-offline-manifest.swift \
+            -o /tmp/verify-hls-offline-manifest
+          /tmp/verify-hls-offline-manifest
+
       - name: Verify per-episode playback progress
         run: |
           swiftc -parse-as-library \

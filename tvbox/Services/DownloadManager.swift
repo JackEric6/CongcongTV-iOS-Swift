@@ -138,6 +138,22 @@ final class DownloadManager: NSObject, ObservableObject {
         let speedBytesPerSecond: Double
     }
 
+    private final class HLSCacheContext {
+        var localURLs: [String: URL] = [:]
+        var activeURLs = Set<String>()
+        var resourceCount = 0
+        var completedCount = 0
+        var bytesWritten: Int64 = 0
+        var expectedBytes: Int64 = 0
+    }
+
+    private struct HLSResourceResponse {
+        let data: Data
+        let finalURL: URL
+        let mimeType: String?
+        let expectedBytes: Int64
+    }
+
     private override init() {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -194,7 +210,7 @@ final class DownloadManager: NSObject, ObservableObject {
             }
             if let localURL = existing.localURL,
                fileManager.fileExists(atPath: localURL.path) {
-                try? fileManager.removeItem(at: localURL)
+                try? removeDownloadedMedia(at: localURL, mediaKind: existing.mediaKind)
             }
             items.removeValue(forKey: request.identifier)
             saveManifest()
@@ -373,8 +389,8 @@ final class DownloadManager: NSObject, ObservableObject {
     func delete(identifier: String) throws {
         guard let item = items[identifier] else { return }
         cancel(identifier: identifier)
-        if let localURL = item.localURL, fileManager.fileExists(atPath: localURL.path) {
-            try fileManager.removeItem(at: localURL)
+        if let localURL = item.localURL {
+            try removeDownloadedMedia(at: localURL, mediaKind: item.mediaKind)
         }
         items.removeValue(forKey: identifier)
         fallbackTasks.removeValue(forKey: identifier)?.cancel()
@@ -431,7 +447,16 @@ final class DownloadManager: NSObject, ObservableObject {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return false }
         if mediaKind == .hls {
-            return isDirectory.boolValue || url.pathExtension.lowercased() == "movpkg"
+            if isDirectory.boolValue || url.pathExtension.lowercased() == "movpkg" {
+                return true
+            }
+            guard url.pathExtension.lowercased() == "m3u8",
+                  let data = try? Data(contentsOf: url),
+                  let playlist = String(data: data.prefix(512), encoding: .utf8) else {
+                return false
+            }
+            return playlist.trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveContains("#EXTM3U")
         }
         guard !isDirectory.boolValue,
               let prefix = DownloadPayloadValidator.prefix(at: url) else { return false }
@@ -439,6 +464,15 @@ final class DownloadManager: NSObject, ObservableObject {
             prefix: prefix,
             fileExtension: url.pathExtension
         )
+    }
+
+    private func removeDownloadedMedia(at url: URL, mediaKind: DownloadMediaKind) throws {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        if mediaKind == .hls, url.pathExtension.lowercased() == "m3u8" {
+            try fileManager.removeItem(at: url.deletingLastPathComponent())
+        } else {
+            try fileManager.removeItem(at: url)
+        }
     }
 
     private func updateStatus(for identifier: String, status: DownloadStatus) {
@@ -601,7 +635,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 updated.url = effectiveURL
                 self.items[identifier] = updated
                 do {
-                    try await self.downloadPlainHLS(identifier: identifier, item: updated, url: effectiveURL)
+                    try await self.downloadPackagedHLS(identifier: identifier, item: updated, url: effectiveURL)
                 } catch let error as HLSDownloadError
                     where updated.playRequestURL != nil && error.shouldRefreshDynamicURL {
                     self.removeHLSArtifacts(identifier: identifier)
@@ -612,7 +646,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     try Task.checkCancellation()
                     updated.url = effectiveURL
                     self.items[identifier] = updated
-                    try await self.downloadPlainHLS(identifier: identifier, item: updated, url: effectiveURL)
+                    try await self.downloadPackagedHLS(identifier: identifier, item: updated, url: effectiveURL)
                 }
                 self.fallbackTasks.removeValue(forKey: identifier)
                 self.hlsAssetFallbackAttempted.remove(identifier)
@@ -742,6 +776,606 @@ final class DownloadManager: NSObject, ObservableObject {
         activeTasks[task.taskIdentifier] = task
         progressSamples.removeValue(forKey: task.taskIdentifier)
         task.resume()
+    }
+
+    /// Cache an HLS presentation as a local playlist plus its referenced media.
+    /// Keeping the playlist structure intact supports fMP4, byte ranges,
+    /// alternate audio, subtitles, and AES-128 key resources without remuxing.
+    private func downloadPackagedHLS(identifier: String, item: DownloadItem, url: URL) async throws {
+        let headers = Self.normalizedHeaders(item.headers)
+        let cacheDirectory = hlsSegmentDirectory(identifier: identifier)
+        try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        defer {
+            if !self.pausedIdentifiers.contains(identifier) {
+                try? fileManager.removeItem(at: cacheDirectory)
+            }
+        }
+
+        let context = HLSCacheContext()
+        let cachedIndex = try await cacheHLSResource(
+            url: url,
+            identifier: identifier,
+            headers: headers,
+            directory: cacheDirectory,
+            context: context
+        )
+        try Task.checkCancellation()
+        guard cachedIndex.pathExtension.lowercased() == "m3u8",
+              let indexContent = try? String(contentsOf: cachedIndex, encoding: .utf8),
+              indexContent.localizedCaseInsensitiveContains("#EXTM3U") else {
+            throw HLSDownloadError.invalid("下载内容没有生成有效的本地 HLS 播放清单")
+        }
+
+        let finalDirectory = hlsPackageDirectory(for: item)
+        if fileManager.fileExists(atPath: finalDirectory.path) {
+            try fileManager.removeItem(at: finalDirectory)
+        }
+        try fileManager.moveItem(at: cacheDirectory, to: finalDirectory)
+        let localIndex = finalDirectory.appendingPathComponent(cachedIndex.lastPathComponent)
+
+        var completed = item
+        completed.mediaKind = .hls
+        completed.status = .completed
+        completed.progress = 1
+        let packageBytes = directorySize(at: finalDirectory)
+        completed.bytesWritten = packageBytes
+        completed.totalBytes = packageBytes
+        completed.speedBytesPerSecond = 0
+        completed.localURL = localIndex
+        items[identifier] = completed
+        saveManifest()
+        progressSamples.removeValue(forKey: identifier.hashValue)
+    }
+
+    private func cacheHLSResource(
+        url: URL,
+        identifier: String,
+        headers: [String: String],
+        directory: URL,
+        context: HLSCacheContext
+    ) async throws -> URL {
+        try Task.checkCancellation()
+        let key = url.absoluteString
+        if context.activeURLs.contains(key) {
+            throw HLSDownloadError.invalid("HLS 播放清单存在循环引用")
+        }
+        if let cached = context.localURLs[key] {
+            return cached
+        }
+
+        context.resourceCount += 1
+        let playlistFile = cachedHLSResourceURL(for: url, directory: directory, fileExtension: "m3u8")
+        if let savedPlaylist = try? String(contentsOf: playlistFile, encoding: .utf8),
+           savedPlaylist.localizedCaseInsensitiveContains("#EXTM3U") {
+            context.localURLs[key] = playlistFile
+            recordHLSResourceProgress(
+                identifier: identifier,
+                context: context,
+                bytes: fileSize(at: playlistFile)
+            )
+            return playlistFile
+        }
+
+        let resourceFile = cachedHLSResourceURL(for: url, directory: directory, fileExtension: nil)
+        if fileManager.fileExists(atPath: resourceFile.path), fileSize(at: resourceFile) > 0 {
+            context.localURLs[key] = resourceFile
+            recordHLSResourceProgress(
+                identifier: identifier,
+                context: context,
+                bytes: fileSize(at: resourceFile)
+            )
+            return resourceFile
+        }
+
+        context.activeURLs.insert(key)
+        defer { context.activeURLs.remove(key) }
+
+        do {
+            let response = try await fetchHLSResource(url: url, headers: headers)
+            context.expectedBytes += max(0, response.expectedBytes)
+
+            if Self.looksLikeHLSPlaylist(response.data) {
+                guard let playlist = String(data: response.data, encoding: .utf8) else {
+                    throw HLSDownloadError.invalid("HLS 播放清单不是有效文本")
+                }
+                let rewritten = try await rewriteHLSPlaylist(
+                    playlist,
+                    baseURL: response.finalURL,
+                    identifier: identifier,
+                    headers: headers,
+                    directory: directory,
+                    context: context
+                )
+                try Data(rewritten.utf8).write(to: playlistFile, options: .atomic)
+                context.localURLs[key] = playlistFile
+                recordHLSResourceProgress(
+                    identifier: identifier,
+                    context: context,
+                    bytes: Int64(response.data.count)
+                )
+                return playlistFile
+            }
+
+            guard !Self.isRejectedHLSResource(response.data, mimeType: response.mimeType) else {
+                throw HLSDownloadError.staleAddress("HLS 分片或密钥返回了错误页，不是媒体内容")
+            }
+            guard !response.data.isEmpty else {
+                throw HLSDownloadError.staleAddress("HLS 分片返回了空响应")
+            }
+            try response.data.write(to: resourceFile, options: .atomic)
+            context.localURLs[key] = resourceFile
+            recordHLSResourceProgress(
+                identifier: identifier,
+                context: context,
+                bytes: Int64(response.data.count)
+            )
+            return resourceFile
+        } catch {
+            context.localURLs.removeValue(forKey: key)
+            throw error
+        }
+    }
+
+    private func rewriteHLSPlaylistLegacy(
+        _ playlist: String,
+        baseURL: URL,
+        identifier: String,
+        headers: [String: String],
+        directory: URL,
+        context: HLSCacheContext
+    ) async throws -> String {
+        let lines = playlist.components(separatedBy: .newlines)
+        if let variant = HLSOfflineManifest.highestVariant(in: playlist, baseURL: baseURL) {
+            var output = ["#EXTM3U"]
+            for rawLine in lines {
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard line.hasPrefix("#"),
+                      !line.uppercased().hasPrefix("#EXTM3U"),
+                      !line.uppercased().hasPrefix("#EXT-X-STREAM-INF:") else {
+                    continue
+                }
+                if line.uppercased().hasPrefix("#EXT-X-MEDIA:") {
+                    guard let group = HLSOfflineManifest.mediaGroup(in: line),
+                          variant.mediaGroups.contains(group) else {
+                        continue
+                    }
+                }
+                output.append(try await rewriteHLSURIAttribute(
+                    in: line,
+                    baseURL: baseURL,
+                    identifier: identifier,
+                    headers: headers,
+                    directory: directory,
+                    context: context
+                ))
+            }
+
+            let variantURL = try await cacheHLSResource(
+                url: variant.playlistURL,
+                identifier: identifier,
+                headers: headers,
+                directory: directory,
+                context: context
+            )
+            output.append(variant.streamInfo)
+            output.append(variantURL.lastPathComponent)
+            return output.joined(separator: "\n") + "\n"
+        }
+
+        guard playlist.localizedCaseInsensitiveContains("#EXT-X-ENDLIST") else {
+            throw HLSDownloadError.unsupported("该 HLS 清单不是已结束的点播流")
+        }
+        var output: [String] = []
+        for rawLine in lines {
+            try Task.checkCancellation()
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("#") {
+                output.append(try await rewriteHLSURIAttribute(
+                    in: line,
+                    baseURL: baseURL,
+                    identifier: identifier,
+                    headers: headers,
+                    directory: directory,
+                    context: context
+                ))
+                continue
+            }
+            guard let resourceURL = URL(string: line, relativeTo: baseURL)?.absoluteURL,
+                  ["http", "https"].contains(resourceURL.scheme?.lowercased() ?? "") else {
+                throw HLSDownloadError.invalid("HLS 分片地址无效")
+            }
+            let localURL = try await cacheHLSResource(
+                url: resourceURL,
+                identifier: identifier,
+                headers: headers,
+                directory: directory,
+                context: context
+            )
+            output.append(localURL.lastPathComponent)
+        }
+        return output.joined(separator: "\n") + "\n"
+    }
+
+    private func rewriteHLSURIAttributeLegacy(
+        in line: String,
+        baseURL: URL,
+        identifier: String,
+        headers: [String: String],
+        directory: URL,
+        context: HLSCacheContext
+    ) async throws -> String {
+        guard let uri = HLSOfflineManifest.uri(in: line) else { return line }
+        guard let remoteURL = URL(string: uri, relativeTo: baseURL)?.absoluteURL else {
+            throw HLSDownloadError.invalid("HLS URI 资源地址无效")
+        }
+        guard ["http", "https"].contains(remoteURL.scheme?.lowercased() ?? "") else {
+            throw HLSDownloadError.unsupported("该 HLS 使用播放器无法离线重建的密钥协议")
+        }
+        let localURL = try await cacheHLSResource(
+            url: remoteURL,
+            identifier: identifier,
+            headers: headers,
+            directory: directory,
+            context: context
+        )
+        return HLSOfflineManifest.replacingURI(in: line, with: localURL.lastPathComponent)
+    }
+
+    private func fetchHLSResourceLegacy(url: URL, headers: [String: String]) async throws -> HLSResourceResponse {
+        var lastError: Error?
+        for attempt in 0..<3 {
+            try Task.checkCancellation()
+            var request = URLRequest(url: url)
+            headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+            request.timeoutInterval = 45
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw HLSDownloadError.invalid("HLS 媒体资源响应无效")
+                }
+                guard (200...299).contains(http.statusCode) else {
+                    throw HLSDownloadError.http(http.statusCode)
+                }
+                return HLSResourceResponse(
+                    data: data,
+                    finalURL: http.url ?? url,
+                    mimeType: http.mimeType,
+                    expectedBytes: max(0, http.expectedContentLength)
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                if attempt < 2 {
+                    try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 400_000_000))
+                }
+            }
+        }
+        throw lastError ?? HLSDownloadError.invalid("HLS 媒体资源下载失败")
+    }
+
+    private func recordHLSResourceProgressLegacy(
+        identifier: String,
+        context: HLSCacheContext,
+        bytes: Int64
+    ) {
+        context.completedCount += 1
+        context.bytesWritten += max(0, bytes)
+        let speed = speedSample(taskIdentifier: identifier.hashValue, bytes: context.bytesWritten)
+        let denominator = max(context.resourceCount, context.completedCount + context.activeURLs.count)
+        let fraction = Double(context.completedCount) / Double(max(1, denominator))
+        if var item = items[identifier], item.status != .paused {
+            item.status = .downloading
+            item.progress = max(item.progress, min(0.98, fraction * 0.98))
+            item.bytesWritten = context.bytesWritten
+            item.totalBytes = max(context.expectedBytes, context.bytesWritten)
+            item.speedBytesPerSecond = speed
+            items[identifier] = item
+        }
+    }
+
+    private func cachedHLSResourceURLLegacy(
+        for url: URL,
+        directory: URL,
+        fileExtension forcedExtension: String?
+    ) -> URL {
+        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
+            .prefix(12)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let ext = forcedExtension
+            ?? (url.pathExtension.isEmpty ? "bin" : safeFileComponent(url.pathExtension.lowercased()))
+        return directory.appendingPathComponent("\(digest).\(ext)")
+    }
+
+    private func hlsPackageDirectoryLegacy(for item: DownloadItem) -> URL {
+        destinationURL(for: item, mimeType: nil, forcedExtension: "hlsbundle")
+    }
+
+    private func legacyFileSize(at url: URL) -> Int64 {
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    private func directorySize(at url: URL) -> Int64 {
+        guard let enumerator = fileManager.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
+        ) else {
+            return fileSize(at: url)
+        }
+        var total: Int64 = 0
+        while let fileURL = enumerator.nextObject() as? URL {
+            guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+                  values.isRegularFile == true else {
+                continue
+            }
+            total += Int64(values.fileSize ?? 0)
+        }
+        return total
+    }
+
+    private static func looksLikeHLSPlaylistCacheLegacy(_ data: Data) -> Bool {
+        guard let text = String(data: data.prefix(1024), encoding: .utf8) else { return false }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveContains("#EXTM3U")
+    }
+
+    private static func isRejectedHLSResourceLegacy(_ data: Data, mimeType: String?) -> Bool {
+        let mime = mimeType?.lowercased() ?? ""
+        if mime.contains("text/html")
+            || mime.contains("application/json")
+            || mime.contains("application/xml")
+            || mime.contains("text/xml")
+            || mime.contains("javascript") {
+            return true
+        }
+        guard let text = String(data: data.prefix(1024), encoding: .utf8) else { return false }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if value.hasPrefix("#extm3u") || value.hasPrefix("webvtt") { return false }
+        if value.hasPrefix("<!doctype html") || value.hasPrefix("<html")
+            || value.hasPrefix("{") || value.hasPrefix("[") {
+            return true
+        }
+        return [
+            "access denied",
+            "request forbidden",
+            "forbidden",
+            "bad gateway",
+            "error 403",
+            "error 404",
+            "unauthorized",
+            "verify you are human",
+            "security check",
+            "访问受限",
+            "请求异常",
+            "校验失败"
+        ].contains { value.contains($0) }
+    }
+
+    private func rewriteHLSPlaylist(
+        _ playlist: String,
+        baseURL: URL,
+        identifier: String,
+        headers: [String: String],
+        directory: URL,
+        context: HLSCacheContext
+    ) async throws -> String {
+        let lines = playlist.components(separatedBy: .newlines)
+        if let variant = HLSOfflineManifest.highestVariant(in: playlist, baseURL: baseURL) {
+            var output = ["#EXTM3U"]
+            for rawLine in lines {
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard line.hasPrefix("#"),
+                      !line.uppercased().hasPrefix("#EXTM3U"),
+                      !line.uppercased().hasPrefix("#EXT-X-STREAM-INF:") else {
+                    continue
+                }
+                if line.uppercased().hasPrefix("#EXT-X-MEDIA:") {
+                    guard let group = HLSOfflineManifest.mediaGroup(in: line),
+                          variant.mediaGroups.contains(group) else {
+                        continue
+                    }
+                }
+                output.append(try await rewriteHLSURIAttribute(
+                    in: line,
+                    baseURL: baseURL,
+                    identifier: identifier,
+                    headers: headers,
+                    directory: directory,
+                    context: context
+                ))
+            }
+
+            let variantURL = try await cacheHLSResource(
+                url: variant.playlistURL,
+                identifier: identifier,
+                headers: headers,
+                directory: directory,
+                context: context
+            )
+            output.append(variant.streamInfo)
+            output.append(variantURL.lastPathComponent)
+            return output.joined(separator: "\n") + "\n"
+        }
+
+        guard playlist.localizedCaseInsensitiveContains("#EXT-X-ENDLIST") else {
+            throw HLSDownloadError.unsupported("该 HLS 清单不是已结束的点播流")
+        }
+        var output: [String] = []
+        for rawLine in lines {
+            try Task.checkCancellation()
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("#") {
+                output.append(try await rewriteHLSURIAttribute(
+                    in: line,
+                    baseURL: baseURL,
+                    identifier: identifier,
+                    headers: headers,
+                    directory: directory,
+                    context: context
+                ))
+                continue
+            }
+            guard let resourceURL = URL(string: line, relativeTo: baseURL)?.absoluteURL,
+                  ["http", "https"].contains(resourceURL.scheme?.lowercased() ?? "") else {
+                throw HLSDownloadError.invalid("HLS 分片地址无效")
+            }
+            let localURL = try await cacheHLSResource(
+                url: resourceURL,
+                identifier: identifier,
+                headers: headers,
+                directory: directory,
+                context: context
+            )
+            output.append(localURL.lastPathComponent)
+        }
+        return output.joined(separator: "\n") + "\n"
+    }
+
+    private func rewriteHLSURIAttribute(
+        in line: String,
+        baseURL: URL,
+        identifier: String,
+        headers: [String: String],
+        directory: URL,
+        context: HLSCacheContext
+    ) async throws -> String {
+        guard let uri = HLSOfflineManifest.uri(in: line) else { return line }
+        guard let remoteURL = URL(string: uri, relativeTo: baseURL)?.absoluteURL else {
+            throw HLSDownloadError.invalid("HLS URI 资源地址无效")
+        }
+        guard ["http", "https"].contains(remoteURL.scheme?.lowercased() ?? "") else {
+            throw HLSDownloadError.unsupported("该 HLS 使用播放器无法离线重建的密钥协议")
+        }
+        let localURL = try await cacheHLSResource(
+            url: remoteURL,
+            identifier: identifier,
+            headers: headers,
+            directory: directory,
+            context: context
+        )
+        return HLSOfflineManifest.replacingURI(in: line, with: localURL.lastPathComponent)
+    }
+
+    private func fetchHLSResource(url: URL, headers: [String: String]) async throws -> HLSResourceResponse {
+        var lastError: Error?
+        for attempt in 0..<3 {
+            try Task.checkCancellation()
+            var request = URLRequest(url: url)
+            headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+            request.timeoutInterval = 45
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw HLSDownloadError.invalid("HLS 媒体资源响应无效")
+                }
+                guard (200...299).contains(http.statusCode) else {
+                    throw HLSDownloadError.http(http.statusCode)
+                }
+                return HLSResourceResponse(
+                    data: data,
+                    finalURL: http.url ?? url,
+                    mimeType: http.mimeType,
+                    expectedBytes: max(0, http.expectedContentLength)
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                if attempt < 2 {
+                    try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 400_000_000))
+                }
+            }
+        }
+        throw lastError ?? HLSDownloadError.invalid("HLS 媒体资源下载失败")
+    }
+
+    private func recordHLSResourceProgress(
+        identifier: String,
+        context: HLSCacheContext,
+        bytes: Int64
+    ) {
+        context.completedCount += 1
+        context.bytesWritten += max(0, bytes)
+        let speed = speedSample(taskIdentifier: identifier.hashValue, bytes: context.bytesWritten)
+        let denominator = max(context.resourceCount, context.completedCount + context.activeURLs.count)
+        let fraction = Double(context.completedCount) / Double(max(1, denominator))
+        if var item = items[identifier], item.status != .paused {
+            item.status = .downloading
+            item.progress = max(item.progress, min(0.98, fraction * 0.98))
+            item.bytesWritten = context.bytesWritten
+            item.totalBytes = max(context.expectedBytes, context.bytesWritten)
+            item.speedBytesPerSecond = speed
+            items[identifier] = item
+        }
+    }
+
+    private func cachedHLSResourceURL(
+        for url: URL,
+        directory: URL,
+        fileExtension forcedExtension: String?
+    ) -> URL {
+        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
+            .prefix(12)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let ext = forcedExtension
+            ?? (url.pathExtension.isEmpty ? "bin" : safeFileComponent(url.pathExtension.lowercased()))
+        return directory.appendingPathComponent("\(digest).\(ext)")
+    }
+
+    private func hlsPackageDirectory(for item: DownloadItem) -> URL {
+        destinationURL(for: item, mimeType: nil, forcedExtension: "hlsbundle")
+    }
+
+    private func fileSize(at url: URL) -> Int64 {
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    private static func looksLikeHLSPlaylist(_ data: Data) -> Bool {
+        guard let text = String(data: data.prefix(1024), encoding: .utf8) else { return false }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveContains("#EXTM3U")
+    }
+
+    private static func isRejectedHLSResource(_ data: Data, mimeType: String?) -> Bool {
+        let mime = mimeType?.lowercased() ?? ""
+        if mime.contains("text/html")
+            || mime.contains("application/json")
+            || mime.contains("application/xml")
+            || mime.contains("text/xml")
+            || mime.contains("javascript") {
+            return true
+        }
+        guard let text = String(data: data.prefix(1024), encoding: .utf8) else { return false }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if value.hasPrefix("#extm3u") || value.hasPrefix("webvtt") { return false }
+        if value.hasPrefix("<!doctype html") || value.hasPrefix("<html")
+            || value.hasPrefix("{") || value.hasPrefix("[") {
+            return true
+        }
+        return [
+            "access denied",
+            "request forbidden",
+            "forbidden",
+            "bad gateway",
+            "error 403",
+            "error 404",
+            "unauthorized",
+            "verify you are human",
+            "security check",
+            "访问受限",
+            "请求异常",
+            "校验失败"
+        ].contains { value.contains($0) }
     }
 
     private func downloadPlainHLS(identifier: String, item: DownloadItem, url: URL) async throws {
@@ -1013,7 +1647,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 guard !data.isEmpty else {
                     throw HLSDownloadError.staleAddress("分片返回了空响应")
                 }
-                if Self.looksLikeHLSPlaylist(data) {
+                if Self.looksLikeHLSPlaylistLegacy(data) {
                     // A segment URL returning another playlist is not a TS
                     // payload. Hand it to the existing AVAsset fallback.
                     throw HLSDownloadError.unsupported("分片返回了 HLS 播放列表，交由系统转换")
@@ -1045,7 +1679,7 @@ final class DownloadManager: NSObject, ObservableObject {
         return DownloadPayloadValidator.isRejectedPayload(data)
     }
 
-    private static func looksLikeHLSPlaylist(_ data: Data) -> Bool {
+    private static func looksLikeHLSPlaylistLegacy(_ data: Data) -> Bool {
         guard let text = String(data: data.prefix(512), encoding: .utf8) else { return false }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
