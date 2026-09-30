@@ -10,7 +10,7 @@ enum HLSOfflineManifest {
     }
 
     private static let attributePattern = try! NSRegularExpression(
-        pattern: #"(?i)(?:^|,)\s*([A-Z0-9-]+)\s*=\s*("[^"]*"|'[^']*'|[^,]*)"#
+        pattern: #"(?i)(?:^|[:,])\s*([A-Z0-9-]+)\s*=\s*("[^"]*"|'[^']*'|[^,]*)"#
     )
     private static let uriPattern = try! NSRegularExpression(
         pattern: #"(?i)\bURI\s*=\s*("[^"]*"|'[^']*'|[^,\s]*)"#
