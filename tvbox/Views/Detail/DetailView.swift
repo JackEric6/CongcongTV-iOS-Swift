@@ -993,7 +993,9 @@ struct DetailView: View {
     private func saveHistoryForCurrentEpisode(progressOverride: Double? = nil) {
         let episodeName = viewModel.vodInfo?.currentEpisode?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let episodeLabel = episodeName.isEmpty ? "第\(viewModel.selectedEpisodeIndex + 1)集" : episodeName
-        let progress = max(progressOverride ?? viewModel.currentPlaybackSeconds(), 0)
+        let progress = VodPlaybackState.normalizedProgress(
+            progressOverride ?? viewModel.currentPlaybackSeconds()
+        )
         let timeLabel = progress > 0 ? Int(progress).durationString : ""
         let playNote = timeLabel.isEmpty ? episodeLabel : "\(episodeLabel) \(timeLabel)"
 

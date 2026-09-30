@@ -122,6 +122,8 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private weak var observedVideoLayer: AVPlayerLayer?
     private var firstFrameObservation: NSKeyValueObservation?
     private var firstFrameStartPosition: TimeInterval = 0
+    private var startPositionGeneration = 0
+    private var startPositionRetryWorkItem: DispatchWorkItem?
     /// SwiftUI 可能在 KSPlayer 全屏转场期间重新配置同一个 UIView。
     /// 将媒体身份保存在原生视图上，避免把重挂载误判为新会话并重复 set(url:)。
     fileprivate var configuredPlaybackURL: URL?
@@ -539,7 +541,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     }
 
     fileprivate func prepareInitialPlayback(startPosition: TimeInterval) {
-        pendingStartPosition = max(0, startPosition.isFinite ? startPosition : 0)
+        startPositionGeneration &+= 1
+        startPositionRetryWorkItem?.cancel()
+        startPositionRetryWorkItem = nil
+        pendingStartPosition = VodPlaybackState.normalizedProgress(startPosition)
         didApplyStartPosition = false
         didStartInitialPlayback = false
         canShowPlaybackControl = false
@@ -549,7 +554,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         firstFrameObservation?.invalidate()
         firstFrameObservation = nil
         observedVideoLayer = nil
-        firstFrameStartPosition = max(0, startPosition.isFinite ? startPosition : 0)
+        firstFrameStartPosition = pendingStartPosition
         startPositionRetryCount = 0
         installStartPositionCoverIfNeeded()
         startPositionCoverView.isHidden = pendingStartPosition <= 0.5
@@ -573,16 +578,41 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         }
         guard !didApplyStartPosition else { return }
 
+        // KSPlayer queues seek requests internally when the backend is not yet
+        // seekable. Wait without issuing a seek so the app retry loop cannot
+        // race that internal deferred seek.
+        guard layer.player.isReadyToPlay, layer.player.seekable else {
+            retryStartPositionWhenSeekable(layer: layer)
+            return
+        }
+
         toolBar.playButton.isEnabled = false
         didApplyStartPosition = true
         let requestedPosition = pendingStartPosition
-        let target = toolBar.totalTime > 0
-            ? min(requestedPosition, toolBar.totalTime)
-            : requestedPosition
+        let duration = layer.player.duration
+        let validDuration = duration.isFinite && duration > 0 ? duration : 0
+        let target: TimeInterval
+        if validDuration > 0 {
+            // A completed/invalid resume point should replay from the start,
+            // not seek to EOF and immediately trigger end-of-item behavior.
+            guard requestedPosition < validDuration - 1 else {
+                startInitialPlaybackFromBeginning(layer: layer)
+                return
+            }
+            target = min(requestedPosition, validDuration)
+        } else {
+            target = requestedPosition
+        }
         firstFrameStartPosition = target
-        layer.seek(time: target, autoPlay: true) { [weak self, weak layer] success in
+        let generation = startPositionGeneration
+        layer.player.seek(time: target) { [weak self, weak layer] success in
             DispatchQueue.main.async {
-                guard let self, let layer, self.playerLayer === layer else { return }
+                guard let self,
+                      let layer,
+                      self.playerLayer === layer,
+                      self.startPositionGeneration == generation else { return }
+                self.startPositionRetryWorkItem?.cancel()
+                self.startPositionRetryWorkItem = nil
                 if success {
                     self.didStartInitialPlayback = true
                     self.pendingStartPosition = 0
@@ -592,24 +622,45 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                     return
                 }
 
-                self.didApplyStartPosition = false
-                self.startPositionRetryCount += 1
-                guard self.startPositionRetryCount <= 8 else {
-                    // 不可 seek 的流不能让播放器永久停留在遮罩下。
-                    self.pendingStartPosition = 0
-                    self.firstFrameStartPosition = 0
-                    self.didStartInitialPlayback = true
-                    self.startPositionCoverView.isHidden = true
-                    self.toolBar.playButton.isEnabled = true
-                    self.requestInitialPlayback(layer: layer)
-                    return
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak layer] in
-                    guard let self, let layer, self.playerLayer === layer else { return }
-                    self.startInitialPlaybackIfNeeded(layer: layer)
-                }
+                // Do not retry a failed seek: KSPlayer may already have
+                // accepted it into its own deferred-seek path.
+                self.startInitialPlaybackFromBeginning(layer: layer)
             }
         }
+    }
+
+    private func retryStartPositionWhenSeekable(layer: KSPlayerLayer) {
+        guard startPositionRetryWorkItem == nil else { return }
+        guard startPositionRetryCount < 8 else {
+            startInitialPlaybackFromBeginning(layer: layer)
+            return
+        }
+
+        startPositionRetryCount += 1
+        let generation = startPositionGeneration
+        let workItem = DispatchWorkItem { [weak self, weak layer] in
+            guard let self,
+                  let layer,
+                  self.playerLayer === layer,
+                  self.startPositionGeneration == generation else { return }
+            self.startPositionRetryWorkItem = nil
+            self.startInitialPlaybackIfNeeded(layer: layer)
+        }
+        startPositionRetryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+    }
+
+    private func startInitialPlaybackFromBeginning(layer: KSPlayerLayer) {
+        guard playerLayer === layer else { return }
+        startPositionRetryWorkItem?.cancel()
+        startPositionRetryWorkItem = nil
+        pendingStartPosition = 0
+        firstFrameStartPosition = 0
+        didApplyStartPosition = false
+        didStartInitialPlayback = true
+        startPositionCoverView.isHidden = true
+        toolBar.playButton.isEnabled = true
+        requestInitialPlayback(layer: layer)
     }
 
     private func requestInitialPlayback(layer: KSPlayerLayer) {
@@ -931,6 +982,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     /// Stop and release the current media item before installing another URL.
     /// Pausing alone leaves the old AVPlayerItem and audio pipeline alive.
     func stopCurrentPlayback(reportFinalProgress: Bool = true) {
+        startPositionGeneration &+= 1
+        startPositionRetryWorkItem?.cancel()
+        startPositionRetryWorkItem = nil
         let layer = playerLayer
         let progressHandler = playTimeDidChange
         playTimeDidChange = nil
@@ -1349,7 +1403,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
         KSOptions.enableBrightnessGestures = true
         KSOptions.enableVolumeGestures = true
         let options = KSOptions()
-        options.startPlayTime = max(0, startPosition)
+        // Start position is restored by the guarded seek path above. Leaving a
+        // second native start-time request enabled can race that single seek.
+        options.startPlayTime = 0
         let savedRate = UserDefaults.standard.object(forKey: HawkConfig.PLAY_SPEED) as? Double ?? 1.0
         let initialRate = Self.normalizedPlaybackRate(
             from: savedRate

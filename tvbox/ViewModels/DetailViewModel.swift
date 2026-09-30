@@ -717,7 +717,9 @@ class DetailViewModel: ObservableObject {
 
     /// 播放器时间回调
     func updatePlaybackProgress(seconds: Double) {
-        guard seconds.isFinite else { return }
+        guard seconds.isFinite,
+              seconds >= 0,
+              seconds <= VodPlaybackState.maximumPlaybackPosition else { return }
         if let pending = pendingResumeProtection {
             if Date() < pending.deadline, seconds + 1 < pending.position {
                 return
@@ -731,7 +733,9 @@ class DetailViewModel: ObservableObject {
 
     /// 当前实时进度（不触发 UI 高频刷新）
     func currentPlaybackSeconds() -> Double {
-        hasRealtimeProgressSnapshot ? realtimeProgressSeconds : max(realtimeProgressSeconds, resumeSeconds)
+        VodPlaybackState.normalizedProgress(
+            hasRealtimeProgressSnapshot ? realtimeProgressSeconds : max(realtimeProgressSeconds, resumeSeconds)
+        )
     }
 
     /// 仅在必要时同步快照到可观察状态
@@ -745,7 +749,7 @@ class DetailViewModel: ObservableObject {
 
     /// 当前播放状态与完整分集进度账本，用于历史记录落盘。
     func playbackState(progressOverride: Double? = nil) -> VodPlaybackState {
-        let progress = max(progressOverride ?? currentPlaybackSeconds(), 0)
+        let progress = VodPlaybackState.normalizedProgress(progressOverride ?? currentPlaybackSeconds())
         var state = VodPlaybackState(
             flag: selectedFlag,
             episodeIndex: selectedEpisodeIndex,
@@ -758,8 +762,7 @@ class DetailViewModel: ObservableObject {
 
     private func rememberCurrentEpisodeProgress(progress: Double? = nil) {
         guard selectedEpisodeIndex >= 0, !selectedFlag.isEmpty else { return }
-        let value = max(progress ?? currentPlaybackSeconds(), 0)
-        guard value.isFinite else { return }
+        let value = VodPlaybackState.normalizedProgress(progress ?? currentPlaybackSeconds())
         episodeProgress[Self.playbackProgressKey(flag: selectedFlag, episodeIndex: selectedEpisodeIndex)] = value
     }
 

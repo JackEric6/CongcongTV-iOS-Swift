@@ -40,6 +40,19 @@ struct VerifyPlaybackProgress {
               differentLine.progress(for: "line-a", episodeIndex: 1) == 82 else {
             fatalError("Playback progress was not isolated by line and episode")
         }
+
+        let corruptProgress = try JSONDecoder().decode(
+            VodPlaybackState.self,
+            from: Data(
+                #"{"flag":"line-a","episodeIndex":0,"progressSeconds":1e300,"episodeProgress":{"line-a::0":1e300}}"#.utf8
+            )
+        )
+        guard corruptProgress.progressSeconds == 0,
+              corruptProgress.progress(for: "line-a", episodeIndex: 0) == 0,
+              VodPlaybackState.normalizedProgress(.infinity) == 0,
+              VodPlaybackState.normalizedProgress(-1) == 0 else {
+            fatalError("Corrupt playback positions were not rejected")
+        }
         print("PLAYBACK PROGRESS LEDGER CHECKS PASSED")
     }
 }
