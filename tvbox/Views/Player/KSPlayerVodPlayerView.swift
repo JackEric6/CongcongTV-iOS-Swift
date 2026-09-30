@@ -438,6 +438,10 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     override func player(layer: KSPlayerLayer, state: KSPlayerState) {
         guard playerLayer === layer else { return }
         super.player(layer: layer, state: state)
+        if state == .error {
+            toolBar.playButton.isEnabled = true
+            startPositionCoverView.isHidden = true
+        }
         guard state == .readyToPlay else { return }
 
         // KSPlayer can replace its backend during preparation. Re-apply only
@@ -480,6 +484,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         startPositionRetryCount = 0
         installStartPositionCoverIfNeeded()
         startPositionCoverView.isHidden = pendingStartPosition <= 0.5
+        toolBar.playButton.isEnabled = pendingStartPosition <= 0.5
     }
 
     private func startInitialPlaybackIfNeeded(layer: KSPlayerLayer) {
@@ -487,10 +492,13 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         guard pendingStartPosition > 0.5, pendingStartPosition.isFinite else {
             didStartInitialPlayback = true
             startPositionCoverView.isHidden = true
+            toolBar.playButton.isEnabled = true
+            requestInitialPlayback(layer: layer)
             return
         }
         guard !didApplyStartPosition else { return }
 
+        toolBar.playButton.isEnabled = false
         didApplyStartPosition = true
         let requestedPosition = pendingStartPosition
         let target = toolBar.totalTime > 0
@@ -503,6 +511,8 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                     self.didStartInitialPlayback = true
                     self.pendingStartPosition = 0
                     self.startPositionCoverView.isHidden = true
+                    self.toolBar.playButton.isEnabled = true
+                    self.requestInitialPlayback(layer: layer)
                     return
                 }
 
@@ -513,7 +523,8 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                     self.pendingStartPosition = 0
                     self.didStartInitialPlayback = true
                     self.startPositionCoverView.isHidden = true
-                    layer.play()
+                    self.toolBar.playButton.isEnabled = true
+                    self.requestInitialPlayback(layer: layer)
                     return
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak layer] in
@@ -521,6 +532,16 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                     self.startInitialPlaybackIfNeeded(layer: layer)
                 }
             }
+        }
+    }
+
+    private func requestInitialPlayback(layer: KSPlayerLayer) {
+        DispatchQueue.main.async { [weak self, weak layer] in
+            guard let self,
+                  let layer,
+                  self.playerLayer === layer,
+                  self.didStartInitialPlayback else { return }
+            self.play()
         }
     }
 
@@ -711,6 +732,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         didStartInitialPlayback = false
         startPositionRetryCount = 0
         startPositionCoverView.isHidden = true
+        toolBar.playButton.isEnabled = true
         configuredPlaybackURL = nil
         configuredPlaybackSessionToken = nil
     }
