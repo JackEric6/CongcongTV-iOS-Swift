@@ -18,16 +18,6 @@ private func makeHistoryTitleKey(_ value: String) -> String {
     }.map(String.init).joined()
 }
 
-/// 单部剧的续播状态
-struct VodPlaybackState: Codable {
-    /// 当前播放线路标识。
-    var flag: String
-    /// 剧集索引。
-    var episodeIndex: Int
-    /// 播放进度（秒）。
-    var progressSeconds: Double
-}
-
 /// 视频收藏
 @Model
 final class VodCollect {

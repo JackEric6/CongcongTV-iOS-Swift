@@ -997,11 +997,7 @@ struct DetailView: View {
         let timeLabel = progress > 0 ? Int(progress).durationString : ""
         let playNote = timeLabel.isEmpty ? episodeLabel : "\(episodeLabel) \(timeLabel)"
 
-        let playbackState = VodPlaybackState(
-            flag: viewModel.selectedFlag,
-            episodeIndex: viewModel.selectedEpisodeIndex,
-            progressSeconds: progress
-        )
+        let playbackState = viewModel.playbackState(progressOverride: progress)
 
         // CacheStore 的写入方法本身运行在 MainActor，同步写入可避免异步任务乱序覆盖最新进度。
         CacheStore.shared.addRecord(
@@ -1073,7 +1069,10 @@ struct DetailView: View {
         ) else { return }
 
         viewModel.applyPlaybackState(playbackState)
-        lastPersistedProgress = max(playbackState.progressSeconds, 0)
+        lastPersistedProgress = playbackState.progress(
+            for: playbackState.flag,
+            episodeIndex: playbackState.episodeIndex
+        )
     }
 
     private func refreshCollectState() {

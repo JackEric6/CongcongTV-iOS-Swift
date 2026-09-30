@@ -47,13 +47,18 @@ enum DownloadPayloadValidator {
     }
 
     static func isMPEGTransportStream(_ data: Data) -> Bool {
-        guard data.count >= transportPacketSize * 3 else { return false }
-        let lastOffset = min(transportPacketSize - 1, data.count - transportPacketSize * 2 - 1)
+        let packetCount = min(3, data.count / transportPacketSize)
+        guard packetCount > 0 else { return false }
+        let lastOffset = min(
+            transportPacketSize - 1,
+            data.count - transportPacketSize * packetCount
+        )
         guard lastOffset >= 0 else { return false }
         for offset in 0...lastOffset {
-            if data[offset] == 0x47,
-               data[offset + transportPacketSize] == 0x47,
-               data[offset + transportPacketSize * 2] == 0x47 {
+            let hasExpectedSyncBytes = (0..<packetCount).allSatisfy { packet in
+                data[offset + packet * transportPacketSize] == 0x47
+            }
+            if hasExpectedSyncBytes {
                 return true
             }
         }

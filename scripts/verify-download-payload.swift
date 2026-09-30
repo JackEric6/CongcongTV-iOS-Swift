@@ -26,6 +26,13 @@ struct VerifyDownloadPayload {
             fatalError("Valid MPEG-TS payload was rejected")
         }
 
+        var shortTransportStream = Data(repeating: 0, count: 188 * 2)
+        shortTransportStream[0] = 0x47
+        shortTransportStream[188] = 0x47
+        guard DownloadPayloadValidator.isMPEGTransportStream(shortTransportStream) else {
+            fatalError("Valid short MPEG-TS segment was rejected")
+        }
+
         let invalidSegment = Data(repeating: 0x41, count: 188 * 4)
         guard !DownloadPayloadValidator.isMPEGTransportStream(invalidSegment) else {
             fatalError("Non-TS binary response was accepted as a segment")

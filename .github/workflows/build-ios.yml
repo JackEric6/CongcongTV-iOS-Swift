@@ -57,6 +57,14 @@ jobs:
             -o /tmp/verify-download-payload
           /tmp/verify-download-payload
 
+      - name: Verify per-episode playback progress
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Persistence/VodPlaybackState.swift \
+            scripts/verify-playback-progress.swift \
+            -o /tmp/verify-playback-progress
+          /tmp/verify-playback-progress
+
       - name: Build unsigned app
         run: |
           set -o pipefail

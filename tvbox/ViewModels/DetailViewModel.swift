@@ -53,6 +53,8 @@ class DetailViewModel: ObservableObject {
     /// 播放器加载续播位置时，部分内核会先回调一次 0 秒，再回调真实位置。
     /// 在短窗口内保护已恢复的位置，避免启动回调把续播状态覆盖成 0。
     private var pendingResumeProtection: (position: Double, deadline: Date)?
+    /// 按线路和集索引保存的续播进度。
+    private var episodeProgress: [String: Double] = [:]
 
     /// 数据服务与网络服务。
     private let sourceService = SourceService.shared
@@ -131,6 +133,13 @@ class DetailViewModel: ObservableObject {
         lastPreferredPlaybackState = preferredPlaybackState
         if canReuseExistingPlayback {
             return
+        }
+        episodeProgress = preferredPlaybackState?.episodeProgress ?? [:]
+        if let preferredPlaybackState {
+            episodeProgress[Self.playbackProgressKey(
+                flag: preferredPlaybackState.flag,
+                episodeIndex: preferredPlaybackState.episodeIndex
+            )] = max(0, preferredPlaybackState.progressSeconds)
         }
         let sourceKey = video.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
         // 海报携带了 sourceKey 时必须使用对应源，不能静默回退到首页源。
@@ -243,7 +252,10 @@ class DetailViewModel: ObservableObject {
                 self.vodInfo?.playFlag = playbackFlag
                 self.selectedEpisodeIndex = playbackIndex
                 self.vodInfo?.playIndex = playbackIndex
-                let progress = preferredPlaybackState.map { max($0.progressSeconds, 0) } ?? 0
+                let progress = preferredPlaybackState?.progress(
+                    for: playbackFlag,
+                    episodeIndex: playbackIndex
+                ) ?? 0
                 self.resumeSeconds = progress
                 self.realtimeProgressSeconds = progress
                 self.hasRealtimeProgressSnapshot = false
@@ -296,11 +308,7 @@ class DetailViewModel: ObservableObject {
 
         let state: VodPlaybackState?
         if vodInfo != nil {
-            state = VodPlaybackState(
-                flag: selectedFlag,
-                episodeIndex: selectedEpisodeIndex,
-                progressSeconds: currentPlaybackSeconds()
-            )
+            state = playbackState(progressOverride: currentPlaybackSeconds())
         } else {
             state = lastPreferredPlaybackState
         }
@@ -500,18 +508,18 @@ class DetailViewModel: ObservableObject {
         guard selectedFlag != flag else { return }
         let shouldContinuePlayback = isPlaying || playableResolveTask != nil
         let currentIndex = selectedEpisodeIndex
-
-        selectedFlag = flag
-        vodInfo?.playFlag = flag
-        resumeSeconds = 0
-        realtimeProgressSeconds = 0
-        hasRealtimeProgressSnapshot = false
-        pendingResumeProtection = nil
+        rememberCurrentEpisodeProgress()
 
         let episodes = vodInfo?.playUrlMap[flag] ?? []
         guard !episodes.isEmpty else {
+            selectedFlag = flag
+            vodInfo?.playFlag = flag
             selectedEpisodeIndex = 0
             vodInfo?.playIndex = 0
+            resumeSeconds = 0
+            realtimeProgressSeconds = 0
+            hasRealtimeProgressSnapshot = false
+            pendingResumeProtection = nil
             resetQualityState()
             playableResolveTask?.cancel()
             playableResolveTask = nil
@@ -523,6 +531,16 @@ class DetailViewModel: ObservableObject {
         }
 
         let targetIndex = min(max(currentIndex, 0), episodes.count - 1)
+        let progress = episodeProgress[Self.playbackProgressKey(flag: flag, episodeIndex: targetIndex)] ?? 0
+        selectedFlag = flag
+        vodInfo?.playFlag = flag
+        resumeSeconds = progress
+        realtimeProgressSeconds = progress
+        hasRealtimeProgressSnapshot = false
+        pendingResumeProtection = progress > 0
+            ? (position: progress, deadline: Date().addingTimeInterval(4))
+            : nil
+
         selectedEpisodeIndex = targetIndex
         vodInfo?.playIndex = targetIndex
         let episodeURL = episodes[targetIndex].url
@@ -539,12 +557,16 @@ class DetailViewModel: ObservableObject {
     func selectEpisode(index: Int) {
         guard index >= 0, index < currentEpisodes.count else { return }
         guard selectedEpisodeIndex != index || !isPlaying else { return }
+        rememberCurrentEpisodeProgress()
         selectedEpisodeIndex = index
         vodInfo?.playIndex = index
-        resumeSeconds = 0
-        realtimeProgressSeconds = 0
+        let progress = episodeProgress[Self.playbackProgressKey(flag: selectedFlag, episodeIndex: index)] ?? 0
+        resumeSeconds = progress
+        realtimeProgressSeconds = progress
         hasRealtimeProgressSnapshot = false
-        pendingResumeProtection = nil
+        pendingResumeProtection = progress > 0
+            ? (position: progress, deadline: Date().addingTimeInterval(4))
+            : nil
 
         if let episode = vodInfo?.currentEpisode {
             let normalizedURL = normalizedEpisodeURL(episode.url)
@@ -579,7 +601,9 @@ class DetailViewModel: ObservableObject {
         selectedEpisodeIndex = targetIndex
         vodInfo?.playIndex = targetIndex
 
-        let progress = max(0, state.progressSeconds)
+        episodeProgress = state.episodeProgress
+        let progress = state.progress(for: targetFlag, episodeIndex: targetIndex)
+        episodeProgress[Self.playbackProgressKey(flag: targetFlag, episodeIndex: targetIndex)] = progress
         resumeSeconds = progress
         realtimeProgressSeconds = progress
         hasRealtimeProgressSnapshot = false
@@ -625,6 +649,7 @@ class DetailViewModel: ObservableObject {
         }
         realtimeProgressSeconds = max(seconds, 0)
         hasRealtimeProgressSnapshot = true
+        rememberCurrentEpisodeProgress()
     }
 
     /// 当前实时进度（不触发 UI 高频刷新）
@@ -638,6 +663,31 @@ class DetailViewModel: ObservableObject {
         if abs(snapshot - resumeSeconds) >= 1 {
             resumeSeconds = snapshot
         }
+        rememberCurrentEpisodeProgress(progress: snapshot)
+    }
+
+    /// 当前播放状态与完整分集进度账本，用于历史记录落盘。
+    func playbackState(progressOverride: Double? = nil) -> VodPlaybackState {
+        let progress = max(progressOverride ?? currentPlaybackSeconds(), 0)
+        var state = VodPlaybackState(
+            flag: selectedFlag,
+            episodeIndex: selectedEpisodeIndex,
+            progressSeconds: progress,
+            episodeProgress: episodeProgress
+        )
+        state.setProgress(progress, flag: selectedFlag, episodeIndex: selectedEpisodeIndex)
+        return state
+    }
+
+    private func rememberCurrentEpisodeProgress(progress: Double? = nil) {
+        guard selectedEpisodeIndex >= 0, !selectedFlag.isEmpty else { return }
+        let value = max(progress ?? currentPlaybackSeconds(), 0)
+        guard value.isFinite else { return }
+        episodeProgress[Self.playbackProgressKey(flag: selectedFlag, episodeIndex: selectedEpisodeIndex)] = value
+    }
+
+    private static func playbackProgressKey(flag: String, episodeIndex: Int) -> String {
+        VodPlaybackState.progressKey(flag: flag, episodeIndex: episodeIndex)
     }
 
     /// 播放下一集
