@@ -470,8 +470,12 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // makes it visible before autoplay resumes.
         replayButton.isHidden = true
         switch state {
-        case .initialized, .preparing, .readyToPlay, .buffering:
+        case .initialized, .preparing, .readyToPlay:
             showPlaybackLoadingIndicator()
+        case .buffering:
+            if !hidePlaybackLoadingIndicatorIfVideoIsPlaying(layer: layer) {
+                showPlaybackLoadingIndicator()
+            }
         case .bufferFinished:
             if layer.player.isPlaying {
                 updatePlaybackControlIfPlaying(layer: layer)
@@ -482,7 +486,8 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                 }
             }
         case .paused:
-            if hasDisplayedCurrentVideoFrame, hasPlaybackAdvanced {
+            if hidePlaybackLoadingIndicatorIfVideoIsPlaying(layer: layer)
+                || (hasDisplayedCurrentVideoFrame && hasPlaybackAdvanced) {
                 hidePlaybackLoadingIndicator()
             } else {
                 showPlaybackLoadingIndicator()
@@ -740,7 +745,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                 }
             }
         }
-        if hasDisplayedCurrentVideoFrame, hasPlaybackAdvanced {
+        if hasDisplayedCurrentVideoFrame {
             autoplayRetryWorkItem?.cancel()
             autoplayRetryWorkItem = nil
             hidePlaybackLoadingIndicator()
@@ -786,15 +791,22 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                 hasPlaybackAdvanced = true
             }
         }
-        if layer.player.isPlaying, hasPlaybackAdvanced {
-            autoplayRetryWorkItem?.cancel()
-            autoplayRetryWorkItem = nil
-            if !canShowPlaybackControl {
-                canShowPlaybackControl = true
-                toolBar.playButton.isSelected = true
-            }
-            customControlsRefresh?()
+        if layer.player.isPlaying {
             hidePlaybackLoadingIndicator()
+            if hasPlaybackAdvanced {
+                autoplayRetryWorkItem?.cancel()
+                autoplayRetryWorkItem = nil
+                if !canShowPlaybackControl {
+                    canShowPlaybackControl = true
+                    toolBar.playButton.isSelected = true
+                }
+                customControlsRefresh?()
+            } else {
+                // Playback may have started at a resume timestamp that is
+                // rounded by the backend. The rendered frame is enough to hide
+                // the loader; keep retrying only for control-state readiness.
+                requestInitialPlayback(layer: layer)
+            }
         } else {
             // AVPlayerLayer may expose a paused frame before the playback
             // clock advances. Keep the loader over that still frame and start
@@ -809,6 +821,15 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private func showPlaybackLoadingIndicator() {
         loadingIndector.isHidden = false
         loadingIndector.startAnimating()
+    }
+
+    @discardableResult
+    private func hidePlaybackLoadingIndicatorIfVideoIsPlaying(layer: KSPlayerLayer) -> Bool {
+        guard playerLayer === layer,
+              layer.player.isPlaying,
+              hasDisplayedCurrentVideoFrame else { return false }
+        hidePlaybackLoadingIndicator()
+        return true
     }
 
     private func hidePlaybackLoadingIndicator() {
