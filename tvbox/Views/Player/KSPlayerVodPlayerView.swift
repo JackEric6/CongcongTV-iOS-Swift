@@ -499,7 +499,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         let target = toolBar.totalTime > 0
             ? min(requestedPosition, toolBar.totalTime)
             : requestedPosition
-        layer.seek(time: target, autoPlay: false) { [weak self, weak layer] success in
+        layer.seek(time: target, autoPlay: true) { [weak self, weak layer] success in
             DispatchQueue.main.async {
                 guard let self, let layer, self.playerLayer === layer else { return }
                 if success {
@@ -756,11 +756,15 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // Never send the retired layer's final callback through the new session.
         playTimeDidChange = nil
 
-        // Stop the old audio pipeline before KSPlayer constructs and auto-starts
-        // the replacement layer. Keep its view attached until set(url:) swaps it.
+        // Stop the old audio pipeline before constructing the replacement layer.
+        // Keep its view attached until set(url:) swaps it.
         oldLayer?.pause()
         oldLayer?.stop()
         super.set(url: url, options: options)
+        // With global autoplay disabled KSPlayer does not prepare the new layer
+        // itself. Prepare it explicitly so readyToPlay can either seek-and-play
+        // a resumed episode or start a new episode without a user tap.
+        playerLayer?.prepareToPlay()
     }
 
     private func applyTransparentSurfaces() {
@@ -1117,9 +1121,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // keeps background audio available across view reattachment.
         KSOptions.setAudioSession()
         KSOptions.canBackgroundPlay = true
-        // Let KSPlayer auto-start fresh episodes. Resumed episodes stay paused
-        // until the covered seek completes, then request playback explicitly.
-        KSOptions.isAutoPlay = view.pendingStartPosition <= 0.5
+        // Prevent the first frame from playing before resume-seek completes.
+        // replacePlayback explicitly calls prepareToPlay because KSPlayer also
+        // gates preparation on this flag.
+        KSOptions.isAutoPlay = false
         // KSPlayer 原生 pan 手势：横向调进度，左侧纵向调亮度，右侧纵向调音量。
         // 显式开启，避免外部全局配置或旧版本默认值把这些交互关闭。
         KSOptions.enableBrightnessGestures = true
