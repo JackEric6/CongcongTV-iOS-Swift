@@ -105,7 +105,7 @@ struct DetailView: View {
                 onSelect: { index in
                     showEpisodePicker = false
                     flushPlaybackHistoryBeforeSwitch()
-                    beginPlaybackSession()
+                    beginPlaybackSession(forEpisodeSwitch: true)
                     withAnimation {
                         viewModel.selectEpisode(index: index)
                     }
@@ -364,7 +364,7 @@ struct DetailView: View {
             onSelect: { [weak presenter] index in
                 presenter?.dismiss(animated: true) {
                     flushPlaybackHistoryBeforeSwitch()
-                    beginPlaybackSession()
+                    beginPlaybackSession(forEpisodeSwitch: true)
                     withAnimation {
                         viewModel.selectEpisode(index: index)
                     }
@@ -848,7 +848,7 @@ struct DetailView: View {
                 selectedIndex: viewModel.selectedEpisodeIndex,
                 onSelect: { index in
                     flushPlaybackHistoryBeforeSwitch()
-                    beginPlaybackSession()
+                    beginPlaybackSession(forEpisodeSwitch: true)
                     withAnimation {
                         viewModel.selectEpisode(index: index)
                     }
@@ -1019,7 +1019,7 @@ struct DetailView: View {
            canPlayNextEpisode {
             didSkipOutroForEpisode = true
             flushPlaybackHistoryBeforeSwitch()
-            beginPlaybackSession()
+            beginPlaybackSession(forEpisodeSwitch: true)
             viewModel.selectEpisode(index: viewModel.selectedEpisodeIndex + 1)
             return
         }
@@ -1044,12 +1044,14 @@ struct DetailView: View {
     }
 
     /// 开始新的线路/剧集播放会话，令旧播放器回调失效，并重新计算本集的持久化阈值。
-    private func beginPlaybackSession() {
-        NotificationCenter.default.post(
-            name: .congcongPlaybackSessionWillChange,
-            object: nil,
-            userInfo: ["sessionToken": playbackSessionToken]
-        )
+    private func beginPlaybackSession(forEpisodeSwitch: Bool = false) {
+        if forEpisodeSwitch {
+            NotificationCenter.default.post(
+                name: .congcongPlaybackSessionWillChange,
+                object: nil,
+                userInfo: ["sessionToken": playbackSessionToken]
+            )
+        }
         playbackSessionToken = UUID()
         lastPersistedProgress = 0
         didSkipOutroForEpisode = false
@@ -1100,7 +1102,7 @@ struct DetailView: View {
         guard sessionToken == nil || sessionToken == playbackSessionToken else { return }
         flushPlaybackHistoryBeforeSwitch()
         guard canPlayNextEpisode else { return }
-        beginPlaybackSession()
+        beginPlaybackSession(forEpisodeSwitch: true)
         var moved = false
         withAnimation {
             moved = viewModel.playNext()
@@ -1115,7 +1117,7 @@ struct DetailView: View {
         guard sessionToken == nil || sessionToken == playbackSessionToken else { return }
         flushPlaybackHistoryBeforeSwitch()
         guard viewModel.selectedEpisodeIndex > 0 else { return }
-        beginPlaybackSession()
+        beginPlaybackSession(forEpisodeSwitch: true)
         var moved = false
         withAnimation {
             moved = viewModel.playPrevious()
