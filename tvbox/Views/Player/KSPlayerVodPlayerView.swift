@@ -109,6 +109,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     fileprivate var didApplyStartPosition = false
     private var didStartInitialPlayback = false
     private var startPositionRetryCount = 0
+    private var initialPlaybackRetryCount = 0
     private let startPositionCoverView = UIView()
     private var startPositionCoverInstalled = false
     /// SwiftUI 可能在 KSPlayer 全屏转场期间重新配置同一个 UIView。
@@ -478,6 +479,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         didApplyStartPosition = false
         didStartInitialPlayback = false
         startPositionRetryCount = 0
+        initialPlaybackRetryCount = 0
         installStartPositionCoverIfNeeded()
         startPositionCoverView.isHidden = pendingStartPosition <= 0.5
     }
@@ -487,7 +489,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         guard pendingStartPosition > 0.5, pendingStartPosition.isFinite else {
             didStartInitialPlayback = true
             startPositionCoverView.isHidden = true
-            play()
+            requestInitialPlayback(layer: layer)
             return
         }
         guard !didApplyStartPosition else { return }
@@ -504,7 +506,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                     self.didStartInitialPlayback = true
                     self.pendingStartPosition = 0
                     self.startPositionCoverView.isHidden = true
-                    self.play()
+                    self.requestInitialPlayback(layer: layer)
                     return
                 }
 
@@ -515,7 +517,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                     self.pendingStartPosition = 0
                     self.didStartInitialPlayback = true
                     self.startPositionCoverView.isHidden = true
-                    self.play()
+                    self.requestInitialPlayback(layer: layer)
                     return
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak layer] in
@@ -523,6 +525,35 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                     self.startInitialPlaybackIfNeeded(layer: layer)
                 }
             }
+        }
+    }
+
+    private func requestInitialPlayback(layer: KSPlayerLayer) {
+        DispatchQueue.main.async { [weak self, weak layer] in
+            guard let self,
+                  let layer,
+                  self.playerLayer === layer,
+                  self.didStartInitialPlayback else { return }
+            self.play()
+            self.confirmInitialPlayback(layer: layer)
+        }
+    }
+
+    private func confirmInitialPlayback(layer: KSPlayerLayer) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak layer] in
+            guard let self,
+                  let layer,
+                  self.playerLayer === layer,
+                  self.didStartInitialPlayback,
+                  !layer.player.isPlaying,
+                  layer.state != .paused,
+                  layer.state != .error,
+                  layer.state != .playedToTheEnd,
+                  self.initialPlaybackRetryCount < 4 else { return }
+
+            self.initialPlaybackRetryCount += 1
+            self.play()
+            self.confirmInitialPlayback(layer: layer)
         }
     }
 
@@ -712,6 +743,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         didApplyStartPosition = false
         didStartInitialPlayback = false
         startPositionRetryCount = 0
+        initialPlaybackRetryCount = 0
         startPositionCoverView.isHidden = true
         configuredPlaybackURL = nil
         configuredPlaybackSessionToken = nil
@@ -1085,9 +1117,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // keeps background audio available across view reattachment.
         KSOptions.setAudioSession()
         KSOptions.canBackgroundPlay = true
-        // Disable KSPlayer's eager autoplay. A resumed episode must seek before
-        // its first visible frame; fresh playback starts from readyToPlay below.
-        KSOptions.isAutoPlay = false
+        // Let KSPlayer auto-start fresh episodes. Resumed episodes stay paused
+        // until the covered seek completes, then request playback explicitly.
+        KSOptions.isAutoPlay = view.pendingStartPosition <= 0.5
         // KSPlayer 原生 pan 手势：横向调进度，左侧纵向调亮度，右侧纵向调音量。
         // 显式开启，避免外部全局配置或旧版本默认值把这些交互关闭。
         KSOptions.enableBrightnessGestures = true
