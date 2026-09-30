@@ -451,7 +451,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // episode is preparing because the native paused callback briefly
         // makes it visible before autoplay resumes.
         replayButton.isHidden = true
-        if state == .playing || state == .error {
+        if state == .bufferFinished || state == .error {
             hasStartedCurrentPlayback = true
             customControlsRefresh?()
         }
@@ -1483,9 +1483,11 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 self.verticalSeekStack.alpha = self.controlsVisible && !self.isLandscape ? 1 : 0
                 self.playerView?.routeButton.alpha = alpha
                 self.playerView?.routeButton.isHidden = !self.controlsVisible
+                let hasStartedPlayback = (self.playerView as? CongcongKSVideoPlayerView)?
+                    .hasStartedCurrentPlayback == true
                 self.playerView?.toolBar.playButton.alpha = self.controlsVisible
                     && !self.isResolvingPlayback
-                    && self.playerView?.hasStartedCurrentPlayback == true ? 1 : 0
+                    && hasStartedPlayback ? 1 : 0
                 self.playerView?.toolBar.playbackRateButton.alpha = alpha
                 self.playerView?.toolBar.playbackRateButton.isHidden = !self.controlsVisible
                 self.introButton.alpha = alpha
