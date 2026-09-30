@@ -112,6 +112,14 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private let startPositionCoverView = UIView()
     private var startPositionCoverInstalled = false
     fileprivate var canShowPlaybackControl = false
+    fileprivate var hasDisplayedCurrentVideoFrame = false
+    fileprivate var canShowPlayerControls: Bool {
+        canShowPlaybackControl && (hasDisplayedCurrentVideoFrame || playbackFailed)
+    }
+    private var playbackFailed = false
+    private weak var observedVideoLayer: AVPlayerLayer?
+    private var firstFrameObservation: NSKeyValueObservation?
+    private var firstFrameStartPosition: TimeInterval = 0
     /// SwiftUI 可能在 KSPlayer 全屏转场期间重新配置同一个 UIView。
     /// 将媒体身份保存在原生视图上，避免把重挂载误判为新会话并重复 set(url:)。
     fileprivate var configuredPlaybackURL: URL?
@@ -133,6 +141,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private var nativePanDirection: KSPanDirection?
     private var pendingSeekTarget: TimeInterval?
     private var seekRequestID = 0
+    private var autoplayRetryWorkItem: DispatchWorkItem?
 
     override var isMaskShow: Bool {
         didSet {
@@ -287,6 +296,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // resetPlayer() restores KSPlayer's default replay button visibility;
         // this app uses the toolbar button as the sole play/pause affordance.
         replayButton.isHidden = true
+        if !canShowPlaybackControl {
+            showPlaybackLoadingIndicator()
+        }
     }
 
     override func didMoveToWindow() {
@@ -447,22 +459,43 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     override func player(layer: KSPlayerLayer, state: KSPlayerState) {
         guard playerLayer === layer else { return }
         super.player(layer: layer, state: state)
+        installFirstFrameObservation(for: layer)
         // KSPlayer's centered replay button is redundant with the toolbar
         // play button in this app. It is especially distracting while a new
         // episode is preparing because the native paused callback briefly
         // makes it visible before autoplay resumes.
         replayButton.isHidden = true
-        if state == .bufferFinished {
-            updatePlaybackControlIfPlaying(layer: layer)
-            if !canShowPlaybackControl, didStartInitialPlayback {
-                requestInitialPlayback(layer: layer)
+        switch state {
+        case .initialized, .preparing, .readyToPlay, .buffering:
+            showPlaybackLoadingIndicator()
+        case .bufferFinished:
+            if layer.player.isPlaying {
+                updatePlaybackControlIfPlaying(layer: layer)
+            } else {
+                showPlaybackLoadingIndicator()
+                if !hasDisplayedCurrentVideoFrame, didStartInitialPlayback {
+                    requestInitialPlayback(layer: layer)
+                }
             }
-        } else if state == .paused, !canShowPlaybackControl, didStartInitialPlayback {
-            // A transient paused callback can arrive between readyToPlay and
-            // autoplay. The startup play control stays hidden; retry autoplay.
-            requestInitialPlayback(layer: layer)
-        }
-        if state == .error {
+        case .paused:
+            if hasDisplayedCurrentVideoFrame {
+                hidePlaybackLoadingIndicator()
+            } else {
+                showPlaybackLoadingIndicator()
+                if didStartInitialPlayback {
+                    // KSPlayer emits a transient paused callback while its
+                    // backend is transitioning into playback. Keep loading
+                    // visible and retry until the first frame is ready.
+                    requestInitialPlayback(layer: layer)
+                }
+            }
+        case .playedToTheEnd:
+            hidePlaybackLoadingIndicator()
+        case .error:
+            autoplayRetryWorkItem?.cancel()
+            autoplayRetryWorkItem = nil
+            playbackFailed = true
+            hidePlaybackLoadingIndicator()
             canShowPlaybackControl = true
             customControlsRefresh?()
             toolBar.playButton.isEnabled = true
@@ -508,12 +541,21 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         didApplyStartPosition = false
         didStartInitialPlayback = false
         canShowPlaybackControl = false
+        hasDisplayedCurrentVideoFrame = false
+        playbackFailed = false
+        firstFrameObservation?.invalidate()
+        firstFrameObservation = nil
+        observedVideoLayer = nil
+        firstFrameStartPosition = max(0, startPosition.isFinite ? startPosition : 0)
         startPositionRetryCount = 0
         installStartPositionCoverIfNeeded()
         startPositionCoverView.isHidden = pendingStartPosition <= 0.5
         toolBar.playButton.isEnabled = pendingStartPosition <= 0.5
         toolBar.playButton.alpha = 0
         replayButton.isHidden = true
+        autoplayRetryWorkItem?.cancel()
+        autoplayRetryWorkItem = nil
+        showPlaybackLoadingIndicator()
         customControlsRefresh?()
     }
 
@@ -551,6 +593,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
                 guard self.startPositionRetryCount <= 8 else {
                     // 不可 seek 的流不能让播放器永久停留在遮罩下。
                     self.pendingStartPosition = 0
+                    self.firstFrameStartPosition = 0
                     self.didStartInitialPlayback = true
                     self.startPositionCoverView.isHidden = true
                     self.toolBar.playButton.isEnabled = true
@@ -566,25 +609,118 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     }
 
     private func requestInitialPlayback(layer: KSPlayerLayer) {
-        DispatchQueue.main.async { [weak self, weak layer] in
+        guard playerLayer === layer,
+              didStartInitialPlayback,
+              !hasDisplayedCurrentVideoFrame,
+              autoplayRetryWorkItem == nil else { return }
+        let workItem = DispatchWorkItem { [weak self, weak layer] in
             guard let self,
                   let layer,
                   self.playerLayer === layer,
-                  self.didStartInitialPlayback else { return }
-            guard !layer.player.isPlaying else {
+                  self.didStartInitialPlayback,
+                  !self.hasDisplayedCurrentVideoFrame else { return }
+            self.autoplayRetryWorkItem = nil
+            guard layer.state != .error else {
+                self.hidePlaybackLoadingIndicator()
+                return
+            }
+            if layer.player.isPlaying {
                 self.updatePlaybackControlIfPlaying(layer: layer)
                 return
             }
-            self.play()
+            self.showPlaybackLoadingIndicator()
+            if layer.player.isReadyToPlay {
+                self.play()
+            }
+            self.requestInitialPlayback(layer: layer)
         }
+        autoplayRetryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
     private func updatePlaybackControlIfPlaying(layer: KSPlayerLayer) {
         guard playerLayer === layer, layer.player.isPlaying else { return }
-        guard !canShowPlaybackControl else { return }
-        canShowPlaybackControl = true
-        toolBar.playButton.isSelected = true
-        customControlsRefresh?()
+        if !canShowPlaybackControl {
+            autoplayRetryWorkItem?.cancel()
+            autoplayRetryWorkItem = nil
+            canShowPlaybackControl = true
+            toolBar.playButton.isSelected = true
+            customControlsRefresh?()
+        }
+
+        if layer.player.tracks(mediaType: .video).isEmpty {
+            hasDisplayedCurrentVideoFrame = true
+        } else {
+            installFirstFrameObservation(for: layer)
+            // Non-AVPlayer KSPlayer backends do not expose AVPlayerLayer's
+            // first-frame signal. Only infer readiness after playback time
+            // has actually advanced from this session's start point.
+            if observedVideoLayer == nil {
+                let currentTime = layer.player.currentPlaybackTime
+                if currentTime.isFinite, currentTime - firstFrameStartPosition >= 0.25 {
+                    hasDisplayedCurrentVideoFrame = true
+                }
+            }
+        }
+        if hasDisplayedCurrentVideoFrame {
+            autoplayRetryWorkItem?.cancel()
+            autoplayRetryWorkItem = nil
+            hidePlaybackLoadingIndicator()
+        } else {
+            showPlaybackLoadingIndicator()
+        }
+    }
+
+    private func installFirstFrameObservation(for layer: KSPlayerLayer) {
+        guard playerLayer === layer,
+              let renderLayer = layer.player.view?.layer as? AVPlayerLayer else { return }
+        guard observedVideoLayer !== renderLayer else {
+            if renderLayer.isReadyForDisplay {
+                markFirstVideoFrameDisplayed(for: layer, renderedBy: renderLayer)
+            }
+            return
+        }
+
+        firstFrameObservation?.invalidate()
+        observedVideoLayer = renderLayer
+        firstFrameObservation = renderLayer.observe(
+            \.isReadyForDisplay,
+            options: [.initial, .new]
+        ) { [weak self, weak layer] renderLayer, _ in
+            guard renderLayer.isReadyForDisplay else { return }
+            DispatchQueue.main.async {
+                guard let self, let layer,
+                      self.playerLayer === layer,
+                      self.observedVideoLayer === renderLayer,
+                      layer.player.view?.layer === renderLayer else { return }
+                self.markFirstVideoFrameDisplayed(for: layer, renderedBy: renderLayer)
+            }
+        }
+    }
+
+    private func markFirstVideoFrameDisplayed(for layer: KSPlayerLayer, renderedBy renderLayer: AVPlayerLayer) {
+        guard playerLayer === layer,
+              observedVideoLayer === renderLayer,
+              layer.player.view?.layer === renderLayer else { return }
+        hasDisplayedCurrentVideoFrame = true
+        autoplayRetryWorkItem?.cancel()
+        autoplayRetryWorkItem = nil
+        if layer.player.isPlaying, !canShowPlaybackControl {
+            canShowPlaybackControl = true
+            toolBar.playButton.isSelected = true
+            customControlsRefresh?()
+        }
+        hidePlaybackLoadingIndicator()
+    }
+
+    private func showPlaybackLoadingIndicator() {
+        loadingIndector.isHidden = false
+        loadingIndector.startAnimating()
+    }
+
+    private func hidePlaybackLoadingIndicator() {
+        loadingIndector.stopAnimating()
+        loadingIndector.isHidden = true
     }
 
     override func player(layer: KSPlayerLayer, finish error: Error?) {
@@ -755,6 +891,11 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         let layer = playerLayer
         let progressHandler = playTimeDidChange
         playTimeDidChange = nil
+        autoplayRetryWorkItem?.cancel()
+        autoplayRetryWorkItem = nil
+        firstFrameObservation?.invalidate()
+        firstFrameObservation = nil
+        observedVideoLayer = nil
         layer?.delegate = nil
 
         // SwiftUI dismantleUIView 可能先于 DetailView.onDisappear 触发；
@@ -773,11 +914,14 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         didApplyStartPosition = false
         didStartInitialPlayback = false
         canShowPlaybackControl = false
+        hasDisplayedCurrentVideoFrame = false
+        playbackFailed = false
         startPositionRetryCount = 0
         startPositionCoverView.isHidden = true
         toolBar.playButton.isEnabled = true
         toolBar.playButton.alpha = 0
         replayButton.isHidden = true
+        hidePlaybackLoadingIndicator()
         configuredPlaybackURL = nil
         configuredPlaybackSessionToken = nil
     }
@@ -794,6 +938,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         oldLayer?.pause()
         oldLayer?.stop()
         super.set(url: url, options: options)
+        if let playerLayer {
+            installFirstFrameObservation(for: playerLayer)
+        }
     }
 
     private func applyTransparentSurfaces() {
@@ -1511,7 +1658,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 self.playerView?.routeButton.alpha = alpha
                 self.playerView?.routeButton.isHidden = !self.controlsVisible
                 let canShowPlaybackControl = (self.playerView as? CongcongKSVideoPlayerView)?
-                    .canShowPlaybackControl == true
+                    .canShowPlayerControls == true
                 self.playerView?.toolBar.playButton.alpha = self.controlsVisible
                     && !self.isResolvingPlayback
                     && canShowPlaybackControl ? 1 : 0
