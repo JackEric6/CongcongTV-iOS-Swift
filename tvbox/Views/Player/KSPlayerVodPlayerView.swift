@@ -752,12 +752,11 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     private func installFirstFrameObservation(for layer: KSPlayerLayer) {
         guard playerLayer === layer,
               let renderLayer = layer.player.view?.layer as? AVPlayerLayer else { return }
-        guard observedVideoLayer !== renderLayer else {
-            if renderLayer.isReadyForDisplay {
-                markFirstVideoFrameDisplayed(for: layer, renderedBy: renderLayer)
-            }
-            return
-        }
+        // The initial KVO delivery below also reports a layer that was ready
+        // before observation began. Re-entering the frame callback synchronously
+        // here can recurse through autoplay -> controls -> observation until the
+        // main-thread stack overflows.
+        guard observedVideoLayer !== renderLayer else { return }
 
         firstFrameObservation?.invalidate()
         observedVideoLayer = renderLayer
