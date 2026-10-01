@@ -5,10 +5,8 @@ struct GuaziPlaybackRequest: Hashable, Sendable {
     static let localHost = "127.0.0.1"
     static let localPath = "/guazi/play.m3u8"
 
-    static let androidCompatibleMediaHeaders = [
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/json;q=0.9"
-    ]
+    // 瓜子 CDN 会把浏览器 UA 路由到短预览；Android 播放器使用自身默认请求头。
+    static let playbackHeaders: [String: String] = [:]
 
     let vodID: String
     let cloudID: String

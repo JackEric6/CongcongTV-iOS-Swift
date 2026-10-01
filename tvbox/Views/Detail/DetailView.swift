@@ -235,7 +235,7 @@ struct DetailView: View {
                 PlayerView(
                     urlString: url,
                     playbackHeaders: video.sourceKey.caseInsensitiveCompare("guazi") == .orderedSame
-                        ? GuaziPlaybackRequest.androidCompatibleMediaHeaders
+                        ? GuaziPlaybackRequest.playbackHeaders
                         : [:],
                     startPosition: effectiveStartPosition,
                     playbackSessionToken: playbackSessionToken,
