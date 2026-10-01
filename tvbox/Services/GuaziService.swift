@@ -42,72 +42,7 @@ actor GuaziService {
         ("4", "动漫", "30")
     ]
 
-    struct PlayRequest: Hashable, Sendable {
-        let vodID: String
-        let cloudID: String
-        let vurlID: String
-        let domainType: String
-        let resolution: String
-        let type: String
-
-        init(
-            vodID: String,
-            cloudID: String,
-            vurlID: String,
-            domainType: String,
-            resolution: String,
-            type: String
-        ) {
-            self.vodID = vodID
-            self.cloudID = cloudID
-            self.vurlID = vurlID
-            self.domainType = domainType
-            self.resolution = resolution
-            self.type = type
-        }
-
-        init?(url: String) {
-            guard let components = URLComponents(string: url),
-                  components.host?.lowercased() == "guazi.local",
-                  let queryItems = components.queryItems else {
-                return nil
-            }
-            func value(_ name: String) -> String {
-                queryItems.first(where: { $0.name == name })?.value ?? ""
-            }
-            let vodID = value("vod_id")
-            let cloudID = value("vurl_cloud_id")
-            let vurlID = value("vurl_id")
-            let domainType = value("domain_type")
-            let resolution = value("resolution")
-            guard !vodID.isEmpty, !cloudID.isEmpty, !vurlID.isEmpty,
-                  !domainType.isEmpty, !resolution.isEmpty else {
-                return nil
-            }
-            self.vodID = vodID
-            self.cloudID = cloudID
-            self.vurlID = vurlID
-            self.domainType = domainType
-            self.resolution = resolution
-            self.type = value("type").isEmpty ? "play" : value("type")
-        }
-
-        var url: String {
-            var components = URLComponents()
-            components.scheme = "https"
-            components.host = "guazi.local"
-            components.path = "/play.m3u8"
-            components.queryItems = [
-                URLQueryItem(name: "vod_id", value: vodID),
-                URLQueryItem(name: "vurl_cloud_id", value: cloudID),
-                URLQueryItem(name: "vurl_id", value: vurlID),
-                URLQueryItem(name: "domain_type", value: domainType),
-                URLQueryItem(name: "resolution", value: resolution),
-                URLQueryItem(name: "type", value: type)
-            ]
-            return components.url?.absoluteString ?? ""
-        }
-    }
+    typealias PlayRequest = GuaziPlaybackRequest
 
     private struct Metadata: Sendable {
         let name: String
@@ -136,7 +71,7 @@ actor GuaziService {
 
     private static let tokenKey = "congcong.guazi.api.token"
     private static let deviceKey = "congcong.guazi.device.key"
-    private static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    private static let userAgent = "okhttp/5.5.0"
     private let session: URLSession
     private var metadataCache: [String: Metadata] = [:]
     private var playlistBySortID: [String: GuaziPlaylistCatalog.Playlist] = [:]
@@ -623,7 +558,7 @@ actor GuaziService {
                   let selected = choosePlay(play) else {
                 return nil
             }
-            let params = parseQuery(selected)
+            let params = PlayRequest.parseEncodedParameters(selected)
             let domainType = params["domain_type"] ?? ""
             let resolution = params["resolution"] ?? ""
             guard !domainType.isEmpty, !resolution.isEmpty else { return nil }
@@ -945,16 +880,6 @@ actor GuaziService {
         video.des = metadata.des
         video.tid = string(object["t_id"]).isEmpty ? string(object["d_type"]) : string(object["t_id"])
         return video
-    }
-
-    private func parseQuery(_ value: String) -> [String: String] {
-        var result: [String: String] = [:]
-        for pair in value.split(separator: "&") {
-            let pieces = pair.split(separator: "=", maxSplits: 1).map(String.init)
-            guard pieces.count == 2 else { continue }
-            result[pieces[0]] = pieces[1].removingPercentEncoding ?? pieces[1]
-        }
-        return result
     }
 
     private func findPlayableURL(_ value: Any?) -> String? {

@@ -30,6 +30,14 @@ jobs:
             -o /tmp/verify-guazi-crypto
           /tmp/verify-guazi-crypto
 
+      - name: Verify Guazi playback request parameter preservation
+        run: |
+          swiftc \
+            tvbox/Services/GuaziPlaybackRequest.swift \
+            scripts/verify-guazi-playback-request.swift \
+            -o /tmp/verify-guazi-playback-request
+          /tmp/verify-guazi-playback-request
+
       - name: Verify Guazi categories and metadata parsing
         run: |
           swiftc -parse-as-library \
