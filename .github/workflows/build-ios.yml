@@ -47,6 +47,14 @@ jobs:
             -o /tmp/verify-guazi-playback-proxy
           /tmp/verify-guazi-playback-proxy
 
+      - name: Verify Guazi playback cloud ordering
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Services/GuaziPlaybackCloudOrder.swift \
+            scripts/verify-guazi-playback-cloud-order.swift \
+            -o /tmp/verify-guazi-playback-cloud-order
+          /tmp/verify-guazi-playback-cloud-order
+
       - name: Verify Guazi categories and metadata parsing
         run: |
           swiftc -parse-as-library \

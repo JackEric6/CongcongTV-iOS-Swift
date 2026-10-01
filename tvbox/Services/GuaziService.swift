@@ -57,12 +57,6 @@ actor GuaziService {
         let rating: String
     }
 
-    private struct CloudSource: Sendable {
-        let index: Int
-        let id: String
-        let name: String
-    }
-
     private struct CloudEpisodes: Sendable {
         let index: Int
         let name: String
@@ -346,12 +340,12 @@ actor GuaziService {
         )
         let clouds = array(detailResponse["vurl_clouds"] ?? metadataObject["vurl_clouds"])
             .enumerated()
-            .compactMap { index, value -> CloudSource? in
+            .compactMap { index, value -> GuaziPlaybackCloud? in
                 guard let cloud = value as? [String: Any] else { return nil }
                 let id = string(cloud["id"])
                 guard !id.isEmpty else { return nil }
                 let name = string(cloud["name"])
-                return CloudSource(
+                return GuaziPlaybackCloud(
                     index: index,
                     id: id,
                     name: name.isEmpty ? "瓜子线路" : name
@@ -359,22 +353,30 @@ actor GuaziService {
             }
         let preferred = preferredFlag?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         var episodesByIndex: [Int: CloudEpisodes] = [:]
-        var attemptedCloudIndexes = Set<Int>()
-
-        // Continuation should favor the previously selected Guazi line, but a
-        // slow default line must not serialize first playback for new titles.
-        if !preferred.isEmpty, let preferredCloud = clouds.first(where: { $0.name == preferred }) {
+        var didPublishInitialEpisodes = false
+        let orderedClouds = GuaziPlaybackCloudOrder.ordered(clouds, preferredName: preferred)
+        for cloud in orderedClouds {
             try Task.checkCancellation()
-            attemptedCloudIndexes.insert(preferredCloud.index)
-            if let episodes = try? await fetchEpisodes(
-                vodID: vodID,
-                cloud: preferredCloud
-            ), !episodes.isEmpty {
-                episodesByIndex[preferredCloud.index] = CloudEpisodes(
-                    index: preferredCloud.index,
-                    name: preferredCloud.name,
-                    episodes: episodes
-                )
+            let episodes: [VodInfo.Episode]
+            do {
+                episodes = try await fetchEpisodes(vodID: vodID, cloud: cloud)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                continue
+            }
+            guard !episodes.isEmpty else { continue }
+            episodesByIndex[cloud.index] = CloudEpisodes(
+                index: cloud.index,
+                name: cloud.name,
+                episodes: episodes
+            )
+
+            // Android walks cloud lines in API order. Publish the first usable
+            // line immediately, then keep collecting later lines in that same
+            // order without allowing a faster preview line to win the race.
+            if !didPublishInitialEpisodes {
+                didPublishInitialEpisodes = true
                 metadataCache[vodID] = metadata
                 await onProgress?(makeVodInfo(
                     id: vodID,
@@ -383,76 +385,6 @@ actor GuaziService {
                     preferredFlag: preferred
                 ))
             }
-        }
-        try Task.checkCancellation()
-
-        let remainingClouds = clouds.filter { !attemptedCloudIndexes.contains($0.index) }
-        let initialMetadata = metadata
-        let hasPreferredEpisodes = !episodesByIndex.isEmpty
-        let additionalEpisodes = await withTaskGroup(
-            of: CloudEpisodes?.self,
-            returning: [CloudEpisodes].self
-        ) { group in
-            let concurrencyLimit = min(4, remainingClouds.count)
-            var nextCloudIndex = 0
-            var didPublishInitialEpisodes = hasPreferredEpisodes
-
-            for _ in 0..<concurrencyLimit {
-                let cloud = remainingClouds[nextCloudIndex]
-                nextCloudIndex += 1
-                group.addTask { [self] in
-                    guard !Task.isCancelled else { return nil }
-                    guard let episodes = try? await self.fetchEpisodes(
-                        vodID: vodID,
-                        cloud: cloud
-                    ), !episodes.isEmpty else {
-                        return nil
-                    }
-                    return CloudEpisodes(
-                        index: cloud.index,
-                        name: cloud.name,
-                        episodes: episodes
-                    )
-                }
-            }
-            var results: [CloudEpisodes] = []
-            for await result in group {
-                if let result {
-                    results.append(result)
-                    if !didPublishInitialEpisodes {
-                        didPublishInitialEpisodes = true
-                        metadataCache[vodID] = initialMetadata
-                        await onProgress?(makeVodInfo(
-                            id: vodID,
-                            metadata: initialMetadata,
-                            cloudEpisodes: [result],
-                            preferredFlag: preferred
-                        ))
-                    }
-                }
-                if nextCloudIndex < remainingClouds.count {
-                    let cloud = remainingClouds[nextCloudIndex]
-                    nextCloudIndex += 1
-                    group.addTask { [self] in
-                        guard !Task.isCancelled else { return nil }
-                        guard let episodes = try? await self.fetchEpisodes(
-                            vodID: vodID,
-                            cloud: cloud
-                        ), !episodes.isEmpty else {
-                            return nil
-                        }
-                        return CloudEpisodes(
-                            index: cloud.index,
-                            name: cloud.name,
-                            episodes: episodes
-                        )
-                    }
-                }
-            }
-            return results
-        }
-        for result in additionalEpisodes {
-            episodesByIndex[result.index] = result
         }
         guard !episodesByIndex.isEmpty else {
             throw GuaziServiceError.invalidResponse
@@ -491,7 +423,7 @@ actor GuaziService {
         return info
     }
 
-    private func fetchEpisodes(vodID: String, cloud: CloudSource) async throws -> [VodInfo.Episode] {
+    private func fetchEpisodes(vodID: String, cloud: GuaziPlaybackCloud) async throws -> [VodInfo.Episode] {
         try Task.checkCancellation()
         let response = try await request(
             path: "/App/Resource/Vurl/show",
