@@ -29,8 +29,8 @@ struct VerifyGuaziPlaybackRequest {
             "playback episodes must use Android's loopback HTTP route"
         )
         require(
-            GuaziPlaybackRequest.playbackHeaders.isEmpty,
-            "Guazi playback must not force a browser User-Agent that receives preview playlists"
+            GuaziPlaybackRequest.playbackHeaders["User-Agent"] == "KSPlayer",
+            "Guazi playback must explicitly use the KSPlayer User-Agent for both AVPlayer and FFmpeg"
         )
         require(
             GuaziPlaybackRequest(
@@ -54,10 +54,6 @@ struct VerifyGuaziPlaybackRequest {
         require(redirect.hasPrefix("HTTP/1.1 301 Moved Permanently\r\n"), "match NanoHTTPD REDIRECT status")
         require(redirect.contains("Location: https://cdn.example/video.m3u8\r\n"), "redirect must carry CDN Location")
         require(redirect.contains("Cache-Control: no-store\r\n"), "redirect must disable caching")
-        require(
-            GuaziPlaybackRequest.playbackHeaders["User-Agent"] == nil,
-            "Guazi playback must allow KSPlayer to use its native media User-Agent"
-        )
         print("GUAZI PLAYBACK REQUEST CHECKS PASSED")
     }
 

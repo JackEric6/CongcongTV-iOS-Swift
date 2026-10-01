@@ -5,8 +5,9 @@ struct GuaziPlaybackRequest: Hashable, Sendable {
     static let localHost = "127.0.0.1"
     static let localPath = "/guazi/play.m3u8"
 
-    // 瓜子 CDN 会把浏览器 UA 路由到短预览；Android 播放器使用自身默认请求头。
-    static let playbackHeaders: [String: String] = [:]
+    // 瓜子 CDN 会把浏览器 UA 路由到短预览。显式传给 KSPlayer，
+    // 让 FFmpeg 与 AVPlayer 后端的实际媒体请求都使用播放器 UA。
+    static let playbackHeaders = ["User-Agent": "KSPlayer"]
 
     let vodID: String
     let cloudID: String
