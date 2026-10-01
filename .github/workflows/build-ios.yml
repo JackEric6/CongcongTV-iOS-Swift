@@ -38,6 +38,15 @@ jobs:
             -o /tmp/verify-guazi-playback-request
           /tmp/verify-guazi-playback-request
 
+      - name: Verify Guazi loopback HTTP playback route
+        run: |
+          swiftc -parse-as-library -framework Network \
+            tvbox/Services/GuaziPlaybackRequest.swift \
+            tvbox/Services/GuaziPlaybackProxy.swift \
+            scripts/verify-guazi-playback-proxy.swift \
+            -o /tmp/verify-guazi-playback-proxy
+          /tmp/verify-guazi-playback-proxy
+
       - name: Verify Guazi categories and metadata parsing
         run: |
           swiftc -parse-as-library \

@@ -58,14 +58,6 @@ struct VerifyGuaziPlaybackRequest {
             GuaziPlaybackRequest.androidCompatibleMediaHeaders["Accept"]?.contains("application/json") == true,
             "Guazi media requests must use the Android player Accept header"
         )
-        require(
-            GuaziPlaybackRequest.prefersFFmpegBackend(sourceKey: "guazi"),
-            "Guazi must use the FFmpeg backend first"
-        )
-        require(
-            !GuaziPlaybackRequest.prefersFFmpegBackend(sourceKey: "xgzy"),
-            "Other sources must keep the AVPlayer-first backend"
-        )
         print("GUAZI PLAYBACK REQUEST CHECKS PASSED")
     }
 

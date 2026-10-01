@@ -3,15 +3,22 @@ import Network
 
 /// iOS 等价于 Android RemoteServer + GuaziPlayRequestProcess 的回环媒体路由。
 actor GuaziPlaybackProxy {
-    static let shared = GuaziPlaybackProxy()
+    typealias MediaURLResolver = @Sendable (GuaziPlaybackRequest) async throws -> String
+
+    static let shared = GuaziPlaybackProxy { request in
+        try await GuaziService.shared.play(request)
+    }
 
     private let queue = DispatchQueue(label: "com.congcong.tv.guazi-playback-proxy")
+    private let resolveMediaURL: MediaURLResolver
     private var listener: NWListener?
     private var isReady = false
     private var readyPort: UInt16?
     private var readyWaiters: [CheckedContinuation<UInt16, Error>] = []
 
-    private init() {}
+    init(resolveMediaURL: @escaping MediaURLResolver) {
+        self.resolveMediaURL = resolveMediaURL
+    }
 
     func startIfNeeded() async throws -> UInt16 {
         if isReady, let readyPort { return readyPort }
@@ -23,7 +30,7 @@ actor GuaziPlaybackProxy {
             do {
                 let parameters = NWParameters.tcp
                 parameters.requiredLocalEndpoint = .hostPort(
-                    host: NWEndpoint.Host(GuaziPlaybackRequest.localHost),
+                    host: .ipv4(.loopback),
                     port: .any
                 )
                 let newListener = try NWListener(using: parameters)
@@ -137,9 +144,9 @@ actor GuaziPlaybackProxy {
             }
 
             do {
-                let mediaURL = try await GuaziService.shared.play(request)
+                let mediaURL = try await resolveMediaURL(request)
                 guard let response = GuaziPlaybackRequest.redirectResponse(to: mediaURL) else {
-                    throw GuaziServiceError.playableURLMissing
+                    throw GuaziPlaybackProxyError.invalidMediaURL
                 }
                 send(response, on: connection)
             } catch {
@@ -173,5 +180,13 @@ actor GuaziPlaybackProxy {
         connection.send(content: data, completion: .contentProcessed { _ in
             connection.cancel()
         })
+    }
+}
+
+private enum GuaziPlaybackProxyError: LocalizedError {
+    case invalidMediaURL
+
+    var errorDescription: String? {
+        "瓜子播放接口没有返回有效媒体地址"
     }
 }

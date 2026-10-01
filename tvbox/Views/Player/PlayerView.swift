@@ -115,7 +115,6 @@ final class SystemPlayerSessionController: ObservableObject {
 struct PlayerView: View {
     let urlString: String
     var playbackHeaders: [String: String] = [:]
-    var preferFFmpegBackend = false
     var startPosition: Double = 0
     var playbackSessionToken: UUID? = nil
     var isResolvingPlayback = false
@@ -173,7 +172,6 @@ struct PlayerView: View {
             KSPlayerVodPlayerView(
                 urlString: urlString,
                 playbackHeaders: playbackHeaders,
-                preferFFmpegBackend: preferFFmpegBackend,
                 startPosition: startPosition,
                 playbackSessionToken: playbackSessionToken,
                 isResolvingPlayback: isResolvingPlayback,
