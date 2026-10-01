@@ -500,7 +500,13 @@ actor GuaziService {
                 "vod_d_id": vodID
             ]
         )
-        return buildEpisodes(vodID: vodID, cloudID: cloud.id, response: response)
+        let proxyPort = try await GuaziPlaybackProxy.shared.startIfNeeded()
+        return buildEpisodes(
+            vodID: vodID,
+            cloudID: cloud.id,
+            response: response,
+            proxyPort: proxyPort
+        )
     }
 
     private func makeVodInfo(
@@ -549,7 +555,12 @@ actor GuaziService {
         return url
     }
 
-    private func buildEpisodes(vodID: String, cloudID: String, response: [String: Any]) -> [VodInfo.Episode] {
+    private func buildEpisodes(
+        vodID: String,
+        cloudID: String,
+        response: [String: Any],
+        proxyPort: UInt16
+    ) -> [VodInfo.Episode] {
         array(response["list"]).compactMap { item -> VodInfo.Episode? in
             guard let episode = item as? [String: Any] else { return nil }
             let vurlID = string(episode["id"])
@@ -573,7 +584,7 @@ actor GuaziService {
             let title = string(episode["title"]).isEmpty
                 ? "第\(vurlID)集"
                 : string(episode["title"])
-            return VodInfo.Episode(name: title, url: request.url)
+            return VodInfo.Episode(name: title, url: request.url(port: proxyPort))
         }
     }
 

@@ -25,6 +25,32 @@ struct VerifyGuaziPlaybackRequest {
         require(roundTripped.type == request.type, "type must survive URL construction")
         require(roundTripped.vodID == request.vodID, "vod id must survive URL construction")
         require(
+            request.url.hasPrefix("http://127.0.0.1:9978/guazi/play.m3u8?"),
+            "playback episodes must use Android's loopback HTTP route"
+        )
+        require(
+            GuaziPlaybackRequest(
+                url: request.url.replacingOccurrences(of: "127.0.0.1:9978", with: "guazi.local")
+            ) == nil,
+            "the old synthetic guazi.local URL must not be accepted"
+        )
+        let actualProxyPort: UInt16 = 54_321
+        let actualRequestURL = request.url(port: actualProxyPort)
+        let requestComponents = URLComponents(string: actualRequestURL)!
+        let requestTarget = requestComponents.path + "?" + requestComponents.percentEncodedQuery!
+        let parsedHead = GuaziPlaybackRequest.parseHTTPRequestHead(
+            "GET \(requestTarget) HTTP/1.1\r\nHost: 127.0.0.1:\(actualProxyPort)",
+            port: actualProxyPort
+        )
+        require(parsedHead == request, "local HTTP request must preserve Android playback parameters")
+        let redirect = String(
+            data: GuaziPlaybackRequest.redirectResponse(to: "https://cdn.example/video.m3u8")!,
+            encoding: .utf8
+        )!
+        require(redirect.hasPrefix("HTTP/1.1 301 Moved Permanently\r\n"), "match NanoHTTPD REDIRECT status")
+        require(redirect.contains("Location: https://cdn.example/video.m3u8\r\n"), "redirect must carry CDN Location")
+        require(redirect.contains("Cache-Control: no-store\r\n"), "redirect must disable caching")
+        require(
             GuaziPlaybackRequest.androidCompatibleMediaHeaders["User-Agent"]?.contains("Chrome/138.0.0.0") == true,
             "Guazi media requests must use the Android player user agent"
         )

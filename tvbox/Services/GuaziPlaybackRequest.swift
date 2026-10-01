@@ -1,6 +1,10 @@
 import Foundation
 
 struct GuaziPlaybackRequest: Hashable, Sendable {
+    static let preferredLocalPort: UInt16 = 9978
+    static let localHost = "127.0.0.1"
+    static let localPath = "/guazi/play.m3u8"
+
     static let androidCompatibleMediaHeaders = [
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/json;q=0.9"
@@ -35,7 +39,10 @@ struct GuaziPlaybackRequest: Hashable, Sendable {
 
     init?(url: String) {
         guard let components = URLComponents(string: url),
-              components.host?.lowercased() == "guazi.local",
+              components.scheme?.lowercased() == "http",
+              components.host == Self.localHost,
+              components.port != nil,
+              components.path == Self.localPath,
               let queryItems = components.queryItems else {
             return nil
         }
@@ -60,10 +67,15 @@ struct GuaziPlaybackRequest: Hashable, Sendable {
     }
 
     var url: String {
+        url(port: Self.preferredLocalPort)
+    }
+
+    func url(port: UInt16) -> String {
         var components = URLComponents()
-        components.scheme = "https"
-        components.host = "guazi.local"
-        components.path = "/play.m3u8"
+        components.scheme = "http"
+        components.host = Self.localHost
+        components.port = Int(port)
+        components.path = Self.localPath
         components.queryItems = [
             URLQueryItem(name: "vod_id", value: vodID),
             URLQueryItem(name: "vurl_cloud_id", value: cloudID),
@@ -73,6 +85,58 @@ struct GuaziPlaybackRequest: Hashable, Sendable {
             URLQueryItem(name: "type", value: type)
         ]
         return components.url?.absoluteString ?? ""
+    }
+
+    static func parseHTTPRequestHead(
+        _ head: String,
+        port: UInt16 = Self.preferredLocalPort
+    ) -> GuaziPlaybackRequest? {
+        guard let requestLine = head.components(separatedBy: "\r\n").first else { return nil }
+        let parts = requestLine.split(whereSeparator: \.isWhitespace)
+        guard parts.count == 3,
+              parts[0].uppercased() == "GET",
+              parts[2] == "HTTP/1.0" || parts[2] == "HTTP/1.1",
+              parts[1].hasPrefix("/"),
+              let url = URL(
+                string: "http://\(localHost):\(port)\(parts[1])"
+              ) else {
+            return nil
+        }
+        return GuaziPlaybackRequest(url: url.absoluteString)
+    }
+
+    static func redirectResponse(to location: String) -> Data? {
+        guard let components = URLComponents(string: location),
+              ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
+              components.host != nil,
+              !location.contains("\r"),
+              !location.contains("\n") else {
+            return nil
+        }
+        let response = [
+            "HTTP/1.1 301 Moved Permanently",
+            "Content-Type: text/plain",
+            "Location: \(location)",
+            "Cache-Control: no-store",
+            "Content-Length: 0",
+            "Connection: close",
+            "",
+            ""
+        ].joined(separator: "\r\n")
+        return Data(response.utf8)
+    }
+
+    static func errorResponse(status: Int, reason: String, message: String) -> Data {
+        let body = Data(message.utf8)
+        let header = [
+            "HTTP/1.1 \(status) \(reason)",
+            "Content-Type: text/plain; charset=utf-8",
+            "Content-Length: \(body.count)",
+            "Connection: close",
+            "",
+            ""
+        ].joined(separator: "\r\n")
+        return Data(header.utf8) + body
     }
 
     /// Mirrors GuaziAdapter.parseQuery: split the pairs but do not decode values.

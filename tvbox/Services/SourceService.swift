@@ -521,7 +521,8 @@ class SourceService {
             guard let request = GuaziService.PlayRequest(url: url) else {
                 throw SourceError.invalidPlayableURL(url)
             }
-            return try await GuaziService.shared.play(request)
+            let proxyPort = try await GuaziPlaybackProxy.shared.startIfNeeded()
+            return request.url(port: proxyPort)
         }
 
         let normalized = KktvsResponseNormalizer.normalizeMediaURL(url)
