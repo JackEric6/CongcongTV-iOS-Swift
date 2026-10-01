@@ -15,6 +15,7 @@ extension Notification.Name {
 struct KSPlayerVodPlayerView: View {
     let urlString: String
     var playbackHeaders: [String: String] = [:]
+    var preferFFmpegBackend = false
     var startPosition: Double = 0
     var playbackSessionToken: UUID? = nil
     var isResolvingPlayback = false
@@ -44,6 +45,7 @@ struct KSPlayerVodPlayerView: View {
             KSPlayerUIView(
                 url: url,
                 playbackHeaders: playbackHeaders,
+                preferFFmpegBackend: preferFFmpegBackend,
                 startPosition: max(0, startPosition),
                 playbackSessionToken: playbackSessionToken,
                 isResolvingPlayback: isResolvingPlayback,
@@ -130,6 +132,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     /// 将媒体身份保存在原生视图上，避免把重挂载误判为新会话并重复 set(url:)。
     fileprivate var configuredPlaybackURL: URL?
     fileprivate var configuredPlaybackHeaders: [String: String] = [:]
+    fileprivate var configuredPreferFFmpegBackend: Bool?
     fileprivate var configuredPlaybackSessionToken: UUID?
     // Keep the selected rate independent from KSPlayer's transient menu/player
     // rebuilds. Applying a rate must never recreate the current media item.
@@ -1045,10 +1048,11 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         hidePlaybackLoadingIndicator()
         configuredPlaybackURL = nil
         configuredPlaybackHeaders = [:]
+        configuredPreferFFmpegBackend = nil
         configuredPlaybackSessionToken = nil
     }
 
-    func replacePlayback(url: URL, options: KSOptions) {
+    func replacePlayback(url: URL, options: KSOptions, preferFFmpegBackend: Bool) {
         let oldLayer = playerLayer
         oldLayer?.delegate = nil
         // The detail flow checkpoints history before rotating the session token.
@@ -1059,6 +1063,11 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         // Keep its view attached until set(url:) swaps it.
         oldLayer?.pause()
         oldLayer?.stop()
+        // KSPlayer selects its backend when the layer is created. This app has
+        // one active VOD session, so keep the preference aligned for native
+        // quality/URL changes as well as the initial request.
+        KSOptions.firstPlayerType = preferFFmpegBackend ? KSMEPlayer.self : KSAVPlayer.self
+        KSOptions.secondPlayerType = preferFFmpegBackend ? KSAVPlayer.self : KSMEPlayer.self
         super.set(url: url, options: options)
         if let playerLayer {
             installFirstFrameObservation(for: playerLayer)
@@ -1255,6 +1264,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
     let url: URL
     let playbackHeaders: [String: String]
+    let preferFFmpegBackend: Bool
     let startPosition: Double
     let playbackSessionToken: UUID?
     let isResolvingPlayback: Bool
@@ -1304,7 +1314,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // KSPlayer's native full-screen controller temporarily reparents this
         // view. SwiftUI may ask the representable for its view again while
         // that transition is still in flight; reuse the retained instance so
-        // the AVPlayer session is not torn down and recreated.
+        // the playback session is not torn down and recreated.
         if let retainedView = context.coordinator.retainedPlayerView {
             context.coordinator.configure(retainedView)
             retainedView.customControlsLayout = { [weak coordinator = context.coordinator] isLandscape in
@@ -1341,13 +1351,17 @@ private struct KSPlayerUIView: UIViewRepresentable {
         let tokenChanged = coordinator.playbackSessionToken != playbackSessionToken
         let mediaChanged = coordinator.url != url
         let headersChanged = coordinator.playbackHeaders != playbackHeaders
+        let backendChanged = coordinator.preferFFmpegBackend != preferFFmpegBackend
         if tokenChanged {
             coordinator.playbackSessionToken = playbackSessionToken
         }
         if headersChanged {
             coordinator.playbackHeaders = playbackHeaders
         }
-        if isResolvingPlayback && (tokenChanged || mediaChanged || headersChanged) {
+        if backendChanged {
+            coordinator.preferFFmpegBackend = preferFFmpegBackend
+        }
+        if isResolvingPlayback && (tokenChanged || mediaChanged || headersChanged || backendChanged) {
             coordinator.pendingPlaybackReload = true
         }
         coordinator.onProgressChanged = isResolvingPlayback ? nil : onProgressChanged
@@ -1387,7 +1401,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             coordinator?.updateActionButtonsLayout(isLandscape: isLandscape)
         }
         let shouldConfigure = !isResolvingPlayback
-            && (tokenChanged || mediaChanged || headersChanged || coordinator.pendingPlaybackReload)
+            && (tokenChanged || mediaChanged || headersChanged || backendChanged || coordinator.pendingPlaybackReload)
         if shouldConfigure {
             coordinator.pendingPlaybackReload = false
         }
@@ -1412,6 +1426,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         let needsPlaybackReplacement = view.playerLayer == nil
             || view.configuredPlaybackURL != url
             || view.configuredPlaybackHeaders != playbackHeaders
+            || view.configuredPreferFFmpegBackend != preferFFmpegBackend
             || view.configuredPlaybackSessionToken != playbackSessionToken
 
         // 全屏进出只是同一个播放器 UIView 的重挂载，不能重置进度或重新
@@ -1420,9 +1435,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
             view.prepareInitialPlayback(startPosition: startPosition)
             view.configuredPlaybackURL = url
             view.configuredPlaybackHeaders = playbackHeaders
+            view.configuredPreferFFmpegBackend = preferFFmpegBackend
             view.configuredPlaybackSessionToken = playbackSessionToken
         }
-        // KSPlayer's AV player configures the audio session too, but doing it here
+        // KSPlayer configures the audio session too, but doing it here
         // keeps background audio available across view reattachment.
         KSOptions.setAudioSession()
         KSOptions.canBackgroundPlay = true
@@ -1449,7 +1465,11 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // 因切后台或系统事件自动进入 PiP。
         options.canStartPictureInPictureAutomaticallyFromInline = false
         if needsPlaybackReplacement {
-            view.replacePlayback(url: url, options: options)
+            view.replacePlayback(
+                url: url,
+                options: options,
+                preferFFmpegBackend: preferFFmpegBackend
+            )
         }
         view.backgroundColor = .clear
         view.isOpaque = false
@@ -1497,6 +1517,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
     final class Coordinator: NSObject, PlayerControllerDelegate {
         var url: URL?
         var playbackHeaders: [String: String] = [:]
+        var preferFFmpegBackend = false
         var playbackSessionToken: UUID?
         var pendingPlaybackReload = false
         var onProgressChanged: ((Double, Double?) -> Void)?

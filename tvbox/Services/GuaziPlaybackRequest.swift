@@ -6,6 +6,10 @@ struct GuaziPlaybackRequest: Hashable, Sendable {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/json;q=0.9"
     ]
 
+    static func prefersFFmpegBackend(sourceKey: String) -> Bool {
+        sourceKey.caseInsensitiveCompare("guazi") == .orderedSame
+    }
+
     let vodID: String
     let cloudID: String
     let vurlID: String
