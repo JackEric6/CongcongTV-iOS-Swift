@@ -14,6 +14,7 @@ extension Notification.Name {
 /// SwiftUI adapter for KSPlayer's native iOS player view.
 struct KSPlayerVodPlayerView: View {
     let urlString: String
+    var playbackHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var playbackSessionToken: UUID? = nil
     var isResolvingPlayback = false
@@ -42,6 +43,7 @@ struct KSPlayerVodPlayerView: View {
         if let url = Self.makeURL(from: urlString) {
             KSPlayerUIView(
                 url: url,
+                playbackHeaders: playbackHeaders,
                 startPosition: max(0, startPosition),
                 playbackSessionToken: playbackSessionToken,
                 isResolvingPlayback: isResolvingPlayback,
@@ -127,6 +129,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
     /// SwiftUI 可能在 KSPlayer 全屏转场期间重新配置同一个 UIView。
     /// 将媒体身份保存在原生视图上，避免把重挂载误判为新会话并重复 set(url:)。
     fileprivate var configuredPlaybackURL: URL?
+    fileprivate var configuredPlaybackHeaders: [String: String] = [:]
     fileprivate var configuredPlaybackSessionToken: UUID?
     // Keep the selected rate independent from KSPlayer's transient menu/player
     // rebuilds. Applying a rate must never recreate the current media item.
@@ -1041,6 +1044,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
         replayButton.isHidden = true
         hidePlaybackLoadingIndicator()
         configuredPlaybackURL = nil
+        configuredPlaybackHeaders = [:]
         configuredPlaybackSessionToken = nil
     }
 
@@ -1250,6 +1254,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
     private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     let url: URL
+    let playbackHeaders: [String: String]
     let startPosition: Double
     let playbackSessionToken: UUID?
     let isResolvingPlayback: Bool
@@ -1335,10 +1340,14 @@ private struct KSPlayerUIView: UIViewRepresentable {
     ) -> Bool {
         let tokenChanged = coordinator.playbackSessionToken != playbackSessionToken
         let mediaChanged = coordinator.url != url
+        let headersChanged = coordinator.playbackHeaders != playbackHeaders
         if tokenChanged {
             coordinator.playbackSessionToken = playbackSessionToken
         }
-        if isResolvingPlayback && (tokenChanged || mediaChanged) {
+        if headersChanged {
+            coordinator.playbackHeaders = playbackHeaders
+        }
+        if isResolvingPlayback && (tokenChanged || mediaChanged || headersChanged) {
             coordinator.pendingPlaybackReload = true
         }
         coordinator.onProgressChanged = isResolvingPlayback ? nil : onProgressChanged
@@ -1378,7 +1387,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             coordinator?.updateActionButtonsLayout(isLandscape: isLandscape)
         }
         let shouldConfigure = !isResolvingPlayback
-            && (tokenChanged || mediaChanged || coordinator.pendingPlaybackReload)
+            && (tokenChanged || mediaChanged || headersChanged || coordinator.pendingPlaybackReload)
         if shouldConfigure {
             coordinator.pendingPlaybackReload = false
         }
@@ -1402,6 +1411,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         coordinator.playbackSessionToken = playbackSessionToken
         let needsPlaybackReplacement = view.playerLayer == nil
             || view.configuredPlaybackURL != url
+            || view.configuredPlaybackHeaders != playbackHeaders
             || view.configuredPlaybackSessionToken != playbackSessionToken
 
         // 全屏进出只是同一个播放器 UIView 的重挂载，不能重置进度或重新
@@ -1409,6 +1419,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         if needsPlaybackReplacement {
             view.prepareInitialPlayback(startPosition: startPosition)
             view.configuredPlaybackURL = url
+            view.configuredPlaybackHeaders = playbackHeaders
             view.configuredPlaybackSessionToken = playbackSessionToken
         }
         // KSPlayer's AV player configures the audio session too, but doing it here
@@ -1423,6 +1434,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         KSOptions.enableBrightnessGestures = true
         KSOptions.enableVolumeGestures = true
         let options = KSOptions()
+        playbackHeaders.forEach { options.appendHeader([$0.key: $0.value]) }
         // Start position is restored by the guarded seek path above. Leaving a
         // second native start-time request enabled can race that single seek.
         options.startPlayTime = 0
@@ -1484,6 +1496,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
     final class Coordinator: NSObject, PlayerControllerDelegate {
         var url: URL?
+        var playbackHeaders: [String: String] = [:]
         var playbackSessionToken: UUID?
         var pendingPlaybackReload = false
         var onProgressChanged: ((Double, Double?) -> Void)?

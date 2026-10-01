@@ -24,6 +24,14 @@ struct VerifyGuaziPlaybackRequest {
         require(roundTripped.domainType == request.domainType, "domain_type must survive URL construction")
         require(roundTripped.type == request.type, "type must survive URL construction")
         require(roundTripped.vodID == request.vodID, "vod id must survive URL construction")
+        require(
+            GuaziPlaybackRequest.androidCompatibleMediaHeaders["User-Agent"]?.contains("Chrome/138.0.0.0") == true,
+            "Guazi media requests must use the Android player user agent"
+        )
+        require(
+            GuaziPlaybackRequest.androidCompatibleMediaHeaders["Accept"]?.contains("application/json") == true,
+            "Guazi media requests must use the Android player Accept header"
+        )
         print("GUAZI PLAYBACK REQUEST CHECKS PASSED")
     }
 

@@ -114,6 +114,7 @@ final class SystemPlayerSessionController: ObservableObject {
 /// 视频播放器组件 - 对应 Android 版 PlayFragment
 struct PlayerView: View {
     let urlString: String
+    var playbackHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var playbackSessionToken: UUID? = nil
     var isResolvingPlayback = false
@@ -170,6 +171,7 @@ struct PlayerView: View {
             #if os(iOS)
             KSPlayerVodPlayerView(
                 urlString: urlString,
+                playbackHeaders: playbackHeaders,
                 startPosition: startPosition,
                 playbackSessionToken: playbackSessionToken,
                 isResolvingPlayback: isResolvingPlayback,
