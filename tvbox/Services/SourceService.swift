@@ -521,8 +521,15 @@ class SourceService {
             guard let request = GuaziService.PlayRequest(url: url) else {
                 throw SourceError.invalidPlayableURL(url)
             }
-            let proxyPort = try await GuaziPlaybackProxy.shared.startIfNeeded()
-            return request.url(port: proxyPort)
+            // Resolve the dynamic address before handing media to AVPlayer.
+            // Do not depend on AVPlayer forwarding custom headers across a
+            // cross-origin redirect; Guazi serves only a short preview to
+            // default browser-like user agents.
+            let mediaURL = try await GuaziService.shared.play(request)
+            guard let playableURL = Self.validPlayableURL(mediaURL) else {
+                throw SourceError.invalidPlayableURL(mediaURL)
+            }
+            return playableURL
         }
 
         let normalized = KktvsResponseNormalizer.normalizeMediaURL(url)
