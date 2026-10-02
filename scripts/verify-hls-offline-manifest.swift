@@ -36,6 +36,30 @@ struct VerifyHLSOfflineManifest {
         guard HLSOfflineManifest.uri(in: keyLine) == "../keys/key.bin" else {
             fatalError("HLS key URI was not parsed")
         }
+
+        let mediaPlaylist = """
+        #EXTM3U
+        #EXT-X-KEY:METHOD=AES-128,URI="../keys/key.bin"
+        #EXT-X-MAP:URI="init.mp4"
+        #EXTINF:6.0,
+        segments/0001.ts
+        #EXTINF:6.0,
+        segments/0002.ts
+        #EXT-X-KEY:METHOD=NONE
+        """
+        let resources = HLSOfflineManifest.referencedResourceURLs(
+            in: mediaPlaylist,
+            baseURL: URL(string: "https://media.example.test/vod/720p/index.m3u8")!
+        )
+        let resourcePaths = Set(resources.map(\.absoluteString))
+        guard resourcePaths == [
+            "https://media.example.test/vod/keys/key.bin",
+            "https://media.example.test/vod/720p/init.mp4",
+            "https://media.example.test/vod/720p/segments/0001.ts",
+            "https://media.example.test/vod/720p/segments/0002.ts"
+        ] else {
+            fatalError("HLS resource enumeration lost a segment, map, or encryption key")
+        }
         print("HLS OFFLINE MANIFEST CHECKS PASSED")
     }
 }

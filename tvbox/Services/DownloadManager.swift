@@ -114,6 +114,7 @@ enum DownloadError: LocalizedError, Equatable {
 @MainActor
 final class DownloadManager: NSObject, ObservableObject {
     static let shared = DownloadManager()
+    private static let maxConcurrentHLSRequests = 8
 
     @Published private(set) var items: [String: DownloadItem] = [:]
 
@@ -121,6 +122,7 @@ final class DownloadManager: NSObject, ObservableObject {
     private let downloadsDirectory: URL
     private let manifestURL: URL
     private var session: URLSession!
+    private var hlsResourceSession: URLSession!
     private var assetSession: AVAssetDownloadURLSession!
     private var taskIDs: [Int: String] = [:]
     private var activeTasks: [Int: URLSessionTask] = [:]
@@ -138,7 +140,8 @@ final class DownloadManager: NSObject, ObservableObject {
         let speedBytesPerSecond: Double
     }
 
-    private final class HLSCacheContext {
+    // Download tasks re-enter the main-actor manager before mutating this context.
+    private final class HLSCacheContext: @unchecked Sendable {
         var localURLs: [String: URL] = [:]
         var activeURLs = Set<String>()
         var resourceCount = 0
@@ -148,7 +151,8 @@ final class DownloadManager: NSObject, ObservableObject {
         var expectedBytes: Int64 = 0
         var mediaSegmentCount = 0
         var mediaDuration: TimeInterval = 0
-        var inFlightBytes: Int64 = 0
+        var inFlightBytesByResource: [String: Int64] = [:]
+        var inFlightExpectedBytesByResource: [String: Int64] = [:]
     }
 
     private struct HLSResourceResponse {
@@ -176,6 +180,14 @@ final class DownloadManager: NSObject, ObservableObject {
         configuration.httpMaximumConnectionsPerHost = 2
         configuration.waitsForConnectivity = true
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+
+        let hlsConfiguration = URLSessionConfiguration.ephemeral
+        hlsConfiguration.timeoutIntervalForRequest = 45
+        hlsConfiguration.timeoutIntervalForResource = 24 * 60 * 60
+        hlsConfiguration.httpMaximumConnectionsPerHost = Self.maxConcurrentHLSRequests
+        hlsConfiguration.waitsForConnectivity = true
+        hlsConfiguration.networkServiceType = .video
+        hlsResourceSession = URLSession(configuration: hlsConfiguration)
 
         // AVAssetDownloadURLSession requires a background configuration on
         // iOS. Creating it with `.default` raises an Objective-C exception at
@@ -682,7 +694,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 updated.url = effectiveURL
                 self.items[identifier] = updated
                 do {
-                    try await self.downloadPackagedHLS(identifier: identifier, item: updated, url: effectiveURL)
+                    try await self.downloadOfflineHLS(identifier: identifier, item: updated, url: effectiveURL)
                 } catch let error as HLSDownloadError
                     where updated.playRequestURL != nil && error.shouldRefreshDynamicURL {
                     self.removeHLSArtifacts(identifier: identifier)
@@ -693,7 +705,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     try Task.checkCancellation()
                     updated.url = effectiveURL
                     self.items[identifier] = updated
-                    try await self.downloadPackagedHLS(identifier: identifier, item: updated, url: effectiveURL)
+                    try await self.downloadOfflineHLS(identifier: identifier, item: updated, url: effectiveURL)
                 }
                 self.fallbackTasks.removeValue(forKey: identifier)
                 self.hlsAssetFallbackAttempted.remove(identifier)
@@ -719,6 +731,15 @@ final class DownloadManager: NSObject, ObservableObject {
             }
         }
         fallbackTasks[identifier] = task
+    }
+
+    private func downloadOfflineHLS(identifier: String, item: DownloadItem, url: URL) async throws {
+        do {
+            try await downloadPlainHLS(identifier: identifier, item: item, url: url)
+        } catch HLSDownloadError.unsupported(_) {
+            try Task.checkCancellation()
+            try await downloadPackagedHLS(identifier: identifier, item: item, url: url)
+        }
     }
 
     private func refreshedDownloadURL(for item: DownloadItem, fallbackURL: URL) async throws -> URL {
@@ -864,6 +885,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 )
             }
         }
+        try validateLocalHLSPackage(at: cachedIndex, rootDirectory: cacheDirectory)
 
         let finalDirectory = hlsPackageDirectory(for: item)
         if fileManager.fileExists(atPath: finalDirectory.path) {
@@ -884,6 +906,51 @@ final class DownloadManager: NSObject, ObservableObject {
         items[identifier] = completed
         saveManifest()
         progressSamples.removeValue(forKey: identifier.hashValue)
+    }
+
+    private func validateLocalHLSPackage(at playlistURL: URL, rootDirectory: URL) throws {
+        var visited = Set<String>()
+        try validateLocalHLSPlaylist(
+            at: playlistURL,
+            rootDirectory: rootDirectory.standardizedFileURL,
+            visited: &visited
+        )
+    }
+
+    private func validateLocalHLSPlaylist(
+        at playlistURL: URL,
+        rootDirectory: URL,
+        visited: inout Set<String>
+    ) throws {
+        let rootPath = rootDirectory.path + "/"
+        let playlistPath = playlistURL.standardizedFileURL.path
+        guard playlistPath.hasPrefix(rootPath),
+              let playlist = try? String(contentsOf: playlistURL, encoding: .utf8),
+              playlist.localizedCaseInsensitiveContains("#EXTM3U") else {
+            throw HLSDownloadError.invalid("离线播放清单结构无效")
+        }
+        guard visited.insert(playlistPath).inserted else { return }
+
+        let resources = HLSOfflineManifest.referencedResourceURLs(in: playlist, baseURL: playlistURL)
+        guard !resources.isEmpty else {
+            throw HLSDownloadError.invalid("离线播放清单没有媒体资源")
+        }
+        for resourceURL in resources {
+            let localURL = resourceURL.standardizedFileURL
+            guard localURL.isFileURL,
+                  localURL.path.hasPrefix(rootPath),
+                  fileManager.fileExists(atPath: localURL.path),
+                  fileSize(at: localURL) > 0 else {
+                throw HLSDownloadError.invalid("离线缓存缺少播放清单引用的媒体资源")
+            }
+            if localURL.pathExtension.caseInsensitiveCompare("m3u8") == .orderedSame {
+                try validateLocalHLSPlaylist(
+                    at: localURL,
+                    rootDirectory: rootDirectory,
+                    visited: &visited
+                )
+            }
+        }
     }
 
     private func cacheHLSResource(
@@ -983,7 +1050,8 @@ final class DownloadManager: NSObject, ObservableObject {
             )
             return resourceFile
         } catch {
-            context.inFlightBytes = 0
+            context.inFlightBytesByResource.removeValue(forKey: key)
+            context.inFlightExpectedBytesByResource.removeValue(forKey: key)
             context.localURLs.removeValue(forKey: key)
             throw error
         }
@@ -1080,6 +1148,15 @@ final class DownloadManager: NSObject, ObservableObject {
         guard playlist.localizedCaseInsensitiveContains("#EXT-X-ENDLIST") else {
             throw HLSDownloadError.unsupported("该 HLS 清单不是已结束的点播流")
         }
+        let resources = HLSOfflineManifest.referencedResourceURLs(in: playlist, baseURL: baseURL)
+        try await cacheHLSResources(
+            resources,
+            identifier: identifier,
+            headers: headers,
+            directory: directory,
+            context: context
+        )
+
         var output: [String] = []
         for rawLine in lines {
             try Task.checkCancellation()
@@ -1110,6 +1187,50 @@ final class DownloadManager: NSObject, ObservableObject {
             output.append(localURL.lastPathComponent)
         }
         return output.joined(separator: "\n") + "\n"
+    }
+
+    private func cacheHLSResources(
+        _ resources: [URL],
+        identifier: String,
+        headers: [String: String],
+        directory: URL,
+        context: HLSCacheContext
+    ) async throws {
+        guard !resources.isEmpty else { return }
+
+        let concurrencyLimit = min(Self.maxConcurrentHLSRequests, resources.count)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            var nextIndex = 0
+            while nextIndex < concurrencyLimit {
+                let resourceURL = resources[nextIndex]
+                nextIndex += 1
+                group.addTask {
+                    _ = try await self.cacheHLSResource(
+                        url: resourceURL,
+                        identifier: identifier,
+                        headers: headers,
+                        directory: directory,
+                        context: context
+                    )
+                }
+            }
+
+            while let _ = try await group.next() {
+                try Task.checkCancellation()
+                guard nextIndex < resources.count else { continue }
+                let resourceURL = resources[nextIndex]
+                nextIndex += 1
+                group.addTask {
+                    _ = try await self.cacheHLSResource(
+                        url: resourceURL,
+                        identifier: identifier,
+                        headers: headers,
+                        directory: directory,
+                        context: context
+                    )
+                }
+            }
+        }
     }
 
     private func rewriteHLSURIAttribute(
@@ -1150,7 +1271,7 @@ final class DownloadManager: NSObject, ObservableObject {
             headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
             request.timeoutInterval = 45
             do {
-                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                let (bytes, response) = try await hlsResourceSession.bytes(for: request)
                 guard let http = response as? HTTPURLResponse else {
                     throw HLSDownloadError.invalid("HLS 媒体资源响应无效")
                 }
@@ -1171,7 +1292,9 @@ final class DownloadManager: NSObject, ObservableObject {
                 chunk.reserveCapacity(64 * 1024)
                 var receivedBytes: Int64 = 0
                 var resourceIsPlaylist: Bool?
-                context.inFlightBytes = 0
+                let resourceKey = url.absoluteString
+                context.inFlightBytesByResource[resourceKey] = 0
+                context.inFlightExpectedBytesByResource[resourceKey] = expectedBytes
                 do {
                     for try await byte in bytes {
                         chunk.append(byte)
@@ -1186,6 +1309,7 @@ final class DownloadManager: NSObject, ObservableObject {
                                 updateHLSStreamingProgress(
                                     identifier: identifier,
                                     context: context,
+                                    resourceKey: resourceKey,
                                     currentBytes: receivedBytes,
                                     currentExpectedBytes: expectedBytes
                                 )
@@ -1204,15 +1328,19 @@ final class DownloadManager: NSObject, ObservableObject {
                         updateHLSStreamingProgress(
                             identifier: identifier,
                             context: context,
+                            resourceKey: resourceKey,
                             currentBytes: receivedBytes,
                             currentExpectedBytes: expectedBytes
                         )
                     }
                 } catch {
-                    context.inFlightBytes = 0
+                    context.inFlightBytesByResource.removeValue(forKey: resourceKey)
+                    context.inFlightExpectedBytesByResource.removeValue(forKey: resourceKey)
                     throw error
                 }
 
+                context.inFlightBytesByResource.removeValue(forKey: resourceKey)
+                context.inFlightExpectedBytesByResource.removeValue(forKey: resourceKey)
                 return HLSResourceResponse(
                     data: data,
                     finalURL: http.url ?? url,
@@ -1220,13 +1348,10 @@ final class DownloadManager: NSObject, ObservableObject {
                     expectedBytes: expectedBytes
                 )
             } catch is CancellationError {
-                context.inFlightBytes = 0
                 throw CancellationError()
             } catch let error as URLError where error.code == .cancelled {
-                context.inFlightBytes = 0
                 throw CancellationError()
             } catch {
-                context.inFlightBytes = 0
                 lastError = error
                 if attempt < 2 {
                     try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 400_000_000))
@@ -1239,27 +1364,32 @@ final class DownloadManager: NSObject, ObservableObject {
     private func updateHLSStreamingProgress(
         identifier: String,
         context: HLSCacheContext,
+        resourceKey: String,
         currentBytes: Int64,
         currentExpectedBytes: Int64
     ) {
-        context.inFlightBytes = max(0, currentBytes)
+        context.inFlightBytesByResource[resourceKey] = max(0, currentBytes)
+        context.inFlightExpectedBytesByResource[resourceKey] = max(0, currentExpectedBytes)
         guard var item = items[identifier], item.status != .paused else { return }
 
-        let downloaded = context.bytesWritten + context.inFlightBytes
+        let inFlightBytes = context.inFlightBytesByResource.values.reduce(0, +)
+        let downloaded = context.bytesWritten + inFlightBytes
+        let inFlightExpectedBytes = context.inFlightExpectedBytesByResource.values.reduce(0, +)
         let expected = max(
-            context.expectedBytes + max(0, currentExpectedBytes),
+            context.expectedBytes + inFlightExpectedBytes,
             downloaded
         )
         let denominator = max(
             max(context.resourceCount, context.plannedResourceCount),
             context.completedCount + context.activeURLs.count
         )
-        let inFlightFraction = currentExpectedBytes > 0
-            ? min(1, max(0, Double(currentBytes) / Double(currentExpectedBytes)))
-            : 0
-        let resourceFraction = (
-            Double(context.completedCount) + inFlightFraction
-        ) / Double(max(1, denominator))
+        let inFlightFraction = context.inFlightBytesByResource.reduce(0.0) { partial, entry in
+            let expectedBytes = context.inFlightExpectedBytesByResource[entry.key] ?? 0
+            guard expectedBytes > 0 else { return partial }
+            return partial + min(1, max(0, Double(entry.value) / Double(expectedBytes)))
+        }
+        let resourceFraction = (Double(context.completedCount) + inFlightFraction)
+            / Double(max(1, denominator))
         let fraction = resourceFraction
         let speed = speedSample(
             taskIdentifier: identifier.hashValue,
@@ -1281,7 +1411,6 @@ final class DownloadManager: NSObject, ObservableObject {
     ) {
         context.completedCount += 1
         context.bytesWritten += max(0, bytes)
-        context.inFlightBytes = 0
         let speed = speedSample(taskIdentifier: identifier.hashValue, bytes: context.bytesWritten)
         let denominator = max(
             max(context.resourceCount, context.plannedResourceCount),
@@ -1412,6 +1541,17 @@ final class DownloadManager: NSObject, ObservableObject {
         }
         let segments = try Self.parsePlainTSPlaylist(baseURL: playlistURL, playlist: playlist)
         guard !segments.isEmpty else { throw HLSDownloadError.invalid("播放列表中没有可下载分片") }
+        if item.sourceKey.caseInsensitiveCompare("guazi") == .orderedSame {
+            let metrics = DownloadPayloadValidator.hlsPlaylistMetrics(playlist)
+            if DownloadPayloadValidator.isLikelyPreviewHLS(
+                segmentCount: metrics.segmentCount,
+                duration: metrics.duration
+            ) {
+                throw HLSDownloadError.staleAddress(
+                    "瓜子返回的是短预览流，已重新解析完整视频后再下载"
+                )
+            }
+        }
 
         let segmentDirectory = hlsSegmentDirectory(identifier: identifier)
         let outputPart = hlsOutputPartURL(identifier: identifier)
@@ -1447,19 +1587,23 @@ final class DownloadManager: NSObject, ObservableObject {
             progressItem.status = .downloading
             progressItem.progress = Double(completedCount) / Double(segments.count)
             progressItem.bytesWritten = completedBytes
-            progressItem.totalBytes = 0
+            progressItem.totalBytes = estimatedTotalBytes(
+                completedBytes: completedBytes,
+                completedCount: completedCount,
+                totalCount: segments.count
+            )
             progressItem.speedBytesPerSecond = 0
             self.items[identifier] = progressItem
         }
 
         try await withThrowingTaskGroup(of: (Int, URL, Int64).self) { group in
             var nextPending = 0
-            let initialCount = min(6, pendingIndices.count)
+            let initialCount = min(Self.maxConcurrentHLSRequests, pendingIndices.count)
             for _ in 0..<initialCount {
                 let index = pendingIndices[nextPending]
                 nextPending += 1
                 group.addTask {
-                    try await Self.downloadHLSSegment(
+                    try await self.downloadHLSSegment(
                         index: index,
                         url: segments[index],
                         headers: headers,
@@ -1478,7 +1622,11 @@ final class DownloadManager: NSObject, ObservableObject {
                     progressItem.status = .downloading
                     progressItem.progress = Double(completedCount) / Double(segments.count)
                     progressItem.bytesWritten = completedBytes
-                    progressItem.totalBytes = 0
+                    progressItem.totalBytes = estimatedTotalBytes(
+                        completedBytes: completedBytes,
+                        completedCount: completedCount,
+                        totalCount: segments.count
+                    )
                     progressItem.speedBytesPerSecond = speed
                     self.items[identifier] = progressItem
                 }
@@ -1486,7 +1634,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     let index = pendingIndices[nextPending]
                     nextPending += 1
                     group.addTask {
-                        try await Self.downloadHLSSegment(
+                        try await self.downloadHLSSegment(
                             index: index,
                             url: segments[index],
                             headers: headers,
@@ -1534,6 +1682,17 @@ final class DownloadManager: NSObject, ObservableObject {
         items[identifier] = completed
         saveManifest()
         progressSamples.removeValue(forKey: progressKey)
+    }
+
+    private func estimatedTotalBytes(
+        completedBytes: Int64,
+        completedCount: Int,
+        totalCount: Int
+    ) -> Int64 {
+        guard completedBytes > 0, completedCount > 0, totalCount > 0 else { return 0 }
+        let estimate = Double(completedBytes) / Double(completedCount) * Double(totalCount)
+        guard estimate.isFinite, estimate < Double(Int64.max) else { return completedBytes }
+        return max(completedBytes, Int64(estimate))
     }
 
     private static func fetchHLSPlaylist(
@@ -1636,7 +1795,7 @@ final class DownloadManager: NSObject, ObservableObject {
         return urls
     }
 
-    private static func downloadHLSSegment(
+    private func downloadHLSSegment(
         index: Int,
         url: URL,
         headers: [String: String],
@@ -1650,7 +1809,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 var request = URLRequest(url: url)
                 headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
                 request.timeoutInterval = 45
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await hlsResourceSession.data(for: request)
                 guard let http = response as? HTTPURLResponse else {
                     throw HLSDownloadError.invalid("分片响应无效")
                 }
@@ -1672,7 +1831,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     throw HLSDownloadError.staleAddress("分片返回了错误页")
                 }
                 guard DownloadPayloadValidator.isMPEGTransportStream(data) else {
-                    throw HLSDownloadError.staleAddress("分片内容不是有效 MPEG-TS，可能返回了资源站校验内容")
+                    throw HLSDownloadError.unsupported("该 HLS 使用非 MPEG-TS 分片")
                 }
                 try data.write(to: destination, options: .atomic)
                 return (index, destination, Int64(data.count))

@@ -88,6 +88,32 @@ enum HLSOfflineManifest {
         return attribute("GROUP-ID", in: line)
     }
 
+    static func referencedResourceURLs(in playlist: String, baseURL: URL) -> [URL] {
+        var urls: [URL] = []
+        var seen = Set<String>()
+
+        for rawLine in playlist.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+
+            let references: [String]
+            if line.hasPrefix("#") {
+                references = uri(in: line).map { [$0] } ?? []
+            } else {
+                references = [line]
+            }
+
+            for reference in references {
+                guard let url = URL(string: reference, relativeTo: baseURL)?.absoluteURL,
+                      seen.insert(url.absoluteString).inserted else {
+                    continue
+                }
+                urls.append(url)
+            }
+        }
+        return urls
+    }
+
     static func uri(in line: String) -> String? {
         let range = NSRange(line.startIndex..<line.endIndex, in: line)
         guard let match = uriPattern.firstMatch(in: line, range: range),
