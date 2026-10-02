@@ -142,11 +142,13 @@ final class DownloadManager: NSObject, ObservableObject {
         var localURLs: [String: URL] = [:]
         var activeURLs = Set<String>()
         var resourceCount = 0
+        var plannedResourceCount = 0
         var completedCount = 0
         var bytesWritten: Int64 = 0
         var expectedBytes: Int64 = 0
         var mediaSegmentCount = 0
         var mediaDuration: TimeInterval = 0
+        var inFlightBytes: Int64 = 0
     }
 
     private struct HLSResourceResponse {
@@ -904,6 +906,7 @@ final class DownloadManager: NSObject, ObservableObject {
         let playlistFile = cachedHLSResourceURL(for: url, directory: directory, fileExtension: "m3u8")
         if let savedPlaylist = try? String(contentsOf: playlistFile, encoding: .utf8),
            savedPlaylist.localizedCaseInsensitiveContains("#EXTM3U") {
+            context.plannedResourceCount += Self.hlsReferencedResourceCount(savedPlaylist)
             let metrics = DownloadPayloadValidator.hlsPlaylistMetrics(savedPlaylist)
             context.mediaSegmentCount += metrics.segmentCount
             context.mediaDuration += metrics.duration
@@ -931,13 +934,18 @@ final class DownloadManager: NSObject, ObservableObject {
         defer { context.activeURLs.remove(key) }
 
         do {
-            let response = try await fetchHLSResource(url: url, headers: headers)
-            context.expectedBytes += max(0, response.expectedBytes)
+            let response = try await fetchHLSResource(
+                url: url,
+                identifier: identifier,
+                headers: headers,
+                context: context
+            )
 
             if Self.looksLikeHLSPlaylist(response.data) {
                 guard let playlist = String(data: response.data, encoding: .utf8) else {
                     throw HLSDownloadError.invalid("HLS 播放清单不是有效文本")
                 }
+                context.plannedResourceCount += Self.hlsReferencedResourceCount(playlist)
                 let metrics = DownloadPayloadValidator.hlsPlaylistMetrics(playlist)
                 context.mediaSegmentCount += metrics.segmentCount
                 context.mediaDuration += metrics.duration
@@ -959,6 +967,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 return playlistFile
             }
 
+            context.expectedBytes += max(0, response.expectedBytes)
             guard !Self.isRejectedHLSResource(response.data, mimeType: response.mimeType) else {
                 throw HLSDownloadError.staleAddress("HLS 分片或密钥返回了错误页，不是媒体内容")
             }
@@ -974,6 +983,7 @@ final class DownloadManager: NSObject, ObservableObject {
             )
             return resourceFile
         } catch {
+            context.inFlightBytes = 0
             context.localURLs.removeValue(forKey: key)
             throw error
         }
@@ -1127,7 +1137,12 @@ final class DownloadManager: NSObject, ObservableObject {
         return HLSOfflineManifest.replacingURI(in: line, with: localURL.lastPathComponent)
     }
 
-    private func fetchHLSResource(url: URL, headers: [String: String]) async throws -> HLSResourceResponse {
+    private func fetchHLSResource(
+        url: URL,
+        identifier: String,
+        headers: [String: String],
+        context: HLSCacheContext
+    ) async throws -> HLSResourceResponse {
         var lastError: Error?
         for attempt in 0..<3 {
             try Task.checkCancellation()
@@ -1135,24 +1150,83 @@ final class DownloadManager: NSObject, ObservableObject {
             headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
             request.timeoutInterval = 45
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
                 guard let http = response as? HTTPURLResponse else {
                     throw HLSDownloadError.invalid("HLS 媒体资源响应无效")
                 }
                 guard (200...299).contains(http.statusCode) else {
                     throw HLSDownloadError.http(http.statusCode)
                 }
+
+                let expectedBytes = max(0, http.expectedContentLength)
+                var data = Data()
+                if expectedBytes > 0,
+                   expectedBytes <= Int64(Int.max) {
+                    data.reserveCapacity(Int(expectedBytes))
+                } else {
+                    data.reserveCapacity(64 * 1024)
+                }
+
+                var chunk = Data()
+                chunk.reserveCapacity(64 * 1024)
+                var receivedBytes: Int64 = 0
+                var resourceIsPlaylist: Bool?
+                context.inFlightBytes = 0
+                do {
+                    for try await byte in bytes {
+                        chunk.append(byte)
+                        if chunk.count >= 64 * 1024 {
+                            data.append(contentsOf: chunk)
+                            receivedBytes += Int64(chunk.count)
+                            chunk.removeAll(keepingCapacity: true)
+                            if resourceIsPlaylist == nil {
+                                resourceIsPlaylist = Self.looksLikeHLSPlaylist(data)
+                            }
+                            if resourceIsPlaylist == false {
+                                updateHLSStreamingProgress(
+                                    identifier: identifier,
+                                    context: context,
+                                    currentBytes: receivedBytes,
+                                    currentExpectedBytes: expectedBytes
+                                )
+                            }
+                        }
+                    }
+
+                    if !chunk.isEmpty {
+                        data.append(contentsOf: chunk)
+                        receivedBytes += Int64(chunk.count)
+                    }
+                    if resourceIsPlaylist == nil {
+                        resourceIsPlaylist = Self.looksLikeHLSPlaylist(data)
+                    }
+                    if resourceIsPlaylist == false {
+                        updateHLSStreamingProgress(
+                            identifier: identifier,
+                            context: context,
+                            currentBytes: receivedBytes,
+                            currentExpectedBytes: expectedBytes
+                        )
+                    }
+                } catch {
+                    context.inFlightBytes = 0
+                    throw error
+                }
+
                 return HLSResourceResponse(
                     data: data,
                     finalURL: http.url ?? url,
                     mimeType: http.mimeType,
-                    expectedBytes: max(0, http.expectedContentLength)
+                    expectedBytes: expectedBytes
                 )
             } catch is CancellationError {
+                context.inFlightBytes = 0
                 throw CancellationError()
             } catch let error as URLError where error.code == .cancelled {
+                context.inFlightBytes = 0
                 throw CancellationError()
             } catch {
+                context.inFlightBytes = 0
                 lastError = error
                 if attempt < 2 {
                     try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 400_000_000))
@@ -1162,6 +1236,44 @@ final class DownloadManager: NSObject, ObservableObject {
         throw lastError ?? HLSDownloadError.invalid("HLS 媒体资源下载失败")
     }
 
+    private func updateHLSStreamingProgress(
+        identifier: String,
+        context: HLSCacheContext,
+        currentBytes: Int64,
+        currentExpectedBytes: Int64
+    ) {
+        context.inFlightBytes = max(0, currentBytes)
+        guard var item = items[identifier], item.status != .paused else { return }
+
+        let downloaded = context.bytesWritten + context.inFlightBytes
+        let expected = max(
+            context.expectedBytes + max(0, currentExpectedBytes),
+            downloaded
+        )
+        let denominator = max(
+            max(context.resourceCount, context.plannedResourceCount),
+            context.completedCount + context.activeURLs.count
+        )
+        let inFlightFraction = currentExpectedBytes > 0
+            ? min(1, max(0, Double(currentBytes) / Double(currentExpectedBytes)))
+            : 0
+        let resourceFraction = (
+            Double(context.completedCount) + inFlightFraction
+        ) / Double(max(1, denominator))
+        let fraction = resourceFraction
+        let speed = speedSample(
+            taskIdentifier: identifier.hashValue,
+            bytes: downloaded
+        )
+
+        item.status = .downloading
+        item.progress = max(item.progress, min(0.999, fraction))
+        item.bytesWritten = downloaded
+        item.totalBytes = expected
+        item.speedBytesPerSecond = speed
+        items[identifier] = item
+    }
+
     private func recordHLSResourceProgress(
         identifier: String,
         context: HLSCacheContext,
@@ -1169,12 +1281,17 @@ final class DownloadManager: NSObject, ObservableObject {
     ) {
         context.completedCount += 1
         context.bytesWritten += max(0, bytes)
+        context.inFlightBytes = 0
         let speed = speedSample(taskIdentifier: identifier.hashValue, bytes: context.bytesWritten)
-        let denominator = max(context.resourceCount, context.completedCount + context.activeURLs.count)
-        let fraction = Double(context.completedCount) / Double(max(1, denominator))
+        let denominator = max(
+            max(context.resourceCount, context.plannedResourceCount),
+            context.completedCount + context.activeURLs.count
+        )
+        let resourceFraction = Double(context.completedCount) / Double(max(1, denominator))
+        let fraction = resourceFraction
         if var item = items[identifier], item.status != .paused {
             item.status = .downloading
-            item.progress = max(item.progress, min(0.98, fraction * 0.98))
+            item.progress = max(item.progress, min(0.999, fraction))
             item.bytesWritten = context.bytesWritten
             item.totalBytes = max(context.expectedBytes, context.bytesWritten)
             item.speedBytesPerSecond = speed
@@ -1203,6 +1320,37 @@ final class DownloadManager: NSObject, ObservableObject {
     private func fileSize(at url: URL) -> Int64 {
         let attributes = try? fileManager.attributesOfItem(atPath: url.path)
         return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    private static func hlsReferencedResourceCount(_ playlist: String) -> Int {
+        var count = 0
+        var expectsURI = false
+
+        for rawLine in playlist.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let uppercased = line.uppercased()
+
+            if uppercased.hasPrefix("#EXTINF:")
+                || uppercased.hasPrefix("#EXT-X-STREAM-INF:") {
+                expectsURI = true
+                continue
+            }
+
+            if uppercased.hasPrefix("#EXT-X-MEDIA:")
+                || uppercased.hasPrefix("#EXT-X-KEY:")
+                || uppercased.hasPrefix("#EXT-X-MAP:") {
+                if HLSOfflineManifest.uri(in: line) != nil {
+                    count += 1
+                }
+                continue
+            }
+
+            guard expectsURI, !line.hasPrefix("#") else { continue }
+            count += 1
+            expectsURI = false
+        }
+        return count
     }
 
     private static func looksLikeHLSPlaylist(_ data: Data) -> Bool {
