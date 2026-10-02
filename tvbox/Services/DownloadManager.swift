@@ -207,7 +207,11 @@ final class DownloadManager: NSObject, ObservableObject {
 
         if let existing = items[request.identifier], existing.status == .completed {
             if let localURL = existing.localURL,
-               isPlayableLocalURL(localURL, mediaKind: existing.mediaKind) {
+               isPlayableLocalURL(
+                   localURL,
+                   mediaKind: existing.mediaKind,
+                   sourceKey: existing.sourceKey
+               ) {
                 return existing
             }
             if let localURL = existing.localURL,
@@ -408,7 +412,11 @@ final class DownloadManager: NSObject, ObservableObject {
         guard let item = items[identifier] else { return nil }
         if item.status == .completed {
             guard let localURL = item.localURL,
-                  isPlayableLocalURL(localURL, mediaKind: item.mediaKind) else {
+                  isPlayableLocalURL(
+                      localURL,
+                      mediaKind: item.mediaKind,
+                      sourceKey: item.sourceKey
+                  ) else {
                 return nil
             }
         }
@@ -420,7 +428,11 @@ final class DownloadManager: NSObject, ObservableObject {
               item.status == .completed,
               let localURL = item.localURL,
               fileManager.fileExists(atPath: localURL.path),
-              isPlayableLocalURL(localURL, mediaKind: item.mediaKind) else { return nil }
+              isPlayableLocalURL(
+                  localURL,
+                  mediaKind: item.mediaKind,
+                  sourceKey: item.sourceKey
+              ) else { return nil }
         return localURL
     }
 
@@ -432,7 +444,11 @@ final class DownloadManager: NSObject, ObservableObject {
         items.values.map { item in
             guard item.status == .completed,
                   let localURL = item.localURL,
-                  !isPlayableLocalURL(localURL, mediaKind: item.mediaKind) else {
+                  !isPlayableLocalURL(
+                      localURL,
+                      mediaKind: item.mediaKind,
+                      sourceKey: item.sourceKey
+                  ) else {
                 return item
             }
             var invalidItem = item
@@ -445,11 +461,23 @@ final class DownloadManager: NSObject, ObservableObject {
     /// AVAssetDownloadURLSession returns a `.movpkg` directory for HLS.
     /// Treat both regular files and downloaded asset packages as playable;
     /// this also prevents stale manifest entries from opening a broken sheet.
-    private func isPlayableLocalURL(_ url: URL, mediaKind: DownloadMediaKind) -> Bool {
+    private func isPlayableLocalURL(
+        _ url: URL,
+        mediaKind: DownloadMediaKind,
+        sourceKey: String = ""
+    ) -> Bool {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return false }
         if mediaKind == .hls {
             if isDirectory.boolValue || url.pathExtension.lowercased() == "movpkg" {
+                if sourceKey.caseInsensitiveCompare("guazi") == .orderedSame,
+                   url.pathExtension.caseInsensitiveCompare("hlsbundle") == .orderedSame {
+                    let metrics = cachedHLSMetrics(at: url)
+                    return !DownloadPayloadValidator.isLikelyPreviewHLS(
+                        segmentCount: metrics.segmentCount,
+                        duration: metrics.duration
+                    )
+                }
                 return true
             }
             guard url.pathExtension.lowercased() == "m3u8",
