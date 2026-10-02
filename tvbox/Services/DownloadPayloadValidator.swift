@@ -3,6 +3,54 @@ import Foundation
 enum DownloadPayloadValidator {
     private static let transportPacketSize = 188
 
+    struct HLSPlaylistMetrics: Equatable, Sendable {
+        let segmentCount: Int
+        let duration: TimeInterval
+    }
+
+    /// 统计媒体清单中的实际媒体分片，而不是把主清晰度索引或密钥
+    /// URI 误算进去。瓜子浏览器 UA 返回的短预览通常只有 2 个分片，
+    /// 用这个指标可以在落盘前拒绝短预览。
+    static func hlsPlaylistMetrics(_ playlist: String) -> HLSPlaylistMetrics {
+        var segmentCount = 0
+        var duration: TimeInterval = 0
+        var expectsSegment = false
+
+        for rawLine in playlist.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let uppercased = line.uppercased()
+            if uppercased.hasPrefix("#EXTINF:") {
+                expectsSegment = true
+                let payload = line.dropFirst("#EXTINF:".count)
+                    .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false)
+                    .first
+                    .map(String.init) ?? ""
+                if let value = Double(payload.trimmingCharacters(in: .whitespacesAndNewlines)),
+                   value.isFinite, value > 0 {
+                    duration += value
+                }
+                continue
+            }
+            guard expectsSegment, !line.hasPrefix("#") else { continue }
+            segmentCount += 1
+            expectsSegment = false
+        }
+
+        return HLSPlaylistMetrics(segmentCount: segmentCount, duration: duration)
+    }
+
+    static func isLikelyPreviewHLS(
+        segmentCount: Int,
+        duration: TimeInterval,
+        minimumSegments: Int = 3,
+        minimumDuration: TimeInterval = 30
+    ) -> Bool {
+        segmentCount < minimumSegments
+            || !duration.isFinite
+            || duration < minimumDuration
+    }
+
     static func isRejectedPayload(_ data: Data, mimeType: String? = nil) -> Bool {
         let mime = mimeType?.components(separatedBy: ";").first?
             .trimmingCharacters(in: .whitespacesAndNewlines)

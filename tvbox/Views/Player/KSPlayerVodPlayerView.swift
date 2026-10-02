@@ -1539,7 +1539,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private var canPlayNext = false
         private var canSelectEpisode = false
         private var isLandscape = false
-        private var lastVolume: Float = 0.5
+        /// 静音前的真实音量。不要写死成 0.5，否则取消静音会突然跳到
+        /// 系统音量的一半，破坏用户原本的音量设置。
+        private var lastVolume: Float?
         private var verticalSeekConstraints: [NSLayoutConstraint] = []
 
         init(
@@ -1695,6 +1697,12 @@ private struct KSPlayerUIView: UIViewRepresentable {
             self.canPlayNext = canPlayNext
             self.canSelectEpisode = canSelectEpisode
             let toolbar = view.toolBar
+            if lastVolume == nil {
+                let currentVolume = view.volumeViewSlider.value
+                if currentVolume > 0.02 {
+                    lastVolume = currentVolume
+                }
+            }
             let orderedViews: [UIView] = [
                 rewindButton,
                 toolbar.playButton,
@@ -1921,7 +1929,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 slider.setValue(0, animated: false)
                 volumeButton.setImage(UIImage(systemName: "speaker.slash.fill"), for: .normal)
             } else {
-                slider.setValue(max(lastVolume, 0.5), animated: false)
+                let restoreVolume = min(max(lastVolume ?? 1.0, 0.02), 1.0)
+                slider.setValue(restoreVolume, animated: false)
                 volumeButton.setImage(UIImage(systemName: "speaker.wave.2.fill"), for: .normal)
             }
             slider.sendActions(for: .valueChanged)

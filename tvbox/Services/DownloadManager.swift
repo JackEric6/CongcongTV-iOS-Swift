@@ -145,6 +145,8 @@ final class DownloadManager: NSObject, ObservableObject {
         var completedCount = 0
         var bytesWritten: Int64 = 0
         var expectedBytes: Int64 = 0
+        var mediaSegmentCount = 0
+        var mediaDuration: TimeInterval = 0
     }
 
     private struct HLSResourceResponse {
@@ -544,8 +546,23 @@ final class DownloadManager: NSObject, ObservableObject {
         return smoothed
     }
 
-    private static func normalizedHeaders(_ headers: [String: String]) -> [String: String] {
+    private static func normalizedHeaders(
+        _ headers: [String: String],
+        sourceKey: String? = nil
+    ) -> [String: String] {
         var result = headers
+        // 瓜子 CDN 会按 User-Agent 返回不同的 HLS 清单：Safari 风格
+        // UA 只能拿到约 20 秒的预览，而播放器使用 KSPlayer UA 才能拿到
+        // 完整点播流。下载清单、密钥和每个分片必须使用同一套请求头。
+        if sourceKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare("guazi") == .orderedSame {
+            result = result.filter {
+                $0.key.caseInsensitiveCompare("User-Agent") != .orderedSame
+            }
+            GuaziPlaybackRequest.playbackHeaders.forEach { result[$0.key] = $0.value }
+            result["Cache-Control"] = "no-cache"
+            result["Pragma"] = "no-cache"
+        }
         if result.keys.contains(where: { $0.caseInsensitiveCompare("User-Agent") == .orderedSame }) == false {
             result["User-Agent"] = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148"
         }
@@ -748,7 +765,8 @@ final class DownloadManager: NSObject, ObservableObject {
 
     private func startDirectDownload(identifier: String, item: DownloadItem, url: URL) {
         var urlRequest = URLRequest(url: url)
-        Self.normalizedHeaders(item.headers).forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
+        Self.normalizedHeaders(item.headers, sourceKey: item.sourceKey)
+            .forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
         let task = session.downloadTask(with: urlRequest)
         taskIDs[task.taskIdentifier] = identifier
         activeTasks[task.taskIdentifier] = task
@@ -757,7 +775,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func startHLSAssetDownload(identifier: String, item: DownloadItem, url: URL) {
-        let headers = Self.normalizedHeaders(item.headers)
+        let headers = Self.normalizedHeaders(item.headers, sourceKey: item.sourceKey)
         let assetOptions: [String: Any]? = headers.isEmpty
             ? nil
             : ["AVURLAssetHTTPHeaderFieldsKey": headers]
@@ -782,7 +800,7 @@ final class DownloadManager: NSObject, ObservableObject {
     /// Keeping the playlist structure intact supports fMP4, byte ranges,
     /// alternate audio, subtitles, and AES-128 key resources without remuxing.
     private func downloadPackagedHLS(identifier: String, item: DownloadItem, url: URL) async throws {
-        let headers = Self.normalizedHeaders(item.headers)
+        let headers = Self.normalizedHeaders(item.headers, sourceKey: item.sourceKey)
         let cacheDirectory = hlsSegmentDirectory(identifier: identifier)
         try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         defer {
@@ -804,6 +822,17 @@ final class DownloadManager: NSObject, ObservableObject {
               let indexContent = try? String(contentsOf: cachedIndex, encoding: .utf8),
               indexContent.localizedCaseInsensitiveContains("#EXTM3U") else {
             throw HLSDownloadError.invalid("下载内容没有生成有效的本地 HLS 播放清单")
+        }
+        if item.sourceKey.caseInsensitiveCompare("guazi") == .orderedSame {
+            let metrics = cachedHLSMetrics(at: cacheDirectory)
+            if DownloadPayloadValidator.isLikelyPreviewHLS(
+                segmentCount: max(metrics.segmentCount, context.mediaSegmentCount),
+                duration: max(metrics.duration, context.mediaDuration)
+            ) {
+                throw HLSDownloadError.staleAddress(
+                    "瓜子返回的是短预览流，已拒绝保存并准备重新解析完整视频"
+                )
+            }
         }
 
         let finalDirectory = hlsPackageDirectory(for: item)
@@ -847,6 +876,9 @@ final class DownloadManager: NSObject, ObservableObject {
         let playlistFile = cachedHLSResourceURL(for: url, directory: directory, fileExtension: "m3u8")
         if let savedPlaylist = try? String(contentsOf: playlistFile, encoding: .utf8),
            savedPlaylist.localizedCaseInsensitiveContains("#EXTM3U") {
+            let metrics = DownloadPayloadValidator.hlsPlaylistMetrics(savedPlaylist)
+            context.mediaSegmentCount += metrics.segmentCount
+            context.mediaDuration += metrics.duration
             context.localURLs[key] = playlistFile
             recordHLSResourceProgress(
                 identifier: identifier,
@@ -878,6 +910,9 @@ final class DownloadManager: NSObject, ObservableObject {
                 guard let playlist = String(data: response.data, encoding: .utf8) else {
                     throw HLSDownloadError.invalid("HLS 播放清单不是有效文本")
                 }
+                let metrics = DownloadPayloadValidator.hlsPlaylistMetrics(playlist)
+                context.mediaSegmentCount += metrics.segmentCount
+                context.mediaDuration += metrics.duration
                 let rewritten = try await rewriteHLSPlaylist(
                     playlist,
                     baseURL: response.finalURL,
@@ -932,6 +967,30 @@ final class DownloadManager: NSObject, ObservableObject {
             total += Int64(values.fileSize ?? 0)
         }
         return total
+    }
+
+    private func cachedHLSMetrics(at directory: URL) -> DownloadPayloadValidator.HLSPlaylistMetrics {
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else {
+            return .init(segmentCount: 0, duration: 0)
+        }
+
+        var segmentCount = 0
+        var duration: TimeInterval = 0
+        while let fileURL = enumerator.nextObject() as? URL {
+            guard fileURL.pathExtension.caseInsensitiveCompare("m3u8") == .orderedSame,
+                  let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                  values.isRegularFile == true,
+                  let playlist = try? String(contentsOf: fileURL, encoding: .utf8) else {
+                continue
+            }
+            let metrics = DownloadPayloadValidator.hlsPlaylistMetrics(playlist)
+            segmentCount += metrics.segmentCount
+            duration += metrics.duration
+        }
+        return .init(segmentCount: segmentCount, duration: duration)
     }
 
     private func rewriteHLSPlaylist(
@@ -1157,7 +1216,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func downloadPlainHLS(identifier: String, item: DownloadItem, url: URL) async throws {
-        let headers = Self.normalizedHeaders(item.headers)
+        let headers = Self.normalizedHeaders(item.headers, sourceKey: item.sourceKey)
         let initialPlaylist = try await Self.fetchHLSPlaylist(url: url, headers: headers)
         // URLSession follows redirects; relative URIs must be resolved against
         // the final response URL, not the pre-redirect request URL.

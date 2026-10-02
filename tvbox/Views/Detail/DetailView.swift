@@ -644,7 +644,14 @@ struct DetailView: View {
         let episodeName = viewModel.currentEpisodes[episodeIndex].name
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let sourceKey = video.sourceKey
-        let sourceHeaders = apiConfig.getSource(key: video.sourceKey)?.headers ?? [:]
+        let sourceHeaders: [String: String]
+        if video.sourceKey.caseInsensitiveCompare("guazi") == .orderedSame {
+            // 下载与播放器必须使用同一 UA；瓜子 CDN 对 Safari UA 只返回
+            // 短预览清单，KSPlayer UA 才会返回完整点播流。
+            sourceHeaders = GuaziPlaybackRequest.playbackHeaders
+        } else {
+            sourceHeaders = apiConfig.getSource(key: video.sourceKey)?.headers ?? [:]
+        }
         let videoID = video.id
         let currentIndex = viewModel.selectedEpisodeIndex
         let episodeURL = viewModel.currentEpisodes[episodeIndex].url

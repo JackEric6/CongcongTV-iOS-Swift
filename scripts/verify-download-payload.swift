@@ -55,6 +55,46 @@ struct VerifyDownloadPayload {
         ) else {
             fatalError("JSON protection response was accepted as MP4")
         }
+
+        let shortPreview = """
+        #EXTM3U
+        #EXT-X-TARGETDURATION:10
+        #EXTINF:9.8,
+        preview-000.ts
+        #EXTINF:9.8,
+        preview-001.ts
+        #EXT-X-ENDLIST
+        """
+        let shortMetrics = DownloadPayloadValidator.hlsPlaylistMetrics(shortPreview)
+        guard shortMetrics.segmentCount == 2,
+              abs(shortMetrics.duration - 19.6) < 0.01,
+              DownloadPayloadValidator.isLikelyPreviewHLS(
+                  segmentCount: shortMetrics.segmentCount,
+                  duration: shortMetrics.duration
+              ) else {
+            fatalError("Short HLS preview was not rejected")
+        }
+
+        let fullPlaylist = """
+        #EXTM3U
+        #EXT-X-TARGETDURATION:10
+        #EXTINF:10,
+        segment-000.ts
+        #EXTINF:10,
+        segment-001.ts
+        #EXTINF:10,
+        segment-002.ts
+        #EXT-X-ENDLIST
+        """
+        let fullMetrics = DownloadPayloadValidator.hlsPlaylistMetrics(fullPlaylist)
+        guard fullMetrics.segmentCount == 3,
+              fullMetrics.duration == 30,
+              !DownloadPayloadValidator.isLikelyPreviewHLS(
+                  segmentCount: fullMetrics.segmentCount,
+                  duration: fullMetrics.duration
+              ) else {
+            fatalError("A normal multi-segment HLS playlist was rejected")
+        }
         print("DOWNLOAD PAYLOAD VALIDATION CHECKS PASSED")
     }
 }
