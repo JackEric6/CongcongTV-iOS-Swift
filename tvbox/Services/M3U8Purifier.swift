@@ -327,11 +327,15 @@ struct M3U8ManifestPurifier {
         guard original.hasPrefix("#EXTM3U") else { return Result(content: content, removedSegmentCount: 0) }
         let originalSegments = mediaCount(original)
         var removed = 0
-        var transformed = resolveURIAttributes(original, baseURL: baseURL)
+        // AVBox 的 get() 会先把所有可播放 URI 解析成绝对地址。
+        // 代理清单运行在 127.0.0.1 上，若保留相对地址，播放器会错误地向回环地址请求分片。
+        var transformed = resolveMediaURIs(resolveURIAttributes(original, baseURL: baseURL), baseURL: baseURL)
         transformed = removeURLMinority(transformed, baseURL: baseURL, removed: &removed)
         transformed = removeCommonAdMarkers(transformed, removed: &removed)
         transformed = removeSuspiciousDiscontinuityGroups(transformed, removed: &removed)
-        transformed = removeDiscontinuityFormatAds(transformed, removed: &removed)
+        if hasEndList(transformed) && transformed.contains("#EXT-X-DISCONTINUITY") {
+            transformed = removeDiscontinuityFormatAds(transformed, removed: &removed)
+        }
         transformed = normalizeDiscontinuities(transformed)
 
         if originalSegments > 0 && removed > originalSegments / 2 {
@@ -363,6 +367,15 @@ struct M3U8ManifestPurifier {
                 return line
             }
             return line.replacingCharacters(in: valueRange, with: resolved)
+        }.joined(separator: "\n")
+    }
+
+    private static func resolveMediaURIs(_ content: String, baseURL: URL) -> String {
+        content.split(separator: "\n", omittingEmptySubsequences: false).map { raw in
+            let line = String(raw)
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return line }
+            return absoluteURL(trimmed, baseURL: baseURL)
         }.joined(separator: "\n")
     }
 
@@ -398,7 +411,10 @@ struct M3U8ManifestPurifier {
             let path = URL(string: absolute)?.deletingPathExtension().absoluteString ?? absolute
             let prefix = path.count > 4 ? String(path.dropLast(4)) : path
             let host = URL(string: absolute)?.host ?? ""
-            if (usePrefix && prefix == dominantPrefix?.key) || (useHost && host == dominantHost?.key) {
+            let keep = usePrefix
+                ? prefix == dominantPrefix?.key
+                : (host == dominantHost?.key || (hosts[host] ?? 0) > 15)
+            if keep {
                 output.append(contentsOf: pending); pending.removeAll(); output.append(absolute)
             } else {
                 pending.removeAll(); removed += 1
@@ -479,8 +495,7 @@ struct M3U8ManifestPurifier {
         return output.joined(separator: "\n")
     }
 
-    /// 西瓜源常把广告拼在同一 CDN 路径下，仅靠 URL 无法区分；安卓端还会利用
-    /// EXTINF 小数精度和帧率特征识别短广告块，这里保持相同的保守策略。
+    /// 安卓端还会利用 EXTINF 小数精度和帧率特征识别短广告块，这里保持相同的保守策略。
     private static func removeDiscontinuityFormatAds(_ content: String, removed: inout Int) -> String {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let groups = buildGroups(lines)
