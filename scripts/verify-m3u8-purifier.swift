@@ -39,7 +39,7 @@ struct VerifyM3U8Purifier {
             baseURL: URL(string: "https://cdn.example/video/index.m3u8")!,
             content: manifest
         )
-        precondition(result.removedSegmentCount >= 2)
+        precondition(result.removedSegmentCount == 2)
         precondition(result.content.contains("https://cdn.example/video/0001.ts"))
         precondition(result.content.contains("https://cdn.example/video/0003.ts"))
         precondition(!result.content.contains("ads.example"))

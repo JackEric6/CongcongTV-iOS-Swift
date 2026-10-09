@@ -452,15 +452,15 @@ struct M3U8ManifestPurifier {
             let item = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if item.isEmpty { pending.append(raw); continue }
             if item.hasPrefix("#") {
+                if item.hasPrefix("#EXT-X-CUE-IN") {
+                    inAdBreak = false
+                    pending.removeAll()
+                    continue
+                }
                 if item.hasPrefix("#EXT-X-CUE-OUT") || isAdSignal(item) {
                     output.append(contentsOf: pending); pending.removeAll()
                     inAdBreak = true
                     pending.append(raw)
-                    continue
-                }
-                if item.hasPrefix("#EXT-X-CUE-IN") {
-                    inAdBreak = false
-                    pending.removeAll()
                     continue
                 }
                 if isStandaloneAdTag(item) {
