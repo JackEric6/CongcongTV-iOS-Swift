@@ -98,6 +98,15 @@ jobs:
             -o /tmp/verify-playback-progress
           /tmp/verify-playback-progress
 
+      - name: Verify M3U8 purifier behavior
+        run: |
+          swiftc -parse-as-library -framework Network \
+            tvbox/Services/NetworkManager.swift \
+            tvbox/Services/M3U8Purifier.swift \
+            scripts/verify-m3u8-purifier.swift \
+            -o /tmp/verify-m3u8-purifier
+          /tmp/verify-m3u8-purifier
+
       - name: Build unsigned app
         run: |
           set -o pipefail
@@ -151,6 +160,15 @@ jobs:
           cp -R build/Build/Products/Release-iphoneos/CongcongTV.app ipa/Payload/
           cd ipa
           zip -qry ../CongcongTV-unsigned.ipa Payload
+
+      - name: Upload IPA and build log
+        uses: actions/upload-artifact@v4
+        with:
+          name: CongcongTV-iOS-unsigned-ipa
+          path: |
+            CongcongTV-unsigned.ipa
+            build.log
+          if-no-files-found: error
 
       - name: Upload IPA and build log
         uses: actions/upload-artifact@v4

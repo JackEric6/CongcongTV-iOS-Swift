@@ -52,6 +52,8 @@ class SettingsViewModel: ObservableObject {
     @Published var vlcBufferMode: VLCBufferMode = .defaultMode
     /// 快进/快退步长（秒）。
     @Published var playTimeStep: Int = 10
+    /// 是否在播放前净化 M3U8 广告分片。
+    @Published var m3u8Purify: Bool = true
     /// 缓存占用展示文本。
     @Published var cacheSizeString: String = "0 KB"
     
@@ -70,6 +72,10 @@ class SettingsViewModel: ObservableObject {
     /// 3) 回填播放/缓存相关设置
     init() {
         let defaults = UserDefaults.standard
+        if defaults.object(forKey: M3U8PurifierSettings.key) == nil {
+            defaults.set(true, forKey: M3U8PurifierSettings.key)
+        }
+        m3u8Purify = defaults.bool(forKey: M3U8PurifierSettings.key)
         let savedVod = defaults.string(forKey: HawkConfig.API_URL) ?? CongcongBrand.defaultConfigURL
         vodApiUrl = savedVod
         if let savedLive = defaults.string(forKey: HawkConfig.LIVE_API_URL) {
@@ -258,6 +264,12 @@ class SettingsViewModel: ObservableObject {
         guard step > 0 else { return }
         playTimeStep = step
         UserDefaults.standard.set(step, forKey: HawkConfig.PLAY_TIME_STEP)
+    }
+
+    /// 设置 M3U8 净化开关。
+    func setM3U8Purify(_ enabled: Bool) {
+        m3u8Purify = enabled
+        UserDefaults.standard.set(enabled, forKey: M3U8PurifierSettings.key)
     }
     
     /// 设置点播播放器内核

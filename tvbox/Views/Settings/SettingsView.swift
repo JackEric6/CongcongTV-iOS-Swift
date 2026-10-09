@@ -75,6 +75,14 @@ struct SettingsView: View {
                         SettingsRow(icon: "forward", title: "快进步长", value: "\(viewModel.playTimeStep)秒") {
                             showingPicker = .playTimeStep
                         }
+                        Divider().background(Color.white.opacity(0.1))
+                        Toggle(isOn: Binding(
+                            get: { viewModel.m3u8Purify },
+                            set: { viewModel.setM3U8Purify($0) }
+                        )) {
+                            Label("M3U8 净化", systemImage: "wand.and.stars")
+                        }
+                        .tint(.orange)
                     }
                     
                     // 功能

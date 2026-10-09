@@ -840,9 +840,29 @@ class DetailViewModel: ObservableObject {
         let requestEpisodeIndex = selectedEpisodeIndex
 
         guard !isDirectPlayableURL(normalized, for: source) else {
-            playUrl = selectedPlayableURL(fallback: normalized)
-            isPlaying = playUrl != nil
-            isResolvingPlaybackURL = false
+            guard let selectedURL = selectedPlayableURL(fallback: normalized) else {
+                playUrl = nil
+                isPlaying = false
+                isResolvingPlaybackURL = false
+                return
+            }
+            isResolvingPlaybackURL = true
+            playableResolveTask = Task { [weak self, source, selectedURL, token, requestSourceKey, requestFlag, requestEpisodeIndex, normalized] in
+                guard let self else { return }
+                let prepared = await M3U8Purifier.shared.prepare(
+                    urlString: selectedURL,
+                    headers: self.playbackHeaders(for: source)
+                )
+                guard !Task.isCancelled,
+                      self.playableResolveToken == token,
+                      self.qualityBaseEpisodeURL == normalized,
+                      self.currentSource?.key == requestSourceKey,
+                      self.selectedFlag == requestFlag,
+                      self.selectedEpisodeIndex == requestEpisodeIndex else { return }
+                self.playUrl = prepared.url
+                self.isPlaying = true
+                self.isResolvingPlaybackURL = false
+            }
             return
         }
 
@@ -888,12 +908,29 @@ class DetailViewModel: ObservableObject {
                 return
             }
             self.updateQualityOptions(for: validURL, resetSelection: true)
-            self.playUrl = validURL
+            let prepared = await M3U8Purifier.shared.prepare(
+                urlString: validURL,
+                headers: self.playbackHeaders(for: source)
+            )
+            guard !Task.isCancelled,
+                  self.playableResolveToken == token,
+                  self.qualityBaseEpisodeURL == normalized,
+                  self.currentSource?.key == requestSourceKey,
+                  self.selectedFlag == requestFlag,
+                  self.selectedEpisodeIndex == requestEpisodeIndex else { return }
+            self.playUrl = prepared.url
             self.isPlaying = true
             self.isResolvingPlaybackURL = false
             self.errorMessage = nil
             self.shouldRetryAfterNetworkRecovery = false
         }
+    }
+
+    private func playbackHeaders(for source: SourceBean) -> [String: String] {
+        if source.key.caseInsensitiveCompare("guazi") == .orderedSame {
+            return GuaziPlaybackRequest.playbackHeaders
+        }
+        return source.headers ?? [:]
     }
 
     /// 返回指定剧集的实际播放地址，供下载任务使用。
