@@ -331,6 +331,7 @@ struct M3U8ManifestPurifier {
         transformed = removeURLMinority(transformed, baseURL: baseURL, removed: &removed)
         transformed = removeCommonAdMarkers(transformed, removed: &removed)
         transformed = removeSuspiciousDiscontinuityGroups(transformed, removed: &removed)
+        transformed = removeDiscontinuityFormatAds(transformed, removed: &removed)
         transformed = normalizeDiscontinuities(transformed)
 
         if originalSegments > 0 && removed > originalSegments / 2 {
@@ -370,15 +371,19 @@ struct M3U8ManifestPurifier {
         let urls = lines.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#") && !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         guard urls.count >= 6 else { return content }
         var prefixes: [String: Int] = [:]
+        var hosts: [String: Int] = [:]
         for raw in urls {
             let absolute = absoluteURL(raw, baseURL: baseURL)
             let path = URL(string: absolute)?.deletingPathExtension().absoluteString ?? absolute
             let prefix = path.count > 4 ? String(path.dropLast(4)) : path
             prefixes[prefix, default: 0] += 1
+            if let host = URL(string: absolute)?.host { hosts[host, default: 0] += 1 }
         }
-        guard let dominant = prefixes.max(by: { $0.value < $1.value }),
-              prefixes.count > 1,
-              Double(dominant.value) / Double(urls.count) >= 0.8 else { return content }
+        let dominantPrefix = prefixes.max(by: { $0.value < $1.value })
+        let usePrefix = dominantPrefix.map { prefixes.count > 1 && Double($0.value) / Double(urls.count) >= 0.8 } ?? false
+        let dominantHost = hosts.max(by: { $0.value < $1.value })
+        let useHost = !usePrefix && dominantHost.map { hosts.count > 1 && Double($0.value) / Double(urls.count) >= 0.8 } ?? false
+        guard usePrefix || useHost else { return content }
 
         var pending: [String] = []
         var output: [String] = []
@@ -392,7 +397,8 @@ struct M3U8ManifestPurifier {
             let absolute = absoluteURL(raw, baseURL: baseURL)
             let path = URL(string: absolute)?.deletingPathExtension().absoluteString ?? absolute
             let prefix = path.count > 4 ? String(path.dropLast(4)) : path
-            if prefix == dominant.key {
+            let host = URL(string: absolute)?.host ?? ""
+            if (usePrefix && prefix == dominantPrefix?.key) || (useHost && host == dominantHost?.key) {
                 output.append(contentsOf: pending); pending.removeAll(); output.append(absolute)
             } else {
                 pending.removeAll(); removed += 1
@@ -471,6 +477,81 @@ struct M3U8ManifestPurifier {
             }
         }
         return output.joined(separator: "\n")
+    }
+
+    /// 西瓜源常把广告拼在同一 CDN 路径下，仅靠 URL 无法区分；安卓端还会利用
+    /// EXTINF 小数精度和帧率特征识别短广告块，这里保持相同的保守策略。
+    private static func removeDiscontinuityFormatAds(_ content: String, removed: inout Int) -> String {
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let groups = buildGroups(lines)
+        guard groups.count >= 2 else { return content }
+        let durations = groups.flatMap { $0.compactMap(extinfDuration) }
+        guard durations.count >= 8 else { return content }
+
+        let precisions = durations.map(decimalPrecision)
+        let precisionCounts = Dictionary(grouping: precisions, by: { $0 }).mapValues(\.count)
+        let dominantPrecision = precisionCounts.max(by: { $0.value < $1.value })
+        let precisionReliable = dominantPrecision.map { Double($0.value) / Double(durations.count) >= 0.7 } ?? false
+        let dominantRate = dominantFrameRate(durations)
+        var drop = Set<Int>()
+        var removable = 0
+        for index in groups.indices.dropLast() {
+            let groupDurations = groups[index].compactMap(extinfDuration)
+            guard !groupDurations.isEmpty, groupDurations.count <= 12 else { continue }
+            let short = groupDurations.count <= 2 || groupDurations.reduce(0, +) < durations.reduce(0, +) * 0.18
+            let precisionMismatch = precisionReliable && groupDurations.allSatisfy { decimalPrecision($0) != dominantPrecision!.key }
+            let rateMismatch = dominantRate != nil && groupDurations.filter { frameRate($0) == dominantRate }.count < groupDurations.count / 2
+            if short && (precisionMismatch || rateMismatch) {
+                drop.insert(index)
+                removable += groupDurations.count
+            }
+        }
+        guard !drop.isEmpty, removable <= max(1, durations.count * 3 / 10) else { return content }
+        var output: [String] = []
+        for index in groups.indices {
+            if drop.contains(index) { removed += groups[index].compactMap(extinfDuration).count }
+            else { output.append(contentsOf: groups[index]) }
+        }
+        return output.joined(separator: "\n")
+    }
+
+    private static func buildGroups(_ lines: [String]) -> [[String]] {
+        var result: [[String]] = [[]]
+        for line in lines {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("#EXT-X-DISCONTINUITY"),
+               result.last?.contains(where: { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }) == true {
+                result.append([])
+            }
+            result[result.count - 1].append(line)
+        }
+        return result
+    }
+
+    private static func extinfDuration(_ line: String) -> Double? {
+        guard line.hasPrefix("#EXTINF:"), let value = line.dropFirst(8).split(separator: ",").first else { return nil }
+        return Double(value)
+    }
+
+    private static func decimalPrecision(_ value: Double) -> Int {
+        let text = String(format: "%.6f", value).replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
+        return text.split(separator: ".").last?.count ?? 0
+    }
+
+    private static func dominantFrameRate(_ values: [Double]) -> Int? {
+        let rates = values.map(frameRate).filter { $0 > 0 }
+        let counts = Dictionary(grouping: rates, by: { $0 }).mapValues(\.count)
+        guard let item = counts.max(by: { $0.value < $1.value }), item.value >= 2 else { return nil }
+        return item.key
+    }
+
+    private static func frameRate(_ value: Double) -> Int {
+        let fraction = value - floor(value)
+        let candidates: [(Int, Double)] = [(30, 1.0 / 30.0), (25, 1.0 / 25.0), (24, 1.0 / 24.0)]
+        for (rate, step) in candidates {
+            let nearest = (fraction / step).rounded() * step
+            if abs(fraction - nearest) < 0.012 { return rate }
+        }
+        return 0
     }
 
     private struct GroupStats {
