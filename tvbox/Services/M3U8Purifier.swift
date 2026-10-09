@@ -314,6 +314,11 @@ struct M3U8ManifestPurifier {
         let removedSegmentCount: Int
     }
 
+    private struct URLFilterResult {
+        let content: String
+        let removedSegmentCount: Int
+    }
+
     private static let adURLPattern = try! NSRegularExpression(
         pattern: #"(?i)(^|[/?&=_.-])(ads?|adv|advert(ise(ment)?)?|commercial|preroll|pre-roll|midroll|mid-roll|postroll|post-roll|sponsor|scte|vast|vmap|interstitial|bumper)([/?&=_.-]|$)"#
     )
@@ -326,11 +331,13 @@ struct M3U8ManifestPurifier {
         let original = normalize(content)
         guard original.hasPrefix("#EXTM3U") else { return Result(content: content, removedSegmentCount: 0) }
         let originalSegments = mediaCount(original)
-        var removed = 0
         // AVBox 的 get() 会先把所有可播放 URI 解析成绝对地址。
         // 代理清单运行在 127.0.0.1 上，若保留相对地址，播放器会错误地向回环地址请求分片。
-        var transformed = resolveMediaURIs(resolveURIAttributes(original, baseURL: baseURL), baseURL: baseURL)
-        transformed = removeURLMinority(transformed, baseURL: baseURL, removed: &removed)
+        let resolved = resolveMediaURIs(resolveURIAttributes(original, baseURL: baseURL), baseURL: baseURL)
+        let urlFilter = removeURLMinority(resolved, baseURL: baseURL)
+        // 与 AVBox 一致：URL 过滤没有命中时，从原清单继续执行标记和分组净化。
+        var transformed = urlFilter.removedSegmentCount > 0 ? urlFilter.content : resolved
+        var removed = urlFilter.removedSegmentCount
         transformed = removeCommonAdMarkers(transformed, removed: &removed)
         transformed = removeSuspiciousDiscontinuityGroups(transformed, removed: &removed)
         if hasEndList(transformed) && transformed.contains("#EXT-X-DISCONTINUITY") {
@@ -338,7 +345,7 @@ struct M3U8ManifestPurifier {
         }
         transformed = normalizeDiscontinuities(transformed)
 
-        if originalSegments > 0 && removed > originalSegments / 2 {
+        if originalSegments > 0 && Double(removed) > Double(originalSegments) * 0.5 {
             return Result(content: original, removedSegmentCount: 0)
         }
         guard removed > 0, isPlayable(transformed) else {
@@ -379,10 +386,12 @@ struct M3U8ManifestPurifier {
         }.joined(separator: "\n")
     }
 
-    private static func removeURLMinority(_ content: String, baseURL: URL, removed: inout Int) -> String {
+    private static func removeURLMinority(_ content: String, baseURL: URL) -> URLFilterResult {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let urls = lines.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#") && !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        guard urls.count >= 6 else { return content }
+        guard urls.count >= 6 else {
+            return URLFilterResult(content: content, removedSegmentCount: 0)
+        }
         var prefixes: [String: Int] = [:]
         var hosts: [String: Int] = [:]
         for raw in urls {
@@ -396,10 +405,13 @@ struct M3U8ManifestPurifier {
         let usePrefix = dominantPrefix.map { prefixes.count > 1 && Double($0.value) / Double(urls.count) >= 0.8 } ?? false
         let dominantHost = hosts.max(by: { $0.value < $1.value })
         let useHost = !usePrefix && dominantHost.map { hosts.count > 1 && Double($0.value) / Double(urls.count) >= 0.8 } ?? false
-        guard usePrefix || useHost else { return content }
+        guard usePrefix || useHost else {
+            return URLFilterResult(content: content, removedSegmentCount: 0)
+        }
 
         var pending: [String] = []
         var output: [String] = []
+        var removed = 0
         for raw in lines {
             let item = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if item.isEmpty { pending.append(raw); continue }
@@ -421,7 +433,14 @@ struct M3U8ManifestPurifier {
             }
         }
         output.append(contentsOf: pending)
-        return output.joined(separator: "\n")
+        // AVBox 会放弃这一步可疑的 URL 过滤，再对原清单运行后续净化规则。
+        guard Double(removed) <= Double(urls.count) * 0.3 else {
+            return URLFilterResult(content: content, removedSegmentCount: 0)
+        }
+        return URLFilterResult(
+            content: output.joined(separator: "\n"),
+            removedSegmentCount: removed
+        )
     }
 
     private static func removeCommonAdMarkers(_ content: String, removed: inout Int) -> String {

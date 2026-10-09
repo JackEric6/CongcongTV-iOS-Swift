@@ -22,6 +22,14 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
+      - name: Verify M3U8 purification and playback safety
+        run: |
+          swiftc -parse-as-library -framework Network \
+            tvbox/Services/M3U8Purifier.swift \
+            scripts/verify-m3u8-purifier.swift \
+            -o /tmp/verify-m3u8-purifier
+          /tmp/verify-m3u8-purifier
+
       - name: Verify Guazi RSA key import and encryption
         run: |
           swiftc -parse-as-library \
