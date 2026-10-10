@@ -194,7 +194,7 @@ struct SearchView: View {
     private func sourceGroupButton(title: String, group: SearchSourceGroup?) -> some View {
         let selected = viewModel.selectedSourceGroup == group
         let available = group.map { viewModel.availableSourceGroups.contains($0) } ?? true
-        Button {
+        return Button {
             viewModel.selectedSourceGroup = group
         } label: {
             Text(title)
