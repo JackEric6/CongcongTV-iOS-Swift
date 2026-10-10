@@ -679,7 +679,8 @@ struct M3U8ManifestPurifier {
                 var ticks = (ticks10 + roundingUnit / 2) / roundingUnit
                 if ticks >= scale { ticks = 0 }
                 guard ticks > 0 else { continue }
-                var digits = String(format: "%0*lld", precision, ticks % scale)
+                let rawDigits = String(ticks % scale)
+                var digits = String(repeating: "0", count: max(0, precision - rawDigits.count)) + rawDigits
                 while digits.last == "0" { digits.removeLast() }
                 if !digits.isEmpty { result.insert("0.\(digits)") }
             }
