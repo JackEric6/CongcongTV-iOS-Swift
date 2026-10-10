@@ -118,6 +118,12 @@ enum Cz4kSearchParser {
         return URL(string: value, relativeTo: baseURL)?.absoluteURL.absoluteString ?? value
     }
 
+    private static func firstNonEmpty(_ values: String?...) -> String? {
+        values.compactMap { $0 }.first {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
     private static func decodeEntities(_ value: String) -> String {
         value
             .replacingOccurrences(of: "&amp;", with: "&")
