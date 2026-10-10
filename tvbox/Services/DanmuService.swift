@@ -18,7 +18,6 @@ public final class DanmuService {
 
     private let network = NetworkManager.shared
     private let customSession: URLSession
-    private var requestSequence = 0
 
     private init() {
         let configuration = URLSessionConfiguration.default
@@ -35,8 +34,6 @@ public final class DanmuService {
         episode: String,
         configuration: Configuration = Configuration()
     ) async -> [DanmuCue] {
-        requestSequence += 1
-        let sequence = requestSequence
         let apiURL = resolveAPIURL(configuration)
         guard !apiURL.isEmpty else { return [] }
 
@@ -52,12 +49,21 @@ public final class DanmuService {
                 let body = try await loadCustom(
                     apiURL: apiURL,
                     title: title,
-                    episode: episode
+                    episode: episode,
+                    followURL: false
                 )
-                cues = try await Self.parseOffMain(body)
+                let directCues = try await Self.parseOffMain(body)
+                if directCues.isEmpty {
+                    let results = Self.parseSearchResults(body)
+                    let matchedResults = results.filter {
+                        DanmakuEpisodeMatcher.matches(requestedEpisode: episode, title: $0.name)
+                    }
+                    cues = await loadFirstAvailable(matchedResults.isEmpty && results.count == 1 ? results : matchedResults)
+                } else {
+                    cues = directCues
+                }
             }
             try Task.checkCancellation()
-            guard sequence == requestSequence else { return [] }
             return cues
         } catch is CancellationError {
             return []
@@ -96,8 +102,174 @@ public final class DanmuService {
         )
     }
 
-    public func cancel() {
-        requestSequence += 1
+    public func searchResults(
+        title: String,
+        episode: String,
+        configuration: Configuration = Configuration()
+    ) async throws -> [DanmuSearchResult] {
+        let query = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        let apiURL = resolveAPIURL(configuration)
+        guard !apiURL.isEmpty else { throw NetworkError.invalidResponse }
+
+        if Self.isBuiltinAPI(apiURL) {
+            return try await searchBuiltinResults(
+                baseURL: Self.normalizeBaseURL(apiURL),
+                query: query
+            )
+        }
+        let body = try await loadCustom(apiURL: apiURL, title: query, episode: episode, followURL: false)
+        return Self.parseSearchResults(body)
+    }
+
+    public func loadSearchResult(_ result: DanmuSearchResult) async throws -> [DanmuCue] {
+        guard let url = result.url.trimmedNonEmpty else { return [] }
+        var urls = [url]
+        if result.isBuiltin, var components = URLComponents(string: url) {
+            let filteredItems = components.queryItems?.filter { $0.name != "format" } ?? []
+            if filteredItems.count != (components.queryItems?.count ?? 0) {
+                components.queryItems = filteredItems.isEmpty ? nil : filteredItems
+                if let fallback = components.url?.absoluteString, fallback != url {
+                    urls.append(fallback)
+                }
+            }
+        }
+        for candidateURL in urls {
+            try Task.checkCancellation()
+            guard let body = try? await network.getString(from: candidateURL, timeout: 4, maxRetries: 0) else {
+                continue
+            }
+            let cues = try await Self.parseOffMain(body)
+            if !cues.isEmpty { return cues }
+            if let nestedURL = Self.extractURL(from: body), nestedURL != candidateURL,
+               let nestedBody = try? await network.getString(from: nestedURL, timeout: 4, maxRetries: 0) {
+                let nestedCues = try await Self.parseOffMain(nestedBody)
+                if !nestedCues.isEmpty { return nestedCues }
+            }
+        }
+        return []
+    }
+
+    private func loadFirstAvailable(_ results: [DanmuSearchResult]) async -> [DanmuCue] {
+        for result in results.prefix(8) {
+            do {
+                try Task.checkCancellation()
+                let cues = try await loadSearchResult(result)
+                if !cues.isEmpty { return cues }
+            } catch is CancellationError {
+                return []
+            } catch {
+                continue
+            }
+        }
+        return []
+    }
+
+    private func searchBuiltinResults(baseURL: String, query: String) async throws -> [DanmuSearchResult] {
+        var results: [DanmuSearchResult] = []
+        for variant in Self.searchTitleVariants(query) {
+            try Task.checkCancellation()
+            let episodesURL = try Self.makeURL(
+                baseURL: baseURL,
+                path: "/api/v2/search/episodes",
+                queryItems: [URLQueryItem(name: "anime", value: variant)]
+            )
+            if let body = try? await network.getString(from: episodesURL.absoluteString, timeout: 8, maxRetries: 0) {
+                results.append(contentsOf: Self.parseBuiltinSearchResults(body, baseURL: baseURL))
+            }
+            if !results.isEmpty { break }
+        }
+
+        if results.isEmpty, let variant = Self.searchTitleVariants(query).first {
+            let animeURL = try Self.makeURL(
+                baseURL: baseURL,
+                path: "/api/v2/search/anime",
+                queryItems: [URLQueryItem(name: "keyword", value: variant)]
+            )
+            if let body = try? await network.getString(from: animeURL.absoluteString, timeout: 8, maxRetries: 0) {
+                for animeID in Self.findAnimeIDs(in: body).prefix(5) {
+                    try Task.checkCancellation()
+                    guard let bangumiURL = try? Self.makeURL(
+                        baseURL: baseURL,
+                        path: "/api/v2/bangumi/\(Self.urlPathEscape(animeID))",
+                        queryItems: []
+                    ), let bangumi = try? await network.getString(
+                        from: bangumiURL.absoluteString,
+                        timeout: 8,
+                        maxRetries: 0
+                    ) else { continue }
+                    results.append(contentsOf: Self.parseBuiltinSearchResults(bangumi, baseURL: baseURL))
+                }
+            }
+        }
+
+        var seen = Set<String>()
+        return results.filter { seen.insert($0.url).inserted }
+    }
+
+    private static func parseSearchResults(_ body: String) -> [DanmuSearchResult] {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") || trimmed.hasPrefix("file://") {
+            return [DanmuSearchResult(name: trimmed, url: trimmed, isBuiltin: false)]
+        }
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) else { return [] }
+        if let items = object as? [[String: Any]] {
+            return parseCustomResultItems(items)
+        }
+        guard let dictionary = object as? [String: Any] else { return [] }
+        for key in ["data", "list", "results"] {
+            if let items = dictionary[key] as? [[String: Any]] {
+                return parseCustomResultItems(items)
+            }
+        }
+        let url = jsonString(dictionary["url"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !url.isEmpty else { return [] }
+        let name = ["name", "title"].map { jsonString(dictionary[$0]) }.first { !$0.isEmpty } ?? url
+        return [DanmuSearchResult(name: name, url: url, isBuiltin: false)]
+    }
+
+    private static func parseCustomResultItems(_ items: [[String: Any]]) -> [DanmuSearchResult] {
+        items.compactMap { item in
+            let url = jsonString(item["url"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !url.isEmpty else { return nil }
+            let name = ["name", "title", "episode", "vod_name"]
+                .map { jsonString(item[$0]) }
+                .first { !$0.isEmpty } ?? url
+            return DanmuSearchResult(name: name, url: url, isBuiltin: false)
+        }
+    }
+
+    private static func parseBuiltinSearchResults(_ body: String, baseURL: String) -> [DanmuSearchResult] {
+        guard let object = jsonObject(body) else { return [] }
+        var results: [DanmuSearchResult] = []
+        func appendEpisodes(_ value: [String: Any], prefix: String = "") {
+            guard let episodes = value["episodes"] as? [[String: Any]] else { return }
+            for episode in episodes {
+                let id = firstString(episode, keys: ["episodeId", "id"])
+                guard !id.isEmpty else { continue }
+                let title = firstString(episode, keys: ["episodeTitle", "title", "name"])
+                let label = [prefix, title].filter { !$0.isEmpty }.joined(separator: " ")
+                let url = "\(baseURL)/api/v2/comment/\(urlPathEscape(id))?format=json"
+                results.append(DanmuSearchResult(name: label.isEmpty ? id : label, url: url, isBuiltin: true))
+            }
+        }
+
+        appendEpisodes(object)
+        if let bangumi = object["bangumi"] as? [String: Any] {
+            appendEpisodes(bangumi, prefix: firstString(bangumi, keys: ["animeTitle", "title", "name"]))
+        }
+        for key in ["animes", "anime", "data"] {
+            guard let items = object[key] as? [[String: Any]] else { continue }
+            for item in items {
+                let name = firstString(item, keys: ["animeTitle", "title", "name"])
+                appendEpisodes(item, prefix: name)
+                if let bangumi = item["bangumi"] as? [String: Any] {
+                    appendEpisodes(bangumi, prefix: name)
+                }
+            }
+        }
+        return results
     }
 
     /// Parses an already downloaded XML or comments/data JSON payload.
@@ -151,10 +323,14 @@ public final class DanmuService {
                         query.isEmpty ? nil : URLQueryItem(name: "episode", value: query)
                     ].compactMap { $0 }
                 )
-                guard let body = try? await network.getString(from: searchURL.absoluteString) else {
+                guard let body = try? await network.getString(
+                    from: searchURL.absoluteString,
+                    timeout: 8,
+                    maxRetries: 0
+                ) else {
                     continue
                 }
-                for match in Self.findEpisodes(in: body, requestedEpisode: episode) {
+                for match in Self.findEpisodes(in: body, requestedEpisode: episode).prefix(4) {
                     if let cues = try? await loadComments(baseURL: baseURL, match: match),
                        !cues.isEmpty {
                         return cues
@@ -169,21 +345,29 @@ public final class DanmuService {
             path: "/api/v2/search/anime",
             queryItems: [URLQueryItem(name: "keyword", value: titleVariants.first ?? title)]
         )
-        guard let animeBody = try? await network.getString(from: animeURL.absoluteString) else {
+        guard let animeBody = try? await network.getString(
+            from: animeURL.absoluteString,
+            timeout: 8,
+            maxRetries: 0
+        ) else {
             return []
         }
 
-        for animeID in Self.findAnimeIDs(in: animeBody) {
+        for animeID in Self.findAnimeIDs(in: animeBody).prefix(4) {
             try Task.checkCancellation()
             let bangumiURL = try Self.makeURL(
                 baseURL: baseURL,
                 path: "/api/v2/bangumi/\(Self.urlPathEscape(animeID))",
                 queryItems: []
             )
-            guard let bangumiBody = try? await network.getString(from: bangumiURL.absoluteString) else {
+            guard let bangumiBody = try? await network.getString(
+                from: bangumiURL.absoluteString,
+                timeout: 8,
+                maxRetries: 0
+            ) else {
                 continue
             }
-            for match in Self.findEpisodes(in: bangumiBody, requestedEpisode: episode) {
+            for match in Self.findEpisodes(in: bangumiBody, requestedEpisode: episode).prefix(4) {
                 if let cues = try? await loadComments(baseURL: baseURL, match: match),
                    !cues.isEmpty {
                     return cues
@@ -203,7 +387,11 @@ public final class DanmuService {
         ]
         for (path, queryItems) in paths {
             guard let commentURL = try? Self.makeURL(baseURL: baseURL, path: path, queryItems: queryItems),
-                  let comments = try? await network.getString(from: commentURL.absoluteString) else {
+                  let comments = try? await network.getString(
+                    from: commentURL.absoluteString,
+                    timeout: 6,
+                    maxRetries: 0
+                  ) else {
                 continue
             }
             let cues = try await Self.parseOffMain(comments)
@@ -212,7 +400,12 @@ public final class DanmuService {
         return []
     }
 
-    private func loadCustom(apiURL: String, title: String, episode: String) async throws -> String {
+    private func loadCustom(
+        apiURL: String,
+        title: String,
+        episode: String,
+        followURL: Bool = true
+    ) async throws -> String {
         let name = Self.transliterateToSimplified(title)
         let episodeValue = Self.transliterateToSimplified(episode)
         if apiURL.contains("{name}") || apiURL.contains("{episode}") {
@@ -236,7 +429,7 @@ public final class DanmuService {
             throw NetworkError.invalidResponse
         }
         let body = String(decoding: data, as: UTF8.self)
-        if let nestedURL = Self.extractURL(from: body), nestedURL != apiURL {
+        if followURL, let nestedURL = Self.extractURL(from: body), nestedURL != apiURL {
             return try await network.getString(from: nestedURL)
         }
         return body
@@ -475,6 +668,12 @@ public final class DanmuService {
             return nil
         }
         return object
+    }
+
+    private static func jsonString(_ value: Any?) -> String {
+        if let value = value as? String { return value }
+        if let value = value as? NSNumber { return value.stringValue }
+        return ""
     }
 
     private static func firstString(_ object: [String: Any], keys: [String]) -> String {

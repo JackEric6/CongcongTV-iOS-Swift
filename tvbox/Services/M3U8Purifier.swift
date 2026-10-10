@@ -28,7 +28,9 @@ actor M3U8Purifier {
     }
 
     func prepare(urlString: String, headers: [String: String], sourceKey: String) async -> PreparedURL {
-        guard sourceKey.caseInsensitiveCompare("guazi") != .orderedSame else {
+        let normalizedSource = sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalizedSource != "guazi",
+              !["jianpian", "fan_jianpian", "fan_jp"].contains(normalizedSource) else {
             return PreparedURL(url: urlString, didPurify: false, removedSegmentCount: 0)
         }
         guard M3U8PurifierSettings.isEnabled,

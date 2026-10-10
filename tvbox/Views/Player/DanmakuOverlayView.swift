@@ -27,6 +27,7 @@ final class DanmakuOverlayView: UIView {
     private var mediaDuration: TimeInterval = 0
     private var wallClockAnchor: CFTimeInterval = 0
     private var hasTimeAnchor = false
+    private var playbackActive = true
     private var lastRenderedTime: TimeInterval = 0
     private var lastLayoutSize = CGSize.zero
     private var settings = DanmakuDisplaySettings()
@@ -67,8 +68,17 @@ final class DanmakuOverlayView: UIView {
         self.settings = settings.normalized
         if !activeBullets.isEmpty {
             clearActiveBullets()
-            nextCueIndex = lowerBound(for: mediaTime)
+            nextCueIndex = lowerBound(for: currentTimelineTime())
         }
+    }
+
+    func setPlaybackActive(_ active: Bool) {
+        guard playbackActive != active else { return }
+        if playbackActive, hasTimeAnchor {
+            mediaTime = currentTimelineTime()
+        }
+        playbackActive = active
+        wallClockAnchor = CACurrentMediaTime()
     }
 
     /// Supplies the current player time. The display link only interpolates between
@@ -134,7 +144,7 @@ final class DanmakuOverlayView: UIView {
 
         // Adding a bullet also schedules layout on this view. Only rebuild the
         // active window when its actual geometry changes (rotation/full screen).
-        let now = mediaTime + max(0, CACurrentMediaTime() - wallClockAnchor)
+        let now = currentTimelineTime()
         clearActiveBullets()
         nextCueIndex = lowerBound(for: max(0, now - max(settings.scrollDuration, fixedDuration)))
         lastRenderedTime = now
@@ -155,13 +165,17 @@ final class DanmakuOverlayView: UIView {
 
     @objc private func displayLinkTick(_ link: CADisplayLink) {
         guard hasTimeAnchor else { return }
-        let elapsed = max(0, CACurrentMediaTime() - wallClockAnchor)
-        let interpolatedTime = mediaTime + elapsed
+        let interpolatedTime = currentTimelineTime()
         if mediaDuration > 0, interpolatedTime > mediaDuration + 0.5 {
             render(at: mediaDuration)
         } else {
             render(at: interpolatedTime)
         }
+    }
+
+    private func currentTimelineTime() -> TimeInterval {
+        guard playbackActive, hasTimeAnchor else { return mediaTime }
+        return mediaTime + max(0, CACurrentMediaTime() - wallClockAnchor)
     }
 
     private func render(at time: TimeInterval) {

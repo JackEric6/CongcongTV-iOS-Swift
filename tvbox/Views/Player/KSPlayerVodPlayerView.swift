@@ -1546,7 +1546,12 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private weak var danmakuStatusLabel: UILabel?
         private var danmakuStatusDismissWorkItem: DispatchWorkItem?
         private var danmakuSettingsPanel: DanmakuSettingsPanelView?
+        private var danmakuSearchPanel: DanmakuSearchPanelView?
         private var danmakuTask: Task<Void, Never>?
+        private var danmakuSearchTask: Task<Void, Never>?
+        private var danmakuResultTask: Task<Void, Never>?
+        private var danmakuSearchResults: [DanmuSearchResult] = []
+        private var danmakuResultRequestID = UUID()
         private var lastPlayerTime: TimeInterval = 0
         private var lastPlayerDuration: TimeInterval = 0
         private var didReportPlaybackFailure = false
@@ -1640,6 +1645,11 @@ private struct KSPlayerUIView: UIViewRepresentable {
             loadingDanmakuKey = nil
             danmakuTask?.cancel()
             danmakuTask = nil
+            danmakuSearchTask?.cancel()
+            danmakuResultTask?.cancel()
+            danmakuSearchPanel?.removeFromSuperview()
+            danmakuSearchPanel = nil
+            danmakuSearchResults = []
             danmakuView?.clear()
             setDanmakuStatus("正在搜索弹幕")
             guard let danmakuView else { return }
@@ -1658,6 +1668,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
             if !enabled {
                 danmakuTask?.cancel()
                 danmakuTask = nil
+                danmakuSearchTask?.cancel()
+                danmakuResultTask?.cancel()
+                danmakuSearchPanel?.removeFromSuperview()
+                danmakuSearchPanel = nil
                 loadingDanmakuKey = nil
                 setDanmakuStatus("弹幕已关闭")
                 return
@@ -1693,6 +1707,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             let overlay = DanmakuOverlayView()
             overlay.translatesAutoresizingMaskIntoConstraints = false
             overlay.isHidden = !danmakuEnabled
+            overlay.setPlaybackActive(false)
             overlay.updateSettings(danmakuSettings)
             view.contentOverlayView.addSubview(overlay)
             overlay.layer.zPosition = 100
@@ -1709,9 +1724,16 @@ private struct KSPlayerUIView: UIViewRepresentable {
         func tearDownDanmaku() {
             danmakuTask?.cancel()
             danmakuTask = nil
+            danmakuSearchTask?.cancel()
+            danmakuSearchTask = nil
+            danmakuResultTask?.cancel()
+            danmakuResultTask = nil
             danmakuStatusDismissWorkItem?.cancel()
             danmakuSettingsPanel?.removeFromSuperview()
             danmakuSettingsPanel = nil
+            danmakuSearchPanel?.removeFromSuperview()
+            danmakuSearchPanel = nil
+            danmakuSearchResults = []
             loadedDanmakuKey = nil
             loadingDanmakuKey = nil
             danmakuView?.clear()
@@ -1835,6 +1857,146 @@ private struct KSPlayerUIView: UIViewRepresentable {
             loadDanmaku(into: danmakuView)
         }
 
+        private func openDanmakuSearch() {
+            guard danmakuEnabled, let playerView else {
+                setDanmakuStatus("请先开启弹幕")
+                return
+            }
+            danmakuSettingsPanel?.removeFromSuperview()
+            danmakuSettingsPanel = nil
+            danmakuSearchPanel?.removeFromSuperview()
+
+            let panel = DanmakuSearchPanelView(query: danmakuTitle)
+            panel.translatesAutoresizingMaskIntoConstraints = false
+            panel.layer.zPosition = 360
+            panel.onSearch = { [weak self, weak panel] query in
+                guard let self, let panel else { return }
+                self.searchDanmakuResults(query: query, in: panel)
+            }
+            panel.onSelect = { [weak self, weak panel] index in
+                guard let self, let panel else { return }
+                self.loadSelectedDanmakuResult(at: index, in: panel)
+            }
+            panel.onClose = { [weak self, weak panel] in
+                guard let panel else { return }
+                self?.danmakuSearchTask?.cancel()
+                self?.danmakuResultTask?.cancel()
+                self?.danmakuResultRequestID = UUID()
+                panel.removeFromSuperview()
+                if self?.danmakuSearchPanel === panel { self?.danmakuSearchPanel = nil }
+            }
+            playerView.controllerView.addSubview(panel)
+            NSLayoutConstraint.activate([
+                panel.leadingAnchor.constraint(equalTo: playerView.controllerView.leadingAnchor),
+                panel.trailingAnchor.constraint(equalTo: playerView.controllerView.trailingAnchor),
+                panel.topAnchor.constraint(equalTo: playerView.controllerView.topAnchor),
+                panel.bottomAnchor.constraint(equalTo: playerView.controllerView.bottomAnchor)
+            ])
+            danmakuSearchPanel = panel
+            searchDanmakuResults(query: danmakuTitle, in: panel)
+        }
+
+        private func searchDanmakuResults(query: String, in panel: DanmakuSearchPanelView) {
+            let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            danmakuSearchTask?.cancel()
+            danmakuResultTask?.cancel()
+            danmakuResultRequestID = UUID()
+            danmakuSearchResults = []
+            guard !query.isEmpty else {
+                panel.update(results: [], status: "请输入影片名称", loading: false)
+                return
+            }
+            panel.update(results: [], status: "正在搜索弹幕", loading: true)
+            danmakuSearchTask = Task { @MainActor [weak self, weak panel] in
+                do {
+                    let results = try await DanmuService.shared.searchResults(
+                        title: query,
+                        episode: self?.danmakuEpisode ?? ""
+                    )
+                    guard !Task.isCancelled, let self, let panel,
+                          self.danmakuSearchPanel === panel else { return }
+                    self.danmakuSearchResults = results
+                    panel.update(
+                        results: results,
+                        status: results.isEmpty ? "未找到弹幕结果" : "找到 \(results.count) 个结果，选择后开始加载",
+                        loading: false
+                    )
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard !Task.isCancelled, let self, let panel,
+                          self.danmakuSearchPanel === panel else { return }
+                    panel.update(results: [], status: "搜索失败：\(error.localizedDescription)", loading: false)
+                }
+            }
+        }
+
+        private func loadSelectedDanmakuResult(at index: Int, in panel: DanmakuSearchPanelView) {
+            guard danmakuEnabled, danmakuSearchResults.indices.contains(index),
+                  let overlay = danmakuView else { return }
+            danmakuSearchTask?.cancel()
+            danmakuResultTask?.cancel()
+            danmakuTask?.cancel()
+            danmakuTask = nil
+            loadingDanmakuKey = nil
+            overlay.clear()
+            let requestID = UUID()
+            danmakuResultRequestID = requestID
+            let requestedEpisode = danmakuEpisode
+            let matchingIndices = danmakuSearchResults.indices.filter {
+                DanmakuEpisodeMatcher.matches(
+                    requestedEpisode: requestedEpisode,
+                    title: danmakuSearchResults[$0].name
+                )
+            }
+            let candidateIndices = matchingIndices.isEmpty
+                ? [index]
+                : [index] + matchingIndices.filter { $0 > index } + matchingIndices.filter { $0 < index }
+            var seenIndices = Set<Int>()
+            let attempts = candidateIndices
+                .filter { seenIndices.insert($0).inserted }
+                .prefix(8)
+                .map { danmakuSearchResults[$0] }
+            panel.update(results: danmakuSearchResults, status: "正在加载第 1 / \(attempts.count) 条", loading: true)
+
+            danmakuResultTask = Task { @MainActor [weak self, weak panel, weak overlay] in
+                guard let self else { return }
+                for (offset, result) in attempts.enumerated() {
+                    guard !Task.isCancelled, self.danmakuResultRequestID == requestID,
+                          let panel, let overlay, self.danmakuSearchPanel === panel else { return }
+                    if offset > 0 {
+                        panel.update(
+                            results: self.danmakuSearchResults,
+                            status: "上一条不可用，快速尝试第 \(offset + 1) / \(attempts.count) 条",
+                            loading: true
+                        )
+                    }
+                    do {
+                        let cues = try await DanmuService.shared.loadSearchResult(result)
+                        guard !Task.isCancelled, self.danmakuResultRequestID == requestID else { return }
+                        guard !cues.isEmpty else { continue }
+                        overlay.setCues(cues)
+                        overlay.isHidden = false
+                        overlay.updateSettings(self.danmakuSettings)
+                        overlay.update(currentTime: self.lastPlayerTime, duration: self.lastPlayerDuration)
+                        self.loadedDanmakuKey = "\(self.danmakuTitle)\u{1F}\(self.danmakuEpisode)"
+                        self.setDanmakuStatus("已加载 \(cues.count) 条弹幕")
+                        panel.removeFromSuperview()
+                        self.danmakuSearchPanel = nil
+                        return
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        continue
+                    }
+                }
+                guard !Task.isCancelled, self.danmakuResultRequestID == requestID,
+                      let panel, self.danmakuSearchPanel === panel else { return }
+                panel.update(results: self.danmakuSearchResults, status: "这些结果均无法加载，请重新搜索", loading: false)
+                self.setDanmakuStatus("弹幕结果加载失败")
+            }
+        }
+
         @objc private func danmakuPressed() {
             guard let playerView else { return }
             if let danmakuSettingsPanel {
@@ -1849,7 +2011,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             panel.onSettingsChanged = { [weak self] settings in
                 self?.updateDanmakuSettings(settings)
             }
-            panel.onReload = { [weak self] in self?.forceReloadDanmaku() }
+            panel.onSearch = { [weak self] in self?.openDanmakuSearch() }
             panel.onClose = { [weak self, weak panel] in
                 panel?.removeFromSuperview()
                 self?.danmakuSettingsPanel = nil
@@ -2172,7 +2334,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
             slider.sendActions(for: .valueChanged)
         }
 
-        func playerController(state _: KSPlayerState) {}
+        func playerController(state: KSPlayerState) {
+            danmakuView?.setPlaybackActive(state == .bufferFinished)
+        }
 
         func playerController(currentTime: TimeInterval, totalTime: TimeInterval) {
             updateDanmakuTime(currentTime: currentTime, duration: totalTime)

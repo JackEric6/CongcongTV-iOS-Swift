@@ -44,7 +44,7 @@ struct DanmakuDisplaySettings: Codable, Equatable {
 
 final class DanmakuSettingsPanelView: UIView {
     var onSettingsChanged: ((DanmakuDisplaySettings) -> Void)?
-    var onReload: (() -> Void)?
+    var onSearch: (() -> Void)?
     var onClose: (() -> Void)?
 
     private var settings: DanmakuDisplaySettings
@@ -153,7 +153,7 @@ final class DanmakuSettingsPanelView: UIView {
         speedControl.selectedSegmentTintColor = .systemOrange
 
         let reloadButton = UIButton(type: .system)
-        reloadButton.setTitle("搜索 / 重载", for: .normal)
+        reloadButton.setTitle("搜索弹幕", for: .normal)
         reloadButton.setTitleColor(.white, for: .normal)
         reloadButton.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
         reloadButton.backgroundColor = UIColor.white.withAlphaComponent(0.12)
@@ -270,7 +270,7 @@ final class DanmakuSettingsPanelView: UIView {
     @objc private func opacityUp() { settings.opacity += 10; commit() }
 
     @objc private func reloadPressed() {
-        onReload?()
+        onSearch?()
     }
 
     @objc private func closePressed() {

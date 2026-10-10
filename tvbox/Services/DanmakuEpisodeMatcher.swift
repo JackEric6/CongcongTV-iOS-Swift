@@ -4,7 +4,8 @@ enum DanmakuEpisodeMatcher {
     private static let markedNumberPatterns = [
         #"第\s*0*(\d+)\s*(?:集|话|期|回)"#,
         #"(?i)(?:^|[\s【\[(])EP?\s*0*(\d+)(?:$|[\s】\])])"#,
-        #"(?i)S\s*\d+\s*E\s*0*(\d+)"#
+        #"(?i)S\s*\d+\s*E\s*0*(\d+)"#,
+        #"(?i)(?:^|[\s_.-])(?:EP)?\s*0*(\d+)$"#
     ]
 
     static func matches(
