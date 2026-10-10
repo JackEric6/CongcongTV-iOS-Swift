@@ -551,22 +551,54 @@ class SourceService {
             return playableURL
         }
 
+        return try await resolvePlaybackPage(
+            sourceBean: sourceBean,
+            url: url,
+            visited: [],
+            remainingPageHops: 3
+        )
+    }
+
+    private func resolvePlaybackPage(
+        sourceBean: SourceBean,
+        url: String,
+        visited: Set<String>,
+        remainingPageHops: Int
+    ) async throws -> String {
         let normalized = KktvsResponseNormalizer.normalizeMediaURL(url)
         guard let validURL = Self.validPlayableURL(normalized) else {
             throw SourceError.invalidPlayableURL(url)
         }
-        if KktvsResponseNormalizer.directMediaURL(normalized) != nil {
+        let scheme = URLComponents(string: validURL)?.scheme?.lowercased()
+        if KktvsResponseNormalizer.directMediaURL(normalized) != nil
+            || !["http", "https"].contains(scheme ?? "") {
             return validURL
         }
-
-        // 播放页通常是 HTML，不能复用 CMS 响应校验（该校验会把 HTML
-        // 视为错误页）。保留源请求头，兼容需要 Referer/User-Agent 的站点。
-        let body = try await getPlaybackPage(from: validURL, sourceBean: sourceBean)
-        guard let extracted = KktvsResponseNormalizer.extractMediaURL(from: body, baseURL: validURL),
-              let resolvedURL = Self.validPlayableURL(extracted) else {
+        guard remainingPageHops > 0 else {
             throw SourceError.invalidPlayableURL(validURL)
         }
-        return resolvedURL
+        var visited = visited
+        guard visited.insert(validURL).inserted else {
+            throw SourceError.invalidPlayableURL(validURL)
+        }
+
+        // 播放页通常是 HTML；有些资源站则用无扩展名 URL 直接返回 HLS 清单。
+        // 先识别清单内容，再尝试播放器页提取，并限制跳转层数以防循环页面。
+        let body = try await getPlaybackPage(from: validURL, sourceBean: sourceBean)
+        if KktvsResponseNormalizer.isHLSPlaylist(body) {
+            return validURL
+        }
+        guard let extracted = KktvsResponseNormalizer.extractMediaURL(from: body, baseURL: validURL),
+              let resolvedURL = Self.validPlayableURL(extracted),
+              resolvedURL != validURL else {
+            throw SourceError.invalidPlayableURL(validURL)
+        }
+        return try await resolvePlaybackPage(
+            sourceBean: sourceBean,
+            url: resolvedURL,
+            visited: visited,
+            remainingPageHops: remainingPageHops - 1
+        )
     }
 
     /// 只允许播放器可以处理的非空绝对地址进入播放状态。
@@ -821,6 +853,11 @@ class SourceService {
 
     func playbackHeaders(for sourceBean: SourceBean, mediaURL: String) -> [String: String] {
         var headers = defaultPlaybackHeaders(for: mediaURL)
+        if SearchSourceGroup.classify(sourceKey: sourceBean.key, sourceName: sourceBean.name) == .jianpian {
+            headers["User-Agent"] = "Mozilla/5.0 packageName:com.jp3.xg3"
+            headers["Referer"] = "https://fan123.hzhnl.com/"
+            headers["Accept"] = "*/*"
+        }
         // URLRequest 的请求头不区分大小写，但 Swift Dictionary 区分；
         // 先移除同名的默认项，确保配置中的自定义值稳定覆盖默认值。
         sourceBean.headers?.forEach { key, value in

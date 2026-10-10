@@ -59,14 +59,21 @@ enum KktvsResponseNormalizer {
                return name == "url" || name == "play" || name == "playurl"
            })?.value {
             let candidate = unescape(nested.trimmingCharacters(in: .whitespacesAndNewlines))
-            if isHTTPURL(candidate), isDirectMedia(candidate) {
+            if isHTTPURL(candidate) {
                 return candidate
             }
         }
         return url
     }
 
-    /// 从 hxplayer/2mplayer 等播放器页脚本中提取直接媒体地址。
+    static func isHLSPlaylist(_ response: String) -> Bool {
+        let normalized = response
+            .replacingOccurrences(of: "\u{FEFF}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.hasPrefix("#EXTM3U")
+    }
+
+    /// 从播放器页脚本中提取媒体地址；无扩展名地址由后续响应体检测确认。
     static func extractMediaURL(from body: String, baseURL: String) -> String? {
         let content = unescape(body)
         let patterns = [
@@ -75,6 +82,7 @@ enum KktvsResponseNormalizer {
             #"(?i)(?:https?:)?//[^\s\"'<>\\]+(?:\.m3u8|\.mp4|\.flv|\.mkv|\.webm|\.mov|\.ts)(?:\?[^\s\"'<>\\]*)?"#
         ]
 
+        var indirectCandidate: String?
         for (index, pattern) in patterns.enumerated() {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
             let range = NSRange(content.startIndex..<content.endIndex, in: content)
@@ -102,9 +110,12 @@ enum KktvsResponseNormalizer {
                 if isDirectMedia(candidate) {
                     return candidate
                 }
+                if indirectCandidate == nil, isHTTPURL(candidate) {
+                    indirectCandidate = candidate
+                }
             }
         }
-        return nil
+        return indirectCandidate
     }
 
     static func directMediaURL(_ value: String) -> String? {

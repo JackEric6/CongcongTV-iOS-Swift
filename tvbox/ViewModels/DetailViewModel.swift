@@ -55,6 +55,8 @@ class DetailViewModel: ObservableObject {
     private var pendingResumeProtection: (position: Double, deadline: Date)?
     /// 按线路和集索引保存的续播进度。
     private var episodeProgress: [String: Double] = [:]
+    /// 起播或解析失败时已尝试过的线路，避免多个失败线路之间来回切换。
+    private var attemptedPlaybackFlags = Set<String>()
 
     /// 数据服务与网络服务。
     private let sourceService = SourceService.shared
@@ -141,6 +143,7 @@ class DetailViewModel: ObservableObject {
         if canReuseExistingPlayback {
             return
         }
+        attemptedPlaybackFlags.removeAll()
         cancelPurifierPlaybackWatchdog()
         purifierFallbackURL = nil
         let loadToken = UUID()
@@ -587,7 +590,14 @@ class DetailViewModel: ObservableObject {
 
     /// 选择线路
     func selectFlag(_ flag: String) {
+        selectFlag(flag, automaticFailover: false)
+    }
+
+    private func selectFlag(_ flag: String, automaticFailover: Bool) {
         guard selectedFlag != flag else { return }
+        if !automaticFailover {
+            attemptedPlaybackFlags.removeAll()
+        }
         let shouldContinuePlayback = isPlaying || playableResolveTask != nil
         let currentIndex = selectedEpisodeIndex
         rememberCurrentEpisodeProgress()
@@ -639,6 +649,7 @@ class DetailViewModel: ObservableObject {
     func selectEpisode(index: Int) {
         guard index >= 0, index < currentEpisodes.count else { return }
         guard selectedEpisodeIndex != index || !isPlaying else { return }
+        attemptedPlaybackFlags.removeAll()
         rememberCurrentEpisodeProgress()
         selectedEpisodeIndex = index
         vodInfo?.playIndex = index
@@ -669,6 +680,7 @@ class DetailViewModel: ObservableObject {
     /// 应用历史续播状态并自动继续播放
     func applyPlaybackState(_ state: VodPlaybackState) {
         guard let info = vodInfo, !info.playFlags.isEmpty else { return }
+        attemptedPlaybackFlags.removeAll()
 
         let fallbackFlag = info.playFlag.isEmpty ? info.playFlags[0] : info.playFlag
         let targetFlag = info.playFlags.contains(state.flag) ? state.flag : fallbackFlag
@@ -707,6 +719,7 @@ class DetailViewModel: ObservableObject {
     /// 选择清晰度
     func selectQuality(_ option: PlaybackQualityOption) {
         guard qualityOptions.contains(option) else { return }
+        attemptedPlaybackFlags.removeAll()
         selectedQualityId = option.id
         guard isPlaying else { return }
 
@@ -905,6 +918,7 @@ class DetailViewModel: ObservableObject {
                       self.currentSource?.key == requestSourceKey,
                       self.selectedFlag == requestFlag,
                       self.selectedEpisodeIndex == requestEpisodeIndex else { return }
+                if self.advancePlaybackRouteAfterFailure() { return }
                 self.playUrl = nil
                 self.isPlaying = false
                 self.isResolvingPlaybackURL = false
@@ -920,6 +934,7 @@ class DetailViewModel: ObservableObject {
 
             let finalURL = KktvsResponseNormalizer.normalizeMediaURL(resolved)
             guard let validURL = SourceService.validPlayableURL(finalURL) else {
+                if self.advancePlaybackRouteAfterFailure() { return }
                 self.playUrl = nil
                 self.isPlaying = false
                 self.isResolvingPlaybackURL = false
@@ -976,15 +991,41 @@ class DetailViewModel: ObservableObject {
     }
 
     func recoverFromPurifierPlaybackFailure() {
-        guard let fallbackURL = purifierFallbackURL,
-              playUrl != fallbackURL else { return }
+        if let fallbackURL = purifierFallbackURL, playUrl != fallbackURL {
+            cancelPurifierPlaybackWatchdog()
+            purifierFallbackURL = nil
+            playUrl = fallbackURL
+            isPlaying = true
+            isResolvingPlaybackURL = false
+            errorMessage = nil
+            shouldRetryAfterNetworkRecovery = false
+            return
+        }
+        guard !advancePlaybackRouteAfterFailure() else { return }
         cancelPurifierPlaybackWatchdog()
-        purifierFallbackURL = nil
-        playUrl = fallbackURL
-        isPlaying = true
+        playUrl = nil
+        isPlaying = false
         isResolvingPlaybackURL = false
-        errorMessage = nil
-        shouldRetryAfterNetworkRecovery = false
+        errorMessage = "当前影片的所有播放线路均失败，请更换片源或稍后重试"
+    }
+
+    @discardableResult
+    private func advancePlaybackRouteAfterFailure() -> Bool {
+        guard let info = vodInfo else { return false }
+        attemptedPlaybackFlags.insert(selectedFlag)
+        let episodeCounts = info.playUrlMap.mapValues(\.count)
+        guard let nextFlag = PlaybackRouteFailoverPolicy.nextFlag(
+            currentFlag: selectedFlag,
+            orderedFlags: info.playFlags,
+            episodeCounts: episodeCounts,
+            episodeIndex: selectedEpisodeIndex,
+            attemptedFlags: attemptedPlaybackFlags
+        ) else {
+            return false
+        }
+        attemptedPlaybackFlags.insert(nextFlag)
+        selectFlag(nextFlag, automaticFailover: true)
+        return true
     }
 
     private func armPurifierPlaybackWatchdog(

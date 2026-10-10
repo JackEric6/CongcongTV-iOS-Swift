@@ -36,6 +36,26 @@ struct CmsNormalizerSmokeTest {
             "player page media URL extraction failed"
         )
 
+        let extensionlessPlaylistURL = "https://media.test/live/channel?token=abc"
+        let extensionlessPlayerPage = #"<script>var player={"url":"https://media.test/live/channel?token=abc"};</script>"#
+        precondition(
+            KktvsResponseNormalizer.extractMediaURL(
+                from: extensionlessPlayerPage,
+                baseURL: "https://player.test/watch/1"
+            ) == extensionlessPlaylistURL,
+            "extensionless media URLs were not extracted"
+        )
+        precondition(
+            KktvsResponseNormalizer.normalizeMediaURL(
+                "https://player.test/watch?url=https%3A%2F%2Fmedia.test%2Flive%2Fchannel%3Ftoken%3Dabc"
+            ) == extensionlessPlaylistURL,
+            "extensionless nested media URLs were not unwrapped"
+        )
+        precondition(
+            KktvsResponseNormalizer.isHLSPlaylist("\u{FEFF}  #EXTM3U\r\n#EXTINF:6.0,\r\nsegment.ts"),
+            "extensionless HLS response was not detected"
+        )
+
         print("CMS NORMALIZER SMOKE TESTS PASSED")
     }
 }

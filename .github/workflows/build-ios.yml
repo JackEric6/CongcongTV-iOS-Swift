@@ -22,6 +22,22 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
 
+      - name: Verify KKT playback URL normalization
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Services/KktvsResponseNormalizer.swift \
+            scripts/verify-kktvs-normalizer.swift \
+            -o /tmp/verify-kktvs-normalizer
+          /tmp/verify-kktvs-normalizer
+
+      - name: Verify playback route failover
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Models/PlaybackRouteFailoverPolicy.swift \
+            scripts/verify-playback-route-failover.swift \
+            -o /tmp/verify-playback-route-failover
+          /tmp/verify-playback-route-failover
+
       - name: Verify M3U8 purification and playback safety
         run: |
           swiftc -parse-as-library -framework Network \
