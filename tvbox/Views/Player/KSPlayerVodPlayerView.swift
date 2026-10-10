@@ -1806,7 +1806,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private func updateDanmakuButton() {
             let image = danmakuEnabled ? "captions.bubble.fill" : "captions.bubble"
             danmakuButton.setImage(UIImage(systemName: image), for: .normal)
-            danmakuButton.accessibilityValue(danmakuEnabled ? "已开启" : "已关闭")
+            danmakuButton.accessibilityValue = danmakuEnabled ? "已开启" : "已关闭"
         }
 
         private func forceReloadDanmaku() {
