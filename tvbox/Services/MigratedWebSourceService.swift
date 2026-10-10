@@ -316,8 +316,8 @@ enum MigratedWebSourceService {
     }
 
     private static func attribute(_ name: String, in value: String) -> String? {
-        let pattern = #"(?is)\b\#(name)\s*=\s*(["'])(.*?)\2"#
-        return capture(pattern, in: value).map(decodeEntities)
+        let pattern = #"(?is)\b\#(name)\s*=\s*(["'])(.*?)\1"#
+        return capture(pattern, in: value, group: 2).map(decodeEntities)
     }
 
     private static func text(_ html: String) -> String {
