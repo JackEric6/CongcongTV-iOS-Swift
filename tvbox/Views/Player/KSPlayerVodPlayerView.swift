@@ -1940,8 +1940,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
                     toolbar.addArrangedSubview(arranged)
                 }
             }
-            toolbar.spacing = 8
-            toolbar.setCustomSpacing(12, after: toolbar.playbackRateButton)
+            toolbar.spacing = 3
+            toolbar.setCustomSpacing(4, after: toolbar.playbackRateButton)
             toolbar.playbackRateButton.setContentCompressionResistancePriority(.required, for: .horizontal)
             episodeButton.setContentCompressionResistancePriority(.required, for: .horizontal)
             danmakuButton.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -1978,8 +1978,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             previousButton.alpha = canPlayPrevious ? 1 : 0.45
             nextButton.alpha = canPlayNext ? 1 : 0.45
             episodeButton.isHidden = !isLandscape || !canSelectEpisode
-            introButton.isHidden = !isLandscape
-            outroButton.isHidden = !isLandscape
+            introButton.isHidden = false
+            outroButton.isHidden = false
             rewindButton.isHidden = !isLandscape
             forwardButton.isHidden = !isLandscape
             verticalSeekStack.isHidden = isLandscape
@@ -2021,8 +2021,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 self.introButton.alpha = alpha
                 self.outroButton.alpha = alpha
                 self.danmakuButton.alpha = alpha
-                self.introButton.isHidden = !self.controlsVisible || !self.isLandscape
-                self.outroButton.isHidden = !self.controlsVisible || !self.isLandscape
+                self.introButton.isHidden = !self.controlsVisible
+                self.outroButton.isHidden = !self.controlsVisible
                 self.danmakuButton.isHidden = !self.controlsVisible
             }
         }
