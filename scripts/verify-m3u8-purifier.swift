@@ -144,6 +144,42 @@ struct VerifyM3U8Purifier {
             frameRateResult.content.contains("main-\($0).ts")
         })
 
+        var finalPrecisionLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:5", "#EXT-X-DISCONTINUITY"]
+        for index in 1...20 {
+            finalPrecisionLines.append("#EXTINF:4.080,")
+            finalPrecisionLines.append("https://cdn.example/video/main-\(index).ts")
+        }
+        finalPrecisionLines.append("#EXT-X-DISCONTINUITY")
+        for index in 1...3 {
+            finalPrecisionLines.append("#EXTINF:4.08,")
+            finalPrecisionLines.append("https://cdn.example/video/tail-\(index).ts")
+        }
+        finalPrecisionLines.append("#EXT-X-ENDLIST")
+        let finalPrecisionResult = M3U8ManifestPurifier.purify(
+            baseURL: URL(string: "https://cdn.example/video/index.m3u8")!,
+            content: finalPrecisionLines.joined(separator: "\n")
+        )
+        precondition(finalPrecisionResult.removedSegmentCount == 0)
+        precondition((1...3).allSatisfy { finalPrecisionResult.content.contains("tail-\($0).ts") })
+
+        var finalFrameRateLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:5", "#EXT-X-DISCONTINUITY"]
+        for index in 1...20 {
+            finalFrameRateLines.append("#EXTINF:4.080,")
+            finalFrameRateLines.append("https://cdn.example/video/main-\(index).ts")
+        }
+        finalFrameRateLines.append("#EXT-X-DISCONTINUITY")
+        for index in 1...3 {
+            finalFrameRateLines.append("#EXTINF:4.125,")
+            finalFrameRateLines.append("https://cdn.example/video/tail-\(index).ts")
+        }
+        finalFrameRateLines.append("#EXT-X-ENDLIST")
+        let finalFrameRateResult = M3U8ManifestPurifier.purify(
+            baseURL: URL(string: "https://cdn.example/video/index.m3u8")!,
+            content: finalFrameRateLines.joined(separator: "\n")
+        )
+        precondition(finalFrameRateResult.removedSegmentCount == 0)
+        precondition((1...3).allSatisfy { finalFrameRateResult.content.contains("tail-\($0).ts") })
+
         let ambiguousFrameRateLines = frameRateLines.map { line in
             line.replacingOccurrences(of: "4.080", with: "4.040")
                 .replacingOccurrences(of: "4.125", with: "4.042")

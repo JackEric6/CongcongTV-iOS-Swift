@@ -839,7 +839,17 @@ class SourceService {
     }
 
     private func getPlaybackPage(from url: String, sourceBean: SourceBean) async throws -> String {
-        var headers = defaultPlaybackHeaders(for: url)
+        let headers = playbackHeaders(for: sourceBean, mediaURL: url)
+        return try await network.getString(
+            from: url,
+            headers: headers,
+            timeout: min(max(sourceBean.timeout ?? 8, 5), 15),
+            maxRetries: 1
+        )
+    }
+
+    func playbackHeaders(for sourceBean: SourceBean, mediaURL: String) -> [String: String] {
+        var headers = defaultPlaybackHeaders(for: mediaURL)
         // URLRequest 的请求头不区分大小写，但 Swift Dictionary 区分；
         // 先移除同名的默认项，确保配置中的自定义值稳定覆盖默认值。
         sourceBean.headers?.forEach { key, value in
@@ -848,13 +858,7 @@ class SourceService {
                 .forEach { headers.removeValue(forKey: $0) }
             headers[key] = value
         }
-
-        return try await network.getString(
-            from: url,
-            headers: headers,
-            timeout: min(max(sourceBean.timeout ?? 8, 5), 15),
-            maxRetries: 1
-        )
+        return headers
     }
 
     private func defaultPlaybackHeaders(for url: String) -> [String: String] {

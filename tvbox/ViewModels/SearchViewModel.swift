@@ -16,6 +16,8 @@ class SearchViewModel: ObservableObject {
     @Published var errorMessage: String?
     /// 当前展示来源分组；nil 表示显示全部来源。
     @Published var selectedSourceGroup: SearchSourceGroup?
+    /// 当前选中的非固定来源；与固定来源分组互斥。
+    @Published var selectedSourceKey: String?
     
     /// 源数据服务（负责多源并发搜索）。
     private let sourceService = SourceService.shared
@@ -43,10 +45,25 @@ class SearchViewModel: ObservableObject {
         Set(results.map { sourceGroup(for: $0.sourceKey) })
     }
 
+    /// 每个实际出现的非固定来源单独提供筛选项，不再聚合成“其他影视源”。
+    var availableOtherSourceKeys: [String] {
+        var seen = Set<String>()
+        return results.compactMap { video in
+            let key = video.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty,
+                  sourceGroup(for: key) == .other,
+                  seen.insert(key.lowercased()).inserted else { return nil }
+            return key
+        }
+    }
+
     /// 站点筛选只改变本地展示，不改变原始视频的 sourceKey、id 或播放配置。
     var filteredResults: [Movie.Video] {
-        guard let selectedSourceGroup else { return results }
-        return results.filter { sourceGroup(for: $0.sourceKey) == selectedSourceGroup }
+        if let selectedSourceGroup {
+            return results.filter { sourceGroup(for: $0.sourceKey) == selectedSourceGroup }
+        }
+        guard let selectedSourceKey else { return results }
+        return results.filter { $0.sourceKey.caseInsensitiveCompare(selectedSourceKey) == .orderedSame }
     }
     
     /// 初始化时同步加载本地历史记录，确保搜索页首次渲染即可展示。
@@ -67,6 +84,7 @@ class SearchViewModel: ObservableObject {
         errorMessage = nil
         results = []
         selectedSourceGroup = nil
+        selectedSourceKey = nil
         pendingResults = []
         pendingResultKeys = []
 
@@ -138,6 +156,7 @@ class SearchViewModel: ObservableObject {
             pendingResults = []
             pendingResultKeys = []
             selectedSourceGroup = nil
+            selectedSourceKey = nil
             appendCandidates(videos)
             let enriched = await PosterCache.shared.enrich(pendingResults)
             guard requestId == latestSearchRequestId else { return }
@@ -175,6 +194,10 @@ class SearchViewModel: ObservableObject {
         ApiConfig.shared.sourceBeanList.first {
             $0.key.caseInsensitiveCompare(sourceKey) == .orderedSame
         }?.name
+    }
+
+    func displayName(for sourceKey: String) -> String {
+        SearchSourceGroup.displayName(sourceKey: sourceKey, sourceName: sourceName(for: sourceKey))
     }
 
     /// 取消当前搜索并结束加载状态。

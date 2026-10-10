@@ -153,7 +153,7 @@ struct SearchView: View {
     private var searchResults: some View {
         HStack(spacing: 0) {
             sourceFilter
-                .frame(width: 78)
+                .frame(width: 62)
 
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 12) {
@@ -180,8 +180,11 @@ struct SearchView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 5) {
                 sourceGroupButton(title: "全部", group: nil)
-                ForEach(SearchSourceGroup.allCases) { group in
+                ForEach(SearchSourceGroup.allCases.filter { $0 != .other }) { group in
                     sourceGroupButton(title: group.title, group: group)
+                }
+                ForEach(viewModel.availableOtherSourceKeys, id: \.self) { key in
+                    sourceKeyButton(title: viewModel.displayName(for: key), key: key)
                 }
             }
             .padding(.horizontal, 6)
@@ -192,10 +195,11 @@ struct SearchView: View {
     }
 
     private func sourceGroupButton(title: String, group: SearchSourceGroup?) -> some View {
-        let selected = viewModel.selectedSourceGroup == group
+        let selected = viewModel.selectedSourceGroup == group && viewModel.selectedSourceKey == nil
         let available = group.map { viewModel.availableSourceGroups.contains($0) } ?? true
         return Button {
             viewModel.selectedSourceGroup = group
+            viewModel.selectedSourceKey = nil
         } label: {
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
@@ -209,14 +213,27 @@ struct SearchView: View {
         .disabled(!available)
     }
 
-    private func sourceName(for key: String) -> String {
-        if let name = apiConfig.sourceBeanList.first(where: {
-            $0.key.caseInsensitiveCompare(key) == .orderedSame
-        })?.name,
-           !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return name
+    private func sourceKeyButton(title: String, key: String) -> some View {
+        Button {
+            viewModel.selectedSourceGroup = nil
+            viewModel.selectedSourceKey = key
+        } label: {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .foregroundColor(viewModel.selectedSourceKey == key ? .white : .secondary)
+                .background(viewModel.selectedSourceKey == key ? Color.orange : Color.clear)
+                .cornerRadius(4)
         }
-        return key
+        .buttonStyle(.plain)
+    }
+
+    private func sourceName(for key: String) -> String {
+        let name = apiConfig.sourceBeanList.first(where: {
+            $0.key.caseInsensitiveCompare(key) == .orderedSame
+        })?.name
+        return SearchSourceGroup.displayName(sourceKey: key, sourceName: name)
     }
 
     // MARK: - 搜索历史

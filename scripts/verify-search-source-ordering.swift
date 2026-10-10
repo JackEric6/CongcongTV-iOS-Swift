@@ -36,8 +36,13 @@ struct VerifySearchSourceOrdering {
             "liangzi", "360", "xintong", "changzhang", "moli", "other-a", "other-b"
         ])
         precondition(SearchSourceGroup.allCases.map(\.title) == [
-            "瓜子", "荐片", "西瓜", "非凡", "暴风", "天堂", "量子", "360", "鑫同", "厂长", "茉莉", "其他影视源"
+            "瓜子", "荐片", "西瓜", "非凡", "暴风", "天堂", "量子", "360", "鑫同", "厂长", "茉莉", "其他"
         ])
+        precondition(SearchSourceGroup.displayName(sourceKey: "iqiyi", sourceName: "爱奇艺") == "奇艺")
+        precondition(SearchSourceGroup.displayName(sourceKey: "xinlang", sourceName: "新浪资源") == "新浪")
+        precondition(SearchSourceGroup.displayName(sourceKey: "unknown", sourceName: "奇异资源站") == "奇异")
+        precondition(SearchSourceGroup.displayName(sourceKey: "dyttzy", sourceName: "电影天堂") == "天堂")
+        precondition(!SearchSourceGroup.allCases.map(\.title).contains("其他影视源"))
         precondition(SearchSourceGroup.classify(sourceKey: "legacy", sourceName: "鑫同采集") == .xintong)
         precondition(SearchSourceGroup.classify(sourceKey: "cms_baofeng", sourceName: "暴风┃本地") == .baofeng)
         print("SEARCH SOURCE ORDERING CHECKS PASSED")

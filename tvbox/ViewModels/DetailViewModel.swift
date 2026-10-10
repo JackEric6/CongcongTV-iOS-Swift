@@ -853,7 +853,7 @@ class DetailViewModel: ObservableObject {
                 guard let self else { return }
                 let prepared = await M3U8Purifier.shared.prepare(
                     urlString: selectedURL,
-                    headers: self.playbackHeaders(for: source),
+                    headers: self.playbackHeaders(for: source, mediaURL: selectedURL),
                     sourceKey: source.key
                 )
                 guard !Task.isCancelled,
@@ -861,8 +861,8 @@ class DetailViewModel: ObservableObject {
                       self.currentSource?.key == requestSourceKey,
                       self.selectedFlag == requestFlag,
                       self.selectedEpisodeIndex == requestEpisodeIndex else { return }
-                self.playUrl = prepared.url
                 self.purifierFallbackURL = prepared.didPurify ? selectedURL : nil
+                self.playUrl = prepared.url
                 self.isPlaying = true
                 self.isResolvingPlaybackURL = false
             }
@@ -911,7 +911,7 @@ class DetailViewModel: ObservableObject {
             self.updateQualityOptions(for: validURL, resetSelection: true)
             let prepared = await M3U8Purifier.shared.prepare(
                 urlString: validURL,
-                headers: self.playbackHeaders(for: source),
+                headers: self.playbackHeaders(for: source, mediaURL: validURL),
                 sourceKey: source.key
             )
             guard !Task.isCancelled,
@@ -919,8 +919,8 @@ class DetailViewModel: ObservableObject {
                   self.currentSource?.key == requestSourceKey,
                   self.selectedFlag == requestFlag,
                   self.selectedEpisodeIndex == requestEpisodeIndex else { return }
-            self.playUrl = prepared.url
             self.purifierFallbackURL = prepared.didPurify ? validURL : nil
+            self.playUrl = prepared.url
             self.isPlaying = true
             self.isResolvingPlaybackURL = false
             self.errorMessage = nil
@@ -928,11 +928,16 @@ class DetailViewModel: ObservableObject {
         }
     }
 
-    private func playbackHeaders(for source: SourceBean) -> [String: String] {
+    var currentPlaybackHeaders: [String: String] {
+        guard let source = currentSource, let playUrl else { return [:] }
+        return playbackHeaders(for: source, mediaURL: purifierFallbackURL ?? playUrl)
+    }
+
+    private func playbackHeaders(for source: SourceBean, mediaURL: String) -> [String: String] {
         if source.key.caseInsensitiveCompare("guazi") == .orderedSame {
             return GuaziPlaybackRequest.playbackHeaders
         }
-        return source.headers ?? [:]
+        return sourceService.playbackHeaders(for: source, mediaURL: mediaURL)
     }
 
     func recoverFromPurifierPlaybackFailure() {

@@ -29,8 +29,39 @@ enum SearchSourceGroup: Int, CaseIterable, Hashable, Identifiable {
         case .xintong: return "鑫同"
         case .changzhang: return "厂长"
         case .moli: return "茉莉"
-        case .other: return "其他影视源"
+        case .other: return "其他"
         }
+    }
+
+    static func displayName(sourceKey: String, sourceName: String?) -> String {
+        let group = classify(sourceKey: sourceKey, sourceName: sourceName)
+        if group != .other { return group.title }
+
+        let configuredName = sourceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if configuredName.contains("爱奇艺") { return "奇艺" }
+        if configuredName.contains("电影天堂") { return "天堂" }
+
+        let rawName = configuredName.isEmpty || configuredName.contains("其他影视源")
+            ? sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            : configuredName
+        var shortName = rawName
+        let suffixes = ["资源站", "采集站", "采集网", "采集", "资源"]
+        var previous: String
+        repeat {
+            previous = shortName
+            for suffix in suffixes where shortName.hasSuffix(suffix) {
+                shortName.removeLast(suffix.count)
+                shortName = shortName.trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+        } while shortName != previous
+
+        if let first = shortName.first,
+           first.unicodeScalars.contains(where: { $0.value > 0xFFFF }) {
+            shortName.removeFirst()
+            shortName = shortName.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return String(shortName.prefix(2))
     }
 
     static func classify(sourceKey: String, sourceName: String? = nil) -> SearchSourceGroup {

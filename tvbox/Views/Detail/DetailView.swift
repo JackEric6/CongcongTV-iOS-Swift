@@ -234,9 +234,7 @@ struct DetailView: View {
                 // 全屏时 KSPlayer 只移动内部 UIView，继续复用同一个播放会话。
                 PlayerView(
                     urlString: url,
-                    playbackHeaders: video.sourceKey.caseInsensitiveCompare("guazi") == .orderedSame
-                        ? GuaziPlaybackRequest.playbackHeaders
-                        : [:],
+                    playbackHeaders: viewModel.currentPlaybackHeaders,
                     startPosition: effectiveStartPosition,
                     playbackSessionToken: playbackSessionToken,
                     isResolvingPlayback: viewModel.isResolvingPlaybackURL,
