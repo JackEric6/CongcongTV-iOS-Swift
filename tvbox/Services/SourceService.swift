@@ -6,8 +6,6 @@ class SourceService {
     static let shared = SourceService()
 
     private let network = NetworkManager.shared
-    /// 短期记录失效源，避免每次搜索都重复等待 403、空结果或超时站点。
-    private let searchHealth = SearchSourceHealthCache()
 
     private init() {}
 
@@ -490,7 +488,7 @@ class SourceService {
 
         let url: String
         if sourceBean.type == 0 {
-            url = try buildURL(
+            url = try buildSearchURL(
                 base: api,
                 queryItems: [URLQueryItem(name: "wd", value: keyword)]
             )
@@ -510,24 +508,14 @@ class SourceService {
                     queryItems.append(URLQueryItem(name: "extend", value: extend))
                 }
             }
-            url = try buildURL(base: api, queryItems: queryItems)
-        } else if isXgzySource(sourceBean) {
-            // 西瓜资源等部分 CMS 接口仅带 wd 会被 WAF 拦截或返回空数据，
-            // 需要附带 ac=detail 才会返回 JSON 搜索结果。
-            url = try buildURL(
+            url = try buildSearchURL(base: api, queryItems: queryItems)
+        } else {
+            // AVBox 对标准 JSON CMS 搜索统一使用 ac=detail&wd=，并保留
+            // 配置 URL 中已有的 source/token 等参数。
+            url = try buildSearchURL(
                 base: api,
                 queryItems: [
                     URLQueryItem(name: "ac", value: "detail"),
-                    URLQueryItem(name: "wd", value: keyword)
-                ]
-            )
-        } else {
-            // 按安卓版 SourceViewModel 的 CMS 约定，标准 JSON 搜索使用
-            // ac=list；西瓜等特殊源在上面的分支继续使用 ac=detail。
-            url = try buildURL(
-                base: api,
-                queryItems: [
-                    URLQueryItem(name: "ac", value: "list"),
                     URLQueryItem(name: "wd", value: keyword)
                 ]
             )
@@ -633,21 +621,7 @@ class SourceService {
             // 瓜子由 GuaziService 直接请求加密接口，不依赖 SourceBean.api；
             // 不能因为远程配置里的旧条目缺少 CMS api 就把它从聚合搜索中过滤掉。
             guard isGuazi || source.isHttpApi else { continue }
-            if !isGuazi {
-                guard await searchHealth.isAvailable(source.key) else { continue }
-            }
             searchableSources.append(source)
-        }
-        // 健康缓存只用于避开近期明确失败的站点；不能让一次搜索失败
-        // 把后续搜索变成“没有任何源可用”。健康筛选为空时立即恢复全量源。
-        if searchableSources.isEmpty {
-            searchableSources = sources.filter {
-                let isGuazi = $0.key.caseInsensitiveCompare("guazi") == .orderedSame
-                return $0.isSearchable
-                    && $0.isSelectable
-                    && $0.isSupportedInSwift
-                    && (isGuazi || $0.isHttpApi)
-            }
         }
         searchableSources = prioritizedSearchSources(searchableSources)
         guard !searchableSources.isEmpty else { return }
@@ -663,17 +637,10 @@ class SourceService {
                 group.addTask { [self] in
                     do {
                         let videos = try await self.search(sourceBean: searchableSources[index], keyword: keyword)
-                        if !videos.isEmpty {
-                            await self.searchHealth.markSuccess(searchableSources[index].key)
-                        }
                         return (index, videos, nil)
                     } catch is CancellationError {
                         return (index, [], nil)
                     } catch {
-                        await self.searchHealth.markFailure(
-                            searchableSources[index].key,
-                            duration: Self.searchFailureDuration(for: error)
-                        )
                         let isGuazi = searchableSources[index].key.caseInsensitiveCompare("guazi") == .orderedSame
                         return (index, [], isGuazi ? error.localizedDescription : nil)
                     }
@@ -715,17 +682,10 @@ class SourceService {
                 group.addTask { [self] in
                     do {
                         let videos = try await self.search(sourceBean: searchableSources[index], keyword: keyword)
-                        if !videos.isEmpty {
-                            await self.searchHealth.markSuccess(searchableSources[index].key)
-                        }
                         return (index, videos, nil)
                     } catch is CancellationError {
                         return (index, [], nil)
                     } catch {
-                        await self.searchHealth.markFailure(
-                            searchableSources[index].key,
-                            duration: Self.searchFailureDuration(for: error)
-                        )
                         let isGuazi = searchableSources[index].key.caseInsensitiveCompare("guazi") == .orderedSame
                         return (index, [], isGuazi ? error.localizedDescription : nil)
                     }
@@ -766,13 +726,6 @@ class SourceService {
             guard !searchableText.isEmpty else { return false }
             return tokens.allSatisfy { searchableText.contains($0) }
         }
-    }
-
-    private static func searchFailureDuration(for error: Error) -> TimeInterval {
-        if case NetworkError.httpError(let status) = error, status == 403 {
-            return 120
-        }
-        return 45
     }
 
     private func normalizeSearchText(_ text: String) -> String {
@@ -842,15 +795,15 @@ class SourceService {
         return response
     }
 
-    /// 搜索专用请求策略：不重试，并将站点自报超时限制在合理范围内。
+    /// 搜索专用请求策略：比列表请求略宽容，容纳响应较慢的资源站。
     private func getSearchString(from url: String, sourceBean: SourceBean) async throws -> String {
-        let configuredTimeout = sourceBean.timeout ?? 6
-        let timeout = min(max(configuredTimeout, 3), 6)
+        let configuredTimeout = sourceBean.timeout ?? 12
+        let timeout = min(max(configuredTimeout, 6), 12)
         let response = try await network.getString(
             from: url,
             headers: sourceBean.headers,
             timeout: timeout,
-            maxRetries: 0
+            maxRetries: 1
         )
         try validateResponse(response, sourceBean: sourceBean, expectation: .catalog)
         return response
@@ -939,15 +892,6 @@ class SourceService {
     private func isKktvsSource(_ sourceBean: SourceBean) -> Bool {
         sourceBean.key.caseInsensitiveCompare("kktvs") == .orderedSame
             || sourceBean.api.range(of: "kktvs.com", options: [.caseInsensitive]) != nil
-    }
-
-    private func isXgzySource(_ sourceBean: SourceBean) -> Bool {
-        let key = sourceBean.key.lowercased()
-        let api = sourceBean.api.lowercased()
-        return key == "xgzy"
-            || key.contains("xigua")
-            || api.contains("xgzyapi.com")
-            || api.contains("xiguam3u8")
     }
 
     private func isDyttSource(_ sourceBean: SourceBean) -> Bool {
@@ -1148,6 +1092,20 @@ class SourceService {
         }
         return url.absoluteString
     }
+
+    private func buildSearchURL(base: String, queryItems: [URLQueryItem]) throws -> String {
+        let trimmedBase = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmedBase) else {
+            throw SourceError.invalidApiUrl(base)
+        }
+        let replacedNames = Set(queryItems.map { $0.name.lowercased() }).union(["wd", "ac"])
+        let preserved = (components.queryItems ?? []).filter {
+            !replacedNames.contains($0.name.lowercased())
+        }
+        components.queryItems = preserved + queryItems
+        guard let url = components.url else { throw SourceError.invalidApiUrl(base) }
+        return url.absoluteString
+    }
 }
 
 enum SourceError: LocalizedError {
@@ -1167,29 +1125,5 @@ enum SourceError: LocalizedError {
         case .unsupportedType(let type): return "暂不支持 \(type) 类型的数据源，请切换其他源"
         case .invalidApiUrl(let url): return "无效的接口地址: \(url)"
         }
-    }
-}
-
-/// 搜索源健康短缓存。只影响搜索请求，不修改源配置，也不影响播放。
-private actor SearchSourceHealthCache {
-    private var unavailableUntil: [String: Date] = [:]
-
-    func isAvailable(_ sourceKey: String) -> Bool {
-        guard let until = unavailableUntil[sourceKey] else { return true }
-        if until <= Date() {
-            unavailableUntil.removeValue(forKey: sourceKey)
-            return true
-        }
-        return false
-    }
-
-    func markFailure(_ sourceKey: String, duration: TimeInterval) {
-        guard !sourceKey.isEmpty else { return }
-        let expiry = Date().addingTimeInterval(max(30, duration))
-        unavailableUntil[sourceKey] = expiry
-    }
-
-    func markSuccess(_ sourceKey: String) {
-        unavailableUntil.removeValue(forKey: sourceKey)
     }
 }

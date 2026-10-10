@@ -60,7 +60,11 @@ struct SearchView: View {
                 Spacer()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color(red: 0.08, green: 0.08, blue: 0.1))
+        #if os(iOS)
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        #endif
         .navigationTitle("搜索")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)

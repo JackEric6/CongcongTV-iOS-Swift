@@ -39,6 +39,15 @@ jobs:
             -o /tmp/verify-search-source-ordering
           /tmp/verify-search-source-ordering
 
+      - name: Verify playback playlist parsing
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Models/Movie.swift \
+            tvbox/Models/VodInfo.swift \
+            scripts/verify-vod-info-playlist.swift \
+            -o /tmp/verify-vod-info-playlist
+          /tmp/verify-vod-info-playlist
+
       - name: Verify Cz4k search result parsing
         run: |
           swiftc -parse-as-library \

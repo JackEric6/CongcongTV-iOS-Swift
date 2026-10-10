@@ -58,6 +58,10 @@ final class DanmakuSettingsPanelView: UIView {
     private let statusLabel = UILabel()
     private let card = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterialDark))
     private let contentStack = UIStackView()
+    private var portraitWidthConstraint: NSLayoutConstraint!
+    private var landscapeWidthConstraint: NSLayoutConstraint!
+    private var portraitMaxWidthConstraint: NSLayoutConstraint!
+    private var usesLandscapeWidth = false
 
     init(settings: DanmakuDisplaySettings, status: String) {
         self.settings = settings.normalized
@@ -118,14 +122,18 @@ final class DanmakuSettingsPanelView: UIView {
         headerAndBody.translatesAutoresizingMaskIntoConstraints = false
         card.contentView.addSubview(headerAndBody)
 
+        portraitWidthConstraint = card.widthAnchor.constraint(equalTo: widthAnchor, constant: -16)
+        portraitWidthConstraint.priority = UILayoutPriority(750)
+        landscapeWidthConstraint = card.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 1.0 / 3.0)
+        portraitMaxWidthConstraint = card.widthAnchor.constraint(lessThanOrEqualToConstant: 360)
         NSLayoutConstraint.activate([
             card.centerXAnchor.constraint(equalTo: centerXAnchor),
             card.centerYAnchor.constraint(equalTo: centerYAnchor),
-            card.widthAnchor.constraint(equalTo: widthAnchor, constant: -16),
+            portraitWidthConstraint,
             card.heightAnchor.constraint(equalToConstant: 360).withPriority(750),
             card.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
             card.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
-            card.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
+            portraitMaxWidthConstraint,
             card.topAnchor.constraint(greaterThanOrEqualTo: safeAreaLayoutGuide.topAnchor, constant: 10),
             card.bottomAnchor.constraint(lessThanOrEqualTo: safeAreaLayoutGuide.bottomAnchor, constant: -10),
             headerAndBody.leadingAnchor.constraint(equalTo: card.contentView.leadingAnchor, constant: 14),
@@ -174,6 +182,16 @@ final class DanmakuSettingsPanelView: UIView {
         statusLabel.numberOfLines = 2
         contentStack.addArrangedSubview(statusLabel)
         statusLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let landscape = bounds.width > bounds.height
+        guard landscape != usesLandscapeWidth else { return }
+        usesLandscapeWidth = landscape
+        portraitWidthConstraint.isActive = !landscape
+        landscapeWidthConstraint.isActive = landscape
+        portraitMaxWidthConstraint.isActive = !landscape
     }
 
     private func makeToggleRow(_ title: String, control: UIView) -> UIView {

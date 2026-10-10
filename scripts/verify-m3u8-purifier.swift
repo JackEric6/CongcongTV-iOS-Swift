@@ -104,6 +104,42 @@ struct VerifyM3U8Purifier {
         precondition(!tokenizedResult.content.contains("ad0001.ts"))
         precondition(!tokenizedResult.content.contains("ad0002.ts"))
 
+        var shortManifestLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:6"]
+        for index in 1...4 {
+            shortManifestLines.append("#EXTINF:6.0,")
+            shortManifestLines.append(String(format: "https://cdn.example/video/main%04d.ts", index))
+        }
+        shortManifestLines.append("#EXTINF:6.0,")
+        shortManifestLines.append("https://cdn.example/video/ad0001.ts")
+        shortManifestLines.append("#EXT-X-ENDLIST")
+        let shortManifestResult = M3U8ManifestPurifier.purify(
+            baseURL: URL(string: "https://cdn.example/video/index.m3u8")!,
+            content: shortManifestLines.joined(separator: "\n")
+        )
+        precondition(shortManifestResult.removedSegmentCount == 1)
+        precondition(!shortManifestResult.content.contains("ad0001.ts"))
+        precondition((1...4).allSatisfy {
+            shortManifestResult.content.contains(String(format: "main%04d.ts", $0))
+        })
+
+        var multiCDNLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:6"]
+        for index in 1...100 {
+            multiCDNLines.append("#EXTINF:6.0,")
+            multiCDNLines.append(String(format: "https://cdn.example/video/main-%04d-segment.ts", index))
+        }
+        for index in 1...20 {
+            multiCDNLines.append("#EXTINF:6.0,")
+            multiCDNLines.append(String(format: "https://mirror.example/video/alt-%04d-segment.ts", index))
+        }
+        multiCDNLines.append("#EXT-X-ENDLIST")
+        let multiCDNManifest = multiCDNLines.joined(separator: "\n")
+        let multiCDNResult = M3U8ManifestPurifier.purify(
+            baseURL: URL(string: "https://cdn.example/video/index.m3u8")!,
+            content: multiCDNManifest
+        )
+        precondition(multiCDNResult.removedSegmentCount == 0)
+        precondition(multiCDNResult.content == multiCDNManifest)
+
         var rollbackLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:6"]
         for index in 1...2 {
             rollbackLines.append("#EXTINF:6.0,")

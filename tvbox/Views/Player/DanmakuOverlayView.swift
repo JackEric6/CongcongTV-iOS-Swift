@@ -6,6 +6,7 @@ import UIKit
 final class DanmakuOverlayView: UIView {
     private enum Placement {
         case scrolling
+        case reverse
         case top
         case bottom
     }
@@ -15,8 +16,9 @@ final class DanmakuOverlayView: UIView {
         let placement: Placement
         let lane: Int
         let startTime: TimeInterval
-        let duration: TimeInterval
+        var duration: TimeInterval
         let width: CGFloat
+        var speed: CGFloat
     }
 
     private var cues: [DanmuCue] = []
@@ -25,16 +27,20 @@ final class DanmakuOverlayView: UIView {
     private var displayLink: CADisplayLink?
     private var mediaTime: TimeInterval = 0
     private var mediaDuration: TimeInterval = 0
+    private var playbackRate = 1.0
     private var wallClockAnchor: CFTimeInterval = 0
     private var hasTimeAnchor = false
     private var playbackActive = true
     private var lastRenderedTime: TimeInterval = 0
     private var lastLayoutSize = CGSize.zero
     private var settings = DanmakuDisplaySettings()
+    private var nextScrollingLane = 0
+    private var nextReverseLane = 0
+    private var nextTopLane = 0
+    private var nextBottomLane = 0
 
-    private let horizontalInset: CGFloat = 8
     private let rowHeight: CGFloat = 28
-    private let fixedDuration: TimeInterval = 3.5
+    private let fixedDuration: TimeInterval = 5
     private let maxActiveBullets = 80
 
     override init(frame: CGRect) {
@@ -66,10 +72,16 @@ final class DanmakuOverlayView: UIView {
 
     func updateSettings(_ settings: DanmakuDisplaySettings) {
         self.settings = settings.normalized
-        if !activeBullets.isEmpty {
-            clearActiveBullets()
-            nextCueIndex = lowerBound(for: currentTimelineTime())
+        let now = currentTimelineTime()
+        for index in activeBullets.indices {
+            if activeBullets[index].placement == .scrolling || activeBullets[index].placement == .reverse {
+                activeBullets[index].duration = self.settings.scrollDuration
+                activeBullets[index].speed = (bounds.width + activeBullets[index].width)
+                    / CGFloat(max(0.01, self.settings.scrollDuration))
+            }
         }
+        lastRenderedTime = now
+        render(at: now)
     }
 
     func setPlaybackActive(_ active: Bool) {
@@ -83,7 +95,7 @@ final class DanmakuOverlayView: UIView {
 
     /// Supplies the current player time. The display link only interpolates between
     /// these callbacks to keep scrolling smooth while the player is playing.
-    func update(currentTime: TimeInterval, duration: TimeInterval = 0) {
+    func update(currentTime: TimeInterval, duration: TimeInterval = 0, playbackRate: Double = 1) {
         let boundedTime = max(0, currentTime)
         let hadTimeAnchor = hasTimeAnchor
         let movedBackward = DanmakuTimelinePolicy.didSeekBackward(
@@ -92,6 +104,7 @@ final class DanmakuOverlayView: UIView {
         )
         mediaDuration = max(0, duration)
         mediaTime = boundedTime
+        self.playbackRate = DanmakuTimelinePolicy.playbackRate(playbackRate)
         wallClockAnchor = CACurrentMediaTime()
         hasTimeAnchor = true
 
@@ -99,6 +112,7 @@ final class DanmakuOverlayView: UIView {
         // those normal updates as seeks repeatedly cleared cues between ticks.
         if !hadTimeAnchor || movedBackward {
             clearActiveBullets()
+            resetLaneIndexes()
             nextCueIndex = lowerBound(for: boundedTime)
         }
 
@@ -112,9 +126,11 @@ final class DanmakuOverlayView: UIView {
     /// Clears active labels but keeps the loaded cue list.
     func reset() {
         clearActiveBullets()
+        resetLaneIndexes()
         nextCueIndex = 0
         mediaTime = 0
         mediaDuration = 0
+        playbackRate = 1
         lastRenderedTime = 0
         wallClockAnchor = CACurrentMediaTime()
         hasTimeAnchor = false
@@ -142,11 +158,14 @@ final class DanmakuOverlayView: UIView {
         lastLayoutSize = bounds.size
         guard hasTimeAnchor, !cues.isEmpty else { return }
 
-        // Adding a bullet also schedules layout on this view. Only rebuild the
-        // active window when its actual geometry changes (rotation/full screen).
+        // A rotation changes each lane's geometry, but should not restart its clock.
         let now = currentTimelineTime()
-        clearActiveBullets()
-        nextCueIndex = lowerBound(for: max(0, now - max(settings.scrollDuration, fixedDuration)))
+        for index in activeBullets.indices {
+            if activeBullets[index].placement == .scrolling || activeBullets[index].placement == .reverse {
+                activeBullets[index].speed = (bounds.width + activeBullets[index].width)
+                    / CGFloat(max(0.01, activeBullets[index].duration))
+            }
+        }
         lastRenderedTime = now
         render(at: now)
     }
@@ -175,7 +194,7 @@ final class DanmakuOverlayView: UIView {
 
     private func currentTimelineTime() -> TimeInterval {
         guard playbackActive, hasTimeAnchor else { return mediaTime }
-        return mediaTime + max(0, CACurrentMediaTime() - wallClockAnchor)
+        return mediaTime + max(0, CACurrentMediaTime() - wallClockAnchor) * playbackRate
     }
 
     private func render(at time: TimeInterval) {
@@ -206,11 +225,10 @@ final class DanmakuOverlayView: UIView {
     private func enqueue(_ cue: DanmuCue, at cueTime: TimeInterval) {
         let placement: Placement
         switch cue.type {
-        // The endpoint follows Bilibili's XML convention: 1/2/3/6 are
-        // scrolling, 4 is bottom and 5 is top. Unsupported special effects
-        // are rendered as scrolling text instead of being dropped.
+        // Match Android's Bilibili mode mapping: 6 scrolls in the opposite direction.
         case 4: placement = .bottom
         case 5: placement = .top
+        case 6: placement = .reverse
         default: placement = .scrolling
         }
 
@@ -233,14 +251,21 @@ final class DanmakuOverlayView: UIView {
         label.layer.shadowRadius = 1.5
         label.layer.shadowOffset = .zero
         label.sizeToFit()
-        let width = min(max(label.bounds.width, 24), max(24, bounds.width - horizontalInset * 2))
+        let width = max(label.bounds.width, 24)
         label.bounds.size = CGSize(width: width, height: rowHeight)
 
-        let lane = availableLane(for: placement)
-        addSubview(label)
+        let duration = placement == .scrolling || placement == .reverse
+            ? settings.scrollDuration
+            : fixedDuration
+        let speed = (bounds.width + width) / CGFloat(max(0.01, duration))
+        guard let lane = availableLane(for: placement, at: cueTime, speed: speed) else {
+            label.removeFromSuperview()
+            return
+        }
         let bullet = ActiveBullet(label: label, placement: placement, lane: lane,
-                                  startTime: cueTime, duration: placement == .scrolling ? settings.scrollDuration : fixedDuration,
-                                  width: width)
+                                  startTime: cueTime, duration: duration,
+                                  width: width, speed: speed)
+        addSubview(label)
         activeBullets.append(bullet)
         position(bullet, age: max(0, lastRenderedTime - cueTime))
     }
@@ -250,10 +275,10 @@ final class DanmakuOverlayView: UIView {
         let laneY = CGFloat(min(max(bullet.lane, 0), laneCount - 1)) * rowHeight
         switch bullet.placement {
         case .scrolling:
-            let startX = bounds.width + bullet.width
-            let endX = -bullet.width
-            let progress = CGFloat(min(1, max(0, age / bullet.duration)))
-            bullet.label.frame = CGRect(x: startX + (endX - startX) * progress,
+            bullet.label.frame = CGRect(x: bounds.width - bullet.speed * CGFloat(age),
+                                        y: laneY, width: bullet.width, height: rowHeight)
+        case .reverse:
+            bullet.label.frame = CGRect(x: -bullet.width + bullet.speed * CGFloat(age),
                                         y: laneY, width: bullet.width, height: rowHeight)
         case .top:
             bullet.label.frame = CGRect(x: (bounds.width - bullet.width) / 2,
@@ -265,10 +290,68 @@ final class DanmakuOverlayView: UIView {
         }
     }
 
-    private func availableLane(for placement: Placement) -> Int {
+    private func availableLane(for placement: Placement, at time: TimeInterval, speed: CGFloat) -> Int? {
         let laneCount = min(settings.rowCount, max(1, Int(bounds.height / rowHeight)))
-        let occupied = Set(activeBullets.filter { $0.placement == placement }.map(\.lane))
-        return (0..<laneCount).first { !occupied.contains($0) } ?? (activeBullets.count % laneCount)
+        guard laneCount > 0 else { return nil }
+        let startLane = nextLaneIndex(for: placement) % laneCount
+        let moving = placement == .scrolling || placement == .reverse
+
+        for offset in 0..<laneCount {
+            let lane = (startLane + offset) % laneCount
+            let activeInLane = activeBullets.filter {
+                $0.lane == lane && time >= $0.startTime && time - $0.startTime < $0.duration
+            }
+            if !moving {
+                guard !activeInLane.contains(where: { $0.placement == placement }) else { continue }
+                setNextLaneIndex(lane + 1, for: placement)
+                return lane
+            }
+
+            let opposite: Placement = placement == .scrolling ? .reverse : .scrolling
+            guard !activeInLane.contains(where: { $0.placement == opposite }) else { continue }
+            let previous = activeInLane
+                .filter { $0.placement == placement }
+                .max { $0.startTime < $1.startTime }
+            if let previous {
+                let elapsed = CGFloat(time - previous.startTime)
+                let previousRightEdge = bounds.width + previous.width - previous.speed * elapsed
+                guard DanmakuTimelinePolicy.canFollowScrollingBullet(
+                    previousRightEdge: Double(previousRightEdge),
+                    previousSpeed: Double(previous.speed),
+                    nextSpeed: Double(speed),
+                    viewportWidth: Double(bounds.width),
+                    minimumGap: 0
+                ) else { continue }
+            }
+            setNextLaneIndex(lane + 1, for: placement)
+            return lane
+        }
+        return nil
+    }
+
+    private func nextLaneIndex(for placement: Placement) -> Int {
+        switch placement {
+        case .scrolling: return nextScrollingLane
+        case .reverse: return nextReverseLane
+        case .top: return nextTopLane
+        case .bottom: return nextBottomLane
+        }
+    }
+
+    private func setNextLaneIndex(_ index: Int, for placement: Placement) {
+        switch placement {
+        case .scrolling: nextScrollingLane = index
+        case .reverse: nextReverseLane = index
+        case .top: nextTopLane = index
+        case .bottom: nextBottomLane = index
+        }
+    }
+
+    private func resetLaneIndexes() {
+        nextScrollingLane = 0
+        nextReverseLane = 0
+        nextTopLane = 0
+        nextBottomLane = 0
     }
 
     private func clearActiveBullets() {

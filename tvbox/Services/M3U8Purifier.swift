@@ -425,9 +425,6 @@ struct M3U8ManifestPurifier {
     private static func removeURLMinority(_ content: String, baseURL: URL) -> URLFilterResult {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let urls = lines.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#") && !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        guard urls.count >= 6 else {
-            return URLFilterResult(content: content, removedSegmentCount: 0)
-        }
         var prefixes: [String: Int] = [:]
         var hosts: [String: Int] = [:]
         for raw in urls {
@@ -435,7 +432,7 @@ struct M3U8ManifestPurifier {
             if let prefix = mediaURLPrefix(absolute) {
                 prefixes[prefix, default: 0] += 1
             }
-            if let host = URL(string: absolute)?.host { hosts[host, default: 0] += 1 }
+            if let host = mediaHost(absolute) { hosts[host, default: 0] += 1 }
         }
         let dominantPrefix = prefixes.max(by: { $0.value < $1.value })
         let prefixedURLCount = prefixes.values.reduce(0, +)
@@ -444,7 +441,9 @@ struct M3U8ManifestPurifier {
                 && Double($0.value) / Double(prefixedURLCount) >= 0.8
         } ?? false
         let dominantHost = hosts.max(by: { $0.value < $1.value })
-        let useHost = !usePrefix && dominantHost.map { hosts.count > 1 && Double($0.value) / Double(urls.count) >= 0.8 } ?? false
+        let allHostsExceedNoAdThreshold = hosts.values.allSatisfy { $0 > 15 }
+        let useHost = !usePrefix && !allHostsExceedNoAdThreshold
+            && (dominantHost.map { hosts.count > 1 && Double($0.value) / Double(urls.count) >= 0.8 } ?? false)
         guard usePrefix || useHost else {
             return URLFilterResult(content: content, removedSegmentCount: 0)
         }
@@ -461,7 +460,7 @@ struct M3U8ManifestPurifier {
             }
             let absolute = absoluteURL(raw, baseURL: baseURL)
             let prefix = mediaURLPrefix(absolute)
-            let host = URL(string: absolute)?.host ?? ""
+            let host = mediaHost(absolute) ?? ""
             let keep = usePrefix
                 ? (prefix.map { $0.hasPrefix(dominantPrefix?.key ?? "") } ?? false)
                 : (host == dominantHost?.key || (hosts[host] ?? 0) > 15)
@@ -499,6 +498,14 @@ struct M3U8ManifestPurifier {
         let prefix = String(stem.dropLast(4))
         let port = components.port.map { ":\($0)" } ?? ""
         return "\(scheme)://\(host)\(port)\(prefix)"
+    }
+
+    private static func mediaHost(_ rawURL: String) -> String? {
+        guard let components = URLComponents(string: rawURL),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host?.lowercased() else { return nil }
+        let port = components.port.map { ":\($0)" } ?? ""
+        return "\(scheme)://\(host)\(port)"
     }
 
     private static func removeCommonAdMarkers(_ content: String, removed: inout Int) -> String {

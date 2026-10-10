@@ -165,7 +165,7 @@ actor PosterCache {
         }
     }
 
-    /// 为搜索结果补齐同名海报，并隐藏仍然没有可用海报的结果。
+    /// 为搜索结果补齐同名海报；无可用海报时保留条目，由卡片显示占位图。
     func enrich(_ videos: [Movie.Video]) -> [Movie.Video] {
         for video in videos where !Self.isGuaziSource(video.sourceKey) {
             if Self.normalizedURL(video.pic) != nil {
@@ -173,11 +173,10 @@ actor PosterCache {
             }
         }
 
-        return videos.compactMap { video in
+        return videos.map { video in
             var enriched = video
             if Self.isGuaziSource(video.sourceKey) {
-                guard let poster = Self.normalizedGuaziPoster(video.pic) else { return nil }
-                enriched.pic = poster
+                enriched.pic = Self.normalizedGuaziPoster(video.pic) ?? ""
                 return enriched
             }
             let ownPoster = Self.normalizedURL(video.pic)
@@ -188,19 +187,15 @@ actor PosterCache {
                 && (ownPoster == nil || Self.isLikelyBroken(video.pic, sourceKey: video.sourceKey))
             let poster = canUseCached ? cached : (ownPoster ?? cached)
             guard let poster, Self.normalizedURL(poster) != nil else {
-                return Self.canReusePosterFromAnotherSource(video.sourceKey) ? enriched : nil
+                enriched.pic = ""
+                return enriched
             }
-            // 没有可复用的正常海报时，隐藏已知会卡住的暴风图片。
+            // 已知不稳定的海报不应让整条搜索结果消失。
             let selectedPosterIsBroken = canUseCached
                 ? Self.isLikelyBroken(poster)
                 : Self.isLikelyBroken(video.pic, sourceKey: video.sourceKey)
-            guard !selectedPosterIsBroken else { return nil }
-            enriched.pic = poster
+            enriched.pic = selectedPosterIsBroken ? "" : poster
             return enriched
         }
-    }
-
-    private nonisolated static func canReusePosterFromAnotherSource(_ sourceKey: String) -> Bool {
-        ["ikanbot", "zanpian"].contains(sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 }

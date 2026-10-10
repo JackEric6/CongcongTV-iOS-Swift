@@ -1678,7 +1678,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             }
             guard enabled, let danmakuView else { return }
             loadDanmaku(into: danmakuView)
-            danmakuView.update(currentTime: lastPlayerTime, duration: lastPlayerDuration)
+            danmakuView.update(currentTime: lastPlayerTime, duration: lastPlayerDuration, playbackRate: currentPlaybackRate)
         }
 
         private func updateDanmakuSettings(_ settings: DanmakuDisplaySettings) {
@@ -1686,7 +1686,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             danmakuSettings = settings.normalized
             danmakuSettings.save()
             danmakuView?.updateSettings(danmakuSettings)
-            danmakuView?.update(currentTime: lastPlayerTime, duration: lastPlayerDuration)
+            danmakuView?.update(currentTime: lastPlayerTime, duration: lastPlayerDuration, playbackRate: currentPlaybackRate)
             if previousEnabled != danmakuSettings.enabled {
                 updateDanmakuEnabled(danmakuSettings.enabled)
                 onDanmakuEnabledChanged?(danmakuSettings.enabled)
@@ -1744,7 +1744,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         }
 
         func updateDanmaku(currentTime: TimeInterval, duration: TimeInterval) {
-            danmakuView?.update(currentTime: currentTime, duration: duration)
+            danmakuView?.update(currentTime: currentTime, duration: duration, playbackRate: currentPlaybackRate)
         }
 
         private func loadDanmaku(into overlay: DanmakuOverlayView) {
@@ -1782,7 +1782,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
                     // A cue request can finish between two KSPlayer time
                     // callbacks. Seed the overlay with the latest known time
                     // so the first comments are rendered immediately.
-                    overlay.update(currentTime: self.lastPlayerTime, duration: self.lastPlayerDuration)
+                    overlay.update(currentTime: self.lastPlayerTime, duration: self.lastPlayerDuration, playbackRate: self.currentPlaybackRate)
                 }
             }
         }
@@ -1978,7 +1978,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
                         overlay.setCues(cues)
                         overlay.isHidden = false
                         overlay.updateSettings(self.danmakuSettings)
-                        overlay.update(currentTime: self.lastPlayerTime, duration: self.lastPlayerDuration)
+                        overlay.update(currentTime: self.lastPlayerTime, duration: self.lastPlayerDuration, playbackRate: self.currentPlaybackRate)
                         self.loadedDanmakuKey = "\(self.danmakuTitle)\u{1F}\(self.danmakuEpisode)"
                         self.setDanmakuStatus("已加载 \(cues.count) 条弹幕")
                         panel.removeFromSuperview()
@@ -2140,8 +2140,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             previousButton.alpha = canPlayPrevious ? 1 : 0.45
             nextButton.alpha = canPlayNext ? 1 : 0.45
             episodeButton.isHidden = !isLandscape || !canSelectEpisode
-            introButton.isHidden = false
-            outroButton.isHidden = false
+            introButton.isHidden = !isLandscape
+            outroButton.isHidden = !isLandscape
             rewindButton.isHidden = !isLandscape
             forwardButton.isHidden = !isLandscape
             verticalSeekStack.isHidden = isLandscape
@@ -2183,8 +2183,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 self.introButton.alpha = alpha
                 self.outroButton.alpha = alpha
                 self.danmakuButton.alpha = alpha
-                self.introButton.isHidden = !self.controlsVisible
-                self.outroButton.isHidden = !self.controlsVisible
+                self.introButton.isHidden = !self.controlsVisible || !self.isLandscape
+                self.outroButton.isHidden = !self.controlsVisible || !self.isLandscape
                 self.danmakuButton.isHidden = !self.controlsVisible
             }
         }
@@ -2386,7 +2386,11 @@ private struct KSPlayerUIView: UIViewRepresentable {
         func updateDanmakuTime(currentTime: TimeInterval, duration: TimeInterval) {
             lastPlayerTime = max(0, currentTime.isFinite ? currentTime : 0)
             lastPlayerDuration = max(0, duration.isFinite ? duration : 0)
-            danmakuView?.update(currentTime: lastPlayerTime, duration: lastPlayerDuration)
+            danmakuView?.update(currentTime: lastPlayerTime, duration: lastPlayerDuration, playbackRate: currentPlaybackRate)
+        }
+
+        private var currentPlaybackRate: Double {
+            Double(playerView?.playerLayer?.player.playbackRate ?? 1)
         }
     }
 }
