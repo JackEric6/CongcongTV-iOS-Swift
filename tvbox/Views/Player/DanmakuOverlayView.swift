@@ -75,13 +75,19 @@ final class DanmakuOverlayView: UIView {
     /// these callbacks to keep scrolling smooth while the player is playing.
     func update(currentTime: TimeInterval, duration: TimeInterval = 0) {
         let boundedTime = max(0, currentTime)
-        let jumped = !hasTimeAnchor || abs(boundedTime - mediaTime) > 1.25
+        let hadTimeAnchor = hasTimeAnchor
+        let movedBackward = DanmakuTimelinePolicy.didSeekBackward(
+            from: hadTimeAnchor ? mediaTime : nil,
+            to: boundedTime
+        )
         mediaDuration = max(0, duration)
         mediaTime = boundedTime
         wallClockAnchor = CACurrentMediaTime()
         hasTimeAnchor = true
 
-        if jumped || boundedTime + 0.1 < lastRenderedTime {
+        // Forward progress callbacks can arrive a few seconds apart. Treating
+        // those normal updates as seeks repeatedly cleared cues between ticks.
+        if !hadTimeAnchor || movedBackward {
             clearActiveBullets()
             nextCueIndex = lowerBound(for: boundedTime)
         }

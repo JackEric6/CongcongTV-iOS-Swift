@@ -125,7 +125,7 @@ final class DanmakuSettingsPanelView: UIView {
             card.heightAnchor.constraint(equalToConstant: 360).withPriority(750),
             card.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
             card.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
-            card.widthAnchor.constraint(lessThanOrEqualToConstant: 440),
+            card.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
             card.topAnchor.constraint(greaterThanOrEqualTo: safeAreaLayoutGuide.topAnchor, constant: 10),
             card.bottomAnchor.constraint(lessThanOrEqualTo: safeAreaLayoutGuide.bottomAnchor, constant: -10),
             headerAndBody.leadingAnchor.constraint(equalTo: card.contentView.leadingAnchor, constant: 14),

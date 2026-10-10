@@ -56,6 +56,22 @@ jobs:
             -o /tmp/verify-danmaku-episode-matcher
           /tmp/verify-danmaku-episode-matcher
 
+      - name: Verify danmaku timeline continuity
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Models/DanmakuTimelinePolicy.swift \
+            scripts/verify-danmaku-timeline.swift \
+            -o /tmp/verify-danmaku-timeline
+          /tmp/verify-danmaku-timeline
+
+      - name: Verify purified playback startup fallback
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Models/PlaybackStartupFallbackPolicy.swift \
+            scripts/verify-playback-startup-fallback.swift \
+            -o /tmp/verify-playback-startup-fallback
+          /tmp/verify-playback-startup-fallback
+
       - name: Verify playback volume button behavior
         run: |
           swiftc -parse-as-library \

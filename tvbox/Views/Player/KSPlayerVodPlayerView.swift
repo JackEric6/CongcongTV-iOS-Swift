@@ -1813,8 +1813,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
         }
 
         private func updateDanmakuButton() {
-            let image = danmakuEnabled ? "captions.bubble.fill" : "captions.bubble"
-            danmakuButton.setImage(UIImage(systemName: image), for: .normal)
+            danmakuButton.setImage(nil, for: .normal)
+            danmakuButton.setTitle("弹幕", for: .normal)
+            danmakuButton.setTitleColor(danmakuEnabled ? .systemOrange : .white, for: .normal)
             danmakuButton.accessibilityValue = danmakuEnabled ? "已开启" : "已关闭"
         }
 
@@ -1880,7 +1881,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             configureButton(verticalForwardButton, imageName: "goforward.15", label: "前进15秒", action: #selector(forwardPressed))
             configureButton(volumeButton, imageName: "speaker.wave.2.fill", label: "音量", action: #selector(volumePressed))
             configureButton(episodeButton, imageName: "list.bullet", label: "选集", action: #selector(selectEpisodePressed))
-            configureButton(danmakuButton, imageName: "captions.bubble", label: "弹幕设置", action: #selector(danmakuPressed))
+            configureTextButton(danmakuButton, title: "弹幕", width: 40, label: "弹幕设置", action: #selector(danmakuPressed))
             configureMarkerButton(introButton, title: introLabel, label: "标记片头", action: #selector(markIntroPressed), resetAction: #selector(resetIntroPressed))
             configureMarkerButton(outroButton, title: outroLabel, label: "标记片尾", action: #selector(markOutroPressed), resetAction: #selector(resetOutroPressed))
 
@@ -1939,7 +1940,11 @@ private struct KSPlayerUIView: UIViewRepresentable {
                     toolbar.addArrangedSubview(arranged)
                 }
             }
-            toolbar.spacing = 6
+            toolbar.spacing = 8
+            toolbar.setCustomSpacing(12, after: toolbar.playbackRateButton)
+            toolbar.playbackRateButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+            episodeButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+            danmakuButton.setContentCompressionResistancePriority(.required, for: .horizontal)
             toolbar.playButton.isEnabled = !isResolvingPlayback
             updateActionButtons(
                 canPlayPrevious: canPlayPrevious,
@@ -1973,8 +1978,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             previousButton.alpha = canPlayPrevious ? 1 : 0.45
             nextButton.alpha = canPlayNext ? 1 : 0.45
             episodeButton.isHidden = !isLandscape || !canSelectEpisode
-            introButton.isHidden = false
-            outroButton.isHidden = false
+            introButton.isHidden = !isLandscape
+            outroButton.isHidden = !isLandscape
             rewindButton.isHidden = !isLandscape
             forwardButton.isHidden = !isLandscape
             verticalSeekStack.isHidden = isLandscape
@@ -2016,8 +2021,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 self.introButton.alpha = alpha
                 self.outroButton.alpha = alpha
                 self.danmakuButton.alpha = alpha
-                self.introButton.isHidden = !self.controlsVisible
-                self.outroButton.isHidden = !self.controlsVisible
+                self.introButton.isHidden = !self.controlsVisible || !self.isLandscape
+                self.outroButton.isHidden = !self.controlsVisible || !self.isLandscape
                 self.danmakuButton.isHidden = !self.controlsVisible
             }
         }
@@ -2028,6 +2033,32 @@ private struct KSPlayerUIView: UIViewRepresentable {
             button.accessibilityLabel = label
             button.translatesAutoresizingMaskIntoConstraints = false
             ensureWidthConstraint(button, constant: 30, relation: .equal)
+            button.backgroundColor = .clear
+            button.layer.backgroundColor = UIColor.clear.cgColor
+            button.layer.shadowColor = UIColor.clear.cgColor
+            button.layer.shadowOpacity = 0
+            button.layer.shadowRadius = 0
+            button.layer.shadowOffset = .zero
+            button.layer.cornerRadius = 0
+            button.clipsToBounds = false
+            button.removeTarget(self, action: action, for: .primaryActionTriggered)
+            button.addTarget(self, action: action, for: .primaryActionTriggered)
+        }
+
+        private func configureTextButton(
+            _ button: UIButton,
+            title: String,
+            width: CGFloat,
+            label: String,
+            action: Selector
+        ) {
+            button.setImage(nil, for: .normal)
+            button.setTitle(title, for: .normal)
+            button.setTitleColor(.white, for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 12, weight: .medium)
+            button.accessibilityLabel = label
+            button.translatesAutoresizingMaskIntoConstraints = false
+            ensureWidthConstraint(button, constant: width, relation: .equal)
             button.backgroundColor = .clear
             button.layer.backgroundColor = UIColor.clear.cgColor
             button.layer.shadowColor = UIColor.clear.cgColor
