@@ -38,6 +38,7 @@ struct KSPlayerVodPlayerView: View {
     var danmakuTitle: String = ""
     var danmakuEpisode: String = ""
     var danmakuEnabled: Bool = true
+    var onDanmakuEnabledChanged: ((Bool) -> Void)? = nil
     /// Forwards native toolbar actions to the host without replacing KSPlayer's handling.
     var onPlayerAction: ((PlayerButtonType) -> Void)? = nil
 
@@ -68,7 +69,8 @@ struct KSPlayerVodPlayerView: View {
                 outroLabel: outroLabel,
                 danmakuTitle: danmakuTitle,
                 danmakuEpisode: danmakuEpisode,
-                danmakuEnabled: danmakuEnabled
+                danmakuEnabled: danmakuEnabled,
+                onDanmakuEnabledChanged: onDanmakuEnabledChanged
             )
             .background(Color.clear)
         } else {
@@ -1282,6 +1284,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
     let danmakuTitle: String
     let danmakuEpisode: String
     let danmakuEnabled: Bool
+    let onDanmakuEnabledChanged: ((Bool) -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -1304,7 +1307,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             outroLabel: outroLabel,
             danmakuTitle: danmakuTitle,
             danmakuEpisode: danmakuEpisode,
-            danmakuEnabled: danmakuEnabled
+            danmakuEnabled: danmakuEnabled,
+            onDanmakuEnabledChanged: onDanmakuEnabledChanged
         )
     }
 
@@ -1373,6 +1377,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         coordinator.updateMarkerLabels(intro: introLabel, outro: outroLabel)
         coordinator.updateDanmakuMetadata(title: danmakuTitle, episode: danmakuEpisode)
         coordinator.updateDanmakuEnabled(danmakuEnabled)
+        coordinator.onDanmakuEnabledChanged = onDanmakuEnabledChanged
         coordinator.installActionButtons(
             on: view,
             canPlayPrevious: canPlayPrevious,
@@ -1521,12 +1526,18 @@ private struct KSPlayerUIView: UIViewRepresentable {
         var onMarkOutro: (() -> Void)?
         var onResetIntro: (() -> Void)?
         var onResetOutro: (() -> Void)?
+        var onDanmakuEnabledChanged: ((Bool) -> Void)?
         private var danmakuTitle: String
         private var danmakuEpisode: String
         private var danmakuEnabled: Bool
+        private var danmakuSettings = DanmakuDisplaySettings.load()
+        private var danmakuStatusText = "准备搜索弹幕"
         private var loadedDanmakuKey: String?
         private var loadingDanmakuKey: String?
         private weak var danmakuView: DanmakuOverlayView?
+        private weak var danmakuStatusLabel: UILabel?
+        private var danmakuStatusDismissWorkItem: DispatchWorkItem?
+        private var danmakuSettingsPanel: DanmakuSettingsPanelView?
         private var danmakuTask: Task<Void, Never>?
         private var lastPlayerTime: TimeInterval = 0
         private var lastPlayerDuration: TimeInterval = 0
@@ -1539,6 +1550,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private let verticalSeekStack = UIStackView()
         private let volumeButton = UIButton(type: .system)
         private let episodeButton = UIButton(type: .system)
+        private let danmakuButton = UIButton(type: .system)
         private let introButton = UIButton(type: .system)
         private let outroButton = UIButton(type: .system)
         private var introLabel = "片头"
@@ -1576,7 +1588,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             outroLabel: String,
             danmakuTitle: String,
             danmakuEpisode: String,
-            danmakuEnabled: Bool
+            danmakuEnabled: Bool,
+            onDanmakuEnabledChanged: ((Bool) -> Void)?
         ) {
             self.onProgressChanged = onProgressChanged
             self.onPlaybackEnded = onPlaybackEnded
@@ -1595,6 +1608,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
             self.danmakuTitle = danmakuTitle
             self.danmakuEpisode = danmakuEpisode
             self.danmakuEnabled = danmakuEnabled
+            self.onDanmakuEnabledChanged = onDanmakuEnabledChanged
+            danmakuSettings.enabled = danmakuEnabled
+            danmakuSettings.save()
         }
 
         func configure(_ view: IOSVideoPlayerView) {
@@ -1616,6 +1632,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             danmakuTask?.cancel()
             danmakuTask = nil
             danmakuView?.clear()
+            setDanmakuStatus("正在搜索弹幕")
             guard let danmakuView else { return }
             loadDanmaku(into: danmakuView)
         }
@@ -1623,15 +1640,43 @@ private struct KSPlayerUIView: UIViewRepresentable {
         func updateDanmakuEnabled(_ enabled: Bool) {
             guard danmakuEnabled != enabled else { return }
             danmakuEnabled = enabled
+            danmakuSettings.enabled = enabled
+            danmakuSettings.save()
             danmakuView?.isHidden = !enabled
+            danmakuView?.updateSettings(danmakuSettings)
+            updateDanmakuButton()
+            updateDanmakuPanel()
+            if !enabled {
+                danmakuTask?.cancel()
+                danmakuTask = nil
+                loadingDanmakuKey = nil
+                setDanmakuStatus("弹幕已关闭")
+                return
+            }
             guard enabled, let danmakuView else { return }
             loadDanmaku(into: danmakuView)
             danmakuView.update(currentTime: lastPlayerTime, duration: lastPlayerDuration)
         }
 
+        private func updateDanmakuSettings(_ settings: DanmakuDisplaySettings) {
+            let previousEnabled = danmakuEnabled
+            danmakuSettings = settings.normalized
+            danmakuSettings.save()
+            danmakuView?.updateSettings(danmakuSettings)
+            danmakuView?.update(currentTime: lastPlayerTime, duration: lastPlayerDuration)
+            if previousEnabled != danmakuSettings.enabled {
+                updateDanmakuEnabled(danmakuSettings.enabled)
+                onDanmakuEnabledChanged?(danmakuSettings.enabled)
+            } else {
+                updateDanmakuPanel()
+            }
+        }
+
         func installDanmaku(on view: IOSVideoPlayerView) {
+            installDanmakuStatus(in: view)
             if let existing = danmakuView, existing.superview === view.contentOverlayView {
                 existing.isHidden = !danmakuEnabled
+                existing.updateSettings(danmakuSettings)
                 loadDanmaku(into: existing)
                 return
             }
@@ -1639,6 +1684,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             let overlay = DanmakuOverlayView()
             overlay.translatesAutoresizingMaskIntoConstraints = false
             overlay.isHidden = !danmakuEnabled
+            overlay.updateSettings(danmakuSettings)
             view.contentOverlayView.addSubview(overlay)
             overlay.layer.zPosition = 100
             NSLayoutConstraint.activate([
@@ -1654,11 +1700,16 @@ private struct KSPlayerUIView: UIViewRepresentable {
         func tearDownDanmaku() {
             danmakuTask?.cancel()
             danmakuTask = nil
+            danmakuStatusDismissWorkItem?.cancel()
+            danmakuSettingsPanel?.removeFromSuperview()
+            danmakuSettingsPanel = nil
             loadedDanmakuKey = nil
             loadingDanmakuKey = nil
             danmakuView?.clear()
             danmakuView?.removeFromSuperview()
             danmakuView = nil
+            danmakuStatusLabel?.removeFromSuperview()
+            danmakuStatusLabel = nil
         }
 
         func updateDanmaku(currentTime: TimeInterval, duration: TimeInterval) {
@@ -1668,13 +1719,18 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private func loadDanmaku(into overlay: DanmakuOverlayView) {
             let title = danmakuTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             let episode = danmakuEpisode.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard danmakuEnabled, !title.isEmpty else { return }
+            guard danmakuEnabled else { return }
+            guard !title.isEmpty else {
+                setDanmakuStatus("影片标题不可用，无法搜索弹幕")
+                return
+            }
             let key = "\(title)\u{1F}\(episode)"
             guard loadedDanmakuKey != key, loadingDanmakuKey != key else { return }
 
             danmakuTask?.cancel()
             loadingDanmakuKey = key
             overlay.clear()
+            setDanmakuStatus("正在搜索弹幕")
 
             danmakuTask = Task { [weak self, weak overlay] in
                 let cues = await DanmuService.shared.loadCues(title: title, episode: episode)
@@ -1685,15 +1741,117 @@ private struct KSPlayerUIView: UIViewRepresentable {
                     self.loadingDanmakuKey = nil
                     if !cues.isEmpty {
                         self.loadedDanmakuKey = key
+                        self.setDanmakuStatus("已加载 \(cues.count) 条弹幕")
+                    } else {
+                        self.setDanmakuStatus("未找到匹配弹幕")
                     }
                     overlay.setCues(cues)
                     overlay.isHidden = !self.danmakuEnabled || cues.isEmpty
+                    overlay.updateSettings(self.danmakuSettings)
                     // A cue request can finish between two KSPlayer time
                     // callbacks. Seed the overlay with the latest known time
                     // so the first comments are rendered immediately.
                     overlay.update(currentTime: self.lastPlayerTime, duration: self.lastPlayerDuration)
                 }
             }
+        }
+
+        private func installDanmakuStatus(in view: IOSVideoPlayerView) {
+            if let danmakuStatusLabel, danmakuStatusLabel.superview === view.contentOverlayView { return }
+            let label = UILabel()
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.textAlignment = .center
+            label.font = .systemFont(ofSize: 13, weight: .medium)
+            label.textColor = .white
+            label.backgroundColor = UIColor.black.withAlphaComponent(0.68)
+            label.layer.cornerRadius = 8
+            label.clipsToBounds = true
+            label.numberOfLines = 2
+            label.alpha = 0
+            label.isHidden = true
+            label.layer.zPosition = 220
+            view.contentOverlayView.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.centerXAnchor.constraint(equalTo: view.contentOverlayView.centerXAnchor),
+                label.topAnchor.constraint(equalTo: view.contentOverlayView.safeAreaLayoutGuide.topAnchor, constant: 18),
+                label.widthAnchor.constraint(lessThanOrEqualTo: view.contentOverlayView.widthAnchor, constant: -32),
+                label.widthAnchor.constraint(greaterThanOrEqualToConstant: 150)
+            ])
+            danmakuStatusLabel = label
+        }
+
+        private func setDanmakuStatus(_ text: String) {
+            danmakuStatusText = text
+            updateDanmakuPanel()
+            guard let label = danmakuStatusLabel else { return }
+            danmakuStatusDismissWorkItem?.cancel()
+            label.text = "  \(text)  "
+            label.isHidden = false
+            UIView.animate(withDuration: 0.16) { label.alpha = 1 }
+            let workItem = DispatchWorkItem { [weak label] in
+                UIView.animate(withDuration: 0.25) {
+                    label?.alpha = 0
+                } completion: { _ in
+                    label?.isHidden = true
+                }
+            }
+            danmakuStatusDismissWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: workItem)
+        }
+
+        private func updateDanmakuPanel() {
+            danmakuSettingsPanel?.update(settings: danmakuSettings, status: danmakuStatusText)
+        }
+
+        private func updateDanmakuButton() {
+            let image = danmakuEnabled ? "captions.bubble.fill" : "captions.bubble"
+            danmakuButton.setImage(UIImage(systemName: image), for: .normal)
+            danmakuButton.accessibilityValue(danmakuEnabled ? "已开启" : "已关闭")
+        }
+
+        private func forceReloadDanmaku() {
+            guard danmakuEnabled else {
+                setDanmakuStatus("请先开启弹幕")
+                return
+            }
+            loadedDanmakuKey = nil
+            loadingDanmakuKey = nil
+            danmakuTask?.cancel()
+            danmakuTask = nil
+            guard let danmakuView else {
+                setDanmakuStatus("播放器尚未就绪")
+                return
+            }
+            loadDanmaku(into: danmakuView)
+        }
+
+        @objc private func danmakuPressed() {
+            guard let playerView else { return }
+            if let danmakuSettingsPanel {
+                danmakuSettingsPanel.removeFromSuperview()
+                self.danmakuSettingsPanel = nil
+                return
+            }
+
+            let panel = DanmakuSettingsPanelView(settings: danmakuSettings, status: danmakuStatusText)
+            panel.translatesAutoresizingMaskIntoConstraints = false
+            panel.layer.zPosition = 350
+            panel.onSettingsChanged = { [weak self] settings in
+                self?.updateDanmakuSettings(settings)
+            }
+            panel.onReload = { [weak self] in self?.forceReloadDanmaku() }
+            panel.onClose = { [weak self, weak panel] in
+                panel?.removeFromSuperview()
+                self?.danmakuSettingsPanel = nil
+            }
+            playerView.controllerView.addSubview(panel)
+            NSLayoutConstraint.activate([
+                panel.leadingAnchor.constraint(equalTo: playerView.controllerView.leadingAnchor),
+                panel.trailingAnchor.constraint(equalTo: playerView.controllerView.trailingAnchor),
+                panel.topAnchor.constraint(equalTo: playerView.controllerView.topAnchor),
+                panel.bottomAnchor.constraint(equalTo: playerView.controllerView.bottomAnchor)
+            ])
+            danmakuSettingsPanel = panel
         }
 
         func installActionButtons(
@@ -1713,6 +1871,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             configureButton(verticalForwardButton, imageName: "goforward.15", label: "前进15秒", action: #selector(forwardPressed))
             configureButton(volumeButton, imageName: "speaker.wave.2.fill", label: "音量", action: #selector(volumePressed))
             configureButton(episodeButton, imageName: "list.bullet", label: "选集", action: #selector(selectEpisodePressed))
+            configureButton(danmakuButton, imageName: "captions.bubble", label: "弹幕设置", action: #selector(danmakuPressed))
             configureMarkerButton(introButton, title: introLabel, label: "标记片头", action: #selector(markIntroPressed), resetAction: #selector(resetIntroPressed))
             configureMarkerButton(outroButton, title: outroLabel, label: "标记片尾", action: #selector(markOutroPressed), resetAction: #selector(resetOutroPressed))
 
@@ -1750,6 +1909,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 volumeButton,
                 toolbar.playbackRateButton,
                 episodeButton,
+                danmakuButton,
                 introButton,
                 outroButton,
                 view.landscapeButton
@@ -1810,6 +1970,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             forwardButton.isHidden = !isLandscape
             verticalSeekStack.isHidden = isLandscape
             volumeButton.isHidden = false
+            danmakuButton.isHidden = false
+            updateDanmakuButton()
             applyControlVisibility()
         }
 
@@ -1844,8 +2006,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
                 self.playerView?.toolBar.playbackRateButton.isHidden = !self.controlsVisible
                 self.introButton.alpha = alpha
                 self.outroButton.alpha = alpha
+                self.danmakuButton.alpha = alpha
                 self.introButton.isHidden = !self.controlsVisible
                 self.outroButton.isHidden = !self.controlsVisible
+                self.danmakuButton.isHidden = !self.controlsVisible
             }
         }
 

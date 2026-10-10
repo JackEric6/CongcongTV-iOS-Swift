@@ -221,7 +221,7 @@ struct SearchView: View {
                 sourceGroupButton(title: "全部", group: nil)
                 ForEach([
                     SearchSourceGroup.guazi, .jianpian, .xigua, .feifan, .baofeng,
-                    .tiantang, .liangzi, .source360, .xintong
+                    .tiantang, .liangzi, .xintong, .cheese, .nuomi
                 ]) { group in
                     sourceGroupButton(title: group.title, group: group)
                 }

@@ -43,9 +43,6 @@ struct DetailView: View {
                 // 播放器区域
                 if shouldShowInlinePlayer {
                     inlinePlayerSection
-                    #if os(iOS)
-                    danmakuToggle
-                    #endif
                 }
 
                 // 视频信息
@@ -228,26 +225,6 @@ struct DetailView: View {
         #endif
     }
 
-    #if os(iOS)
-    private var danmakuToggle: some View {
-        HStack {
-            Spacer()
-            Button {
-                isDanmakuEnabled.toggle()
-            } label: {
-                Label("弹幕", systemImage: isDanmakuEnabled ? "captions.bubble.fill" : "captions.bubble")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(isDanmakuEnabled ? Color.orange : Color.secondary)
-                    .padding(.vertical, 8)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("弹幕")
-            .accessibilityValue(isDanmakuEnabled ? "已开启" : "已关闭")
-        }
-        .padding(.horizontal, 14)
-    }
-    #endif
-
     /// 始终保留固定的 16:9 播放器区域。详情请求和播放地址解析期间只替换
     /// 内容，不改变布局，这样影片标题从进入页面起就稳定在播放器下方。
     @ViewBuilder
@@ -293,6 +270,7 @@ struct DetailView: View {
                     danmakuTitle: viewModel.vodInfo?.name ?? video.name,
                     danmakuEpisode: currentDanmakuEpisode,
                     danmakuEnabled: isDanmakuEnabled,
+                    onDanmakuEnabledChanged: { isDanmakuEnabled = $0 },
                     onFullScreenChanged: { showFullScreen = $0 },
                     systemController: sharedSystemController,
                     vlcController: sharedVLCController

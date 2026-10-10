@@ -8,8 +8,9 @@ enum SearchSourceGroup: Int, CaseIterable, Hashable, Identifiable {
     case baofeng
     case tiantang
     case liangzi
-    case source360
     case xintong
+    case cheese
+    case nuomi
     case other
     case changzhang
     case moli
@@ -25,8 +26,9 @@ enum SearchSourceGroup: Int, CaseIterable, Hashable, Identifiable {
         case .baofeng: return "暴风"
         case .tiantang: return "天堂"
         case .liangzi: return "量子"
-        case .source360: return "360"
         case .xintong: return "鑫同"
+        case .cheese: return "奶酪"
+        case .nuomi: return "糯米"
         case .changzhang: return "厂长"
         case .moli: return "茉莉"
         case .other: return "其他"
@@ -37,6 +39,9 @@ enum SearchSourceGroup: Int, CaseIterable, Hashable, Identifiable {
         let group = classify(sourceKey: sourceKey, sourceName: sourceName)
         if group != .other { return group.title }
 
+        if sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("360zy") == .orderedSame {
+            return "360"
+        }
         if sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("ikunzy") == .orderedSame {
             return "爱坤"
         }
@@ -83,8 +88,9 @@ enum SearchSourceGroup: Int, CaseIterable, Hashable, Identifiable {
         case "bfzy", "cms_baofeng", "baofeng": return .baofeng
         case "dyttzy", "dytt", "tiantang": return .tiantang
         case "lzi", "liangzi", "liangzizy": return .liangzi
-        case "360zy", "360": return .source360
         case "fhw88", "xintong": return .xintong
+        case "fan_cheese", "cheese": return .cheese
+        case "fan_nomi", "nuomi": return .nuomi
         case "cz4k", "changzhang": return .changzhang
         case "fan_moli", "moli": return .moli
         default: break
@@ -97,8 +103,9 @@ enum SearchSourceGroup: Int, CaseIterable, Hashable, Identifiable {
         if name.contains("暴风") { return .baofeng }
         if name.contains("天堂") { return .tiantang }
         if name.contains("量子") { return .liangzi }
-        if name.contains("360") { return .source360 }
         if name.contains("鑫同") { return .xintong }
+        if name.contains("奶酪") { return .cheese }
+        if name.contains("糯米") { return .nuomi }
         if name.contains("厂长") { return .changzhang }
         if name.contains("茉莉") { return .moli }
         return .other

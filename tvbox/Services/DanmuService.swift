@@ -338,7 +338,6 @@ public final class DanmuService {
     private struct EpisodeMatch {
         let id: String
         let title: String
-        let number: Int
     }
 
     private static func findAnimeIDs(in body: String) -> [String] {
@@ -361,7 +360,6 @@ public final class DanmuService {
     private static func findEpisodes(in body: String, requestedEpisode: String) -> [EpisodeMatch] {
         guard let object = jsonObject(body) else { return [] }
         let episodeArrays = episodeArrays(in: object)
-        let requestedNumber = extractNumber(from: requestedEpisode)
         var matches: [EpisodeMatch] = []
 
         for item in episodeArrays {
@@ -370,12 +368,12 @@ public final class DanmuService {
             let title = firstString(item, keys: ["episodeTitle", "title", "name"])
             let rawNumber = firstString(item, keys: ["episodeNumber", "number", "sort"])
             let number = parseEpisodeNumber(rawNumber)
-            let match = EpisodeMatch(id: id, title: title, number: number)
-            let exactTitle = !requestedEpisode.isEmpty && !title.isEmpty
-                && normalizedEpisodeTitle(title).localizedCaseInsensitiveContains(normalizedEpisodeTitle(requestedEpisode))
-            let exactNumber = requestedNumber > 0 && (number == requestedNumber
-                || extractNumber(from: title) == requestedNumber)
-            if requestedEpisode.isEmpty || exactTitle || exactNumber {
+            let match = EpisodeMatch(id: id, title: title)
+            if DanmakuEpisodeMatcher.matches(
+                requestedEpisode: requestedEpisode,
+                title: title,
+                explicitNumber: number
+            ) {
                 matches.append(match)
             }
         }
@@ -392,8 +390,7 @@ public final class DanmuService {
                     guard !id.isEmpty else { return nil }
                     return EpisodeMatch(
                         id: id,
-                        title: firstString(item, keys: ["episodeTitle", "title", "name"]),
-                        number: parseEpisodeNumber(firstString(item, keys: ["episodeNumber", "number", "sort"]))
+                        title: firstString(item, keys: ["episodeTitle", "title", "name"])
                     )
                 }
                 if let preferred = movieMatches.first(where: {
@@ -412,8 +409,7 @@ public final class DanmuService {
                     guard !id.isEmpty else { return nil }
                     return EpisodeMatch(
                         id: id,
-                        title: firstString(item, keys: ["episodeTitle", "title", "name"]),
-                        number: parseEpisodeNumber(firstString(item, keys: ["episodeNumber", "number", "sort"]))
+                        title: firstString(item, keys: ["episodeTitle", "title", "name"])
                     )
                 }
             }
@@ -440,15 +436,6 @@ public final class DanmuService {
             }
         }
         return false
-    }
-
-    private static func normalizedEpisodeTitle(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "集", with: "")
-            .replacingOccurrences(of: "话", with: "")
-            .replacingOccurrences(of: "第", with: "")
-            .replacingOccurrences(of: " ", with: "")
-            .lowercased()
     }
 
     private static func episodeArrays(in object: [String: Any]) -> [[String: Any]] {

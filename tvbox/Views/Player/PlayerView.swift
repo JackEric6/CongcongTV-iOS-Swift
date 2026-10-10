@@ -138,6 +138,7 @@ struct PlayerView: View {
     var danmakuTitle: String = ""
     var danmakuEpisode: String = ""
     var danmakuEnabled: Bool = true
+    var onDanmakuEnabledChanged: ((Bool) -> Void)? = nil
     var onFullScreenChanged: ((Bool) -> Void)? = nil
     #if os(iOS)
     var onDrawableReady: ((UIView) -> Void)? = nil
@@ -195,7 +196,8 @@ struct PlayerView: View {
                 outroLabel: outroLabel,
                 danmakuTitle: danmakuTitle,
                 danmakuEpisode: danmakuEpisode,
-                danmakuEnabled: danmakuEnabled
+                danmakuEnabled: danmakuEnabled,
+                onDanmakuEnabledChanged: onDanmakuEnabledChanged
             )
             #else
             switch selectedEngine {

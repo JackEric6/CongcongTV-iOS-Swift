@@ -1,6 +1,11 @@
 import Foundation
 import Network
 
+struct M3U8HostRule: Sendable {
+    let hosts: [String]
+    let regex: [String]
+}
+
 /// Android 版 M3u8.purify 的 iOS 实现。
 ///
 /// 净化结果只在进程内保存，并通过回环 HTTP 地址交给 KSPlayer。播放清单中的
@@ -16,6 +21,11 @@ actor M3U8Purifier {
 
     private let network = NetworkManager.shared
     private let proxy = M3U8LoopbackProxy.shared
+    private var hostRules: [M3U8HostRule] = []
+
+    func updateHostRules(_ rules: [M3U8HostRule]) {
+        hostRules = rules
+    }
 
     func prepare(urlString: String, headers: [String: String], sourceKey: String) async -> PreparedURL {
         guard sourceKey.caseInsensitiveCompare("guazi") != .orderedSame else {
@@ -55,7 +65,11 @@ actor M3U8Purifier {
                 content = firstContent
             }
 
-            let result = M3U8ManifestPurifier.purify(baseURL: targetURL, content: content)
+            let result = M3U8ManifestPurifier.purify(
+                baseURL: targetURL,
+                content: content,
+                hostRules: hostRules
+            )
             guard result.removedSegmentCount > 0,
                   let proxyURL = try? await proxy.publish(content: result.content) else {
                 // Android 版在没有命中广告时回退到实际媒体清单；主清单解析出的
@@ -319,6 +333,7 @@ struct M3U8ManifestPurifier {
     }
 
     private struct ParsedDuration {
+        let raw: String
         let value: Double
         let precision: Int
         let fraction: String
@@ -338,7 +353,11 @@ struct M3U8ManifestPurifier {
     ]
     private static let frameRateFeatures = makeFrameRateFeatures()
 
-    static func purify(baseURL: URL, content: String) -> Result {
+    static func purify(
+        baseURL: URL,
+        content: String,
+        hostRules: [M3U8HostRule] = []
+    ) -> Result {
         let original = normalize(content)
         guard original.hasPrefix("#EXTM3U") else { return Result(content: content, removedSegmentCount: 0) }
         let originalSegments = mediaCount(original)
@@ -349,6 +368,12 @@ struct M3U8ManifestPurifier {
         // 与 AVBox 一致：URL 过滤没有命中时，从原清单继续执行标记和分组净化。
         var transformed = urlFilter.removedSegmentCount > 0 ? urlFilter.content : resolved
         var removed = urlFilter.removedSegmentCount
+        transformed = removeConfiguredAdRules(
+            transformed,
+            baseURL: baseURL,
+            hostRules: hostRules,
+            removed: &removed
+        )
         transformed = removeCommonAdMarkers(transformed, removed: &removed)
         if hasEndList(transformed) && transformed.contains("#EXT-X-DISCONTINUITY") {
             transformed = removeDecimalPrecisionGroups(transformed, removed: &removed)
@@ -439,7 +464,7 @@ struct M3U8ManifestPurifier {
             let prefix = mediaURLPrefix(absolute)
             let host = URL(string: absolute)?.host ?? ""
             let keep = usePrefix
-                ? prefix == dominantPrefix?.key
+                ? (prefix.map { $0.hasPrefix(dominantPrefix?.key ?? "") } ?? false)
                 : (host == dominantHost?.key || (hosts[host] ?? 0) > 15)
             if keep {
                 output.append(contentsOf: pending); pending.removeAll(); output.append(absolute)
@@ -487,9 +512,11 @@ struct M3U8ManifestPurifier {
             if item.isEmpty { pending.append(raw); continue }
             if item.hasPrefix("#") {
                 if item.hasPrefix("#EXT-X-CUE-IN") {
-                    inAdBreak = false
-                    pending.removeAll()
-                    continue
+                    if inAdBreak || pending.contains(where: { isAdSignal($0.trimmingCharacters(in: .whitespacesAndNewlines)) }) {
+                        inAdBreak = false
+                        pending.removeAll()
+                        continue
+                    }
                 }
                 if item.hasPrefix("#EXT-X-CUE-OUT") || isAdSignal(item) {
                     output.append(contentsOf: pending); pending.removeAll()
@@ -517,6 +544,129 @@ struct M3U8ManifestPurifier {
         return output.joined(separator: "\n")
     }
 
+    private static func removeConfiguredAdRules(
+        _ content: String,
+        baseURL: URL,
+        hostRules: [M3U8HostRule],
+        removed: inout Int
+    ) -> String {
+        let host = baseURL.host?.lowercased() ?? ""
+        let configuredRules = hostRules
+            .filter { rule in
+            rule.hosts.contains { host.contains($0.lowercased()) }
+            }
+            .flatMap(\.regex)
+        guard !configuredRules.isEmpty else { return content }
+
+        // ApiConfig only registers Android M3u8.isAd() rules for this path.
+        // Keep that distinction here so ordinary parse/filter rules are never
+        // interpreted as playlist-ad patterns.
+        let rules = configuredRules.filter(isConfiguredAdRule)
+        guard !rules.isEmpty else { return content }
+
+        var result = content
+        var durationRules: [String] = []
+        for rule in rules {
+            if rule.contains("#EXT-X-DISCONTINUITY") || rule.contains("#EXTINF") {
+                result = removeRegexMatchedGroups(result, pattern: rule, removed: &removed)
+            } else if let value = Double(rule), value != 0 {
+                durationRules.append(rule)
+            }
+        }
+        if !durationRules.isEmpty {
+            result = removeDurationMatchedGroups(result, rules: durationRules, removed: &removed)
+        }
+        return result
+    }
+
+    private static func isConfiguredAdRule(_ rule: String) -> Bool {
+        let value = rule.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return false }
+        if let number = Double(value) { return number != 0 }
+        return [
+            "#EXT-X-DISCONTINUITY", "#EXTINF", "#EXT-X-ENDLIST", "#EXT-X-KEY",
+            "#EXT-X-CUE-OUT", "#EXT-X-CUE-IN", "#EXT-X-DATERANGE"
+        ].contains(where: value.contains)
+    }
+
+    private static func removeRegexMatchedGroups(
+        _ content: String,
+        pattern: String,
+        removed: inout Int
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
+            return content
+        }
+        let range = NSRange(content.startIndex..<content.endIndex, in: content)
+        let matches = regex.matches(in: content, range: range)
+        guard !matches.isEmpty else { return content }
+
+        var result = content
+        for match in matches.reversed() {
+            guard let matchRange = Range(match.range, in: result) else { continue }
+            let block = String(result[matchRange])
+            removed += mediaCount(block)
+            result.replaceSubrange(
+                matchRange,
+                with: block.replacingOccurrences(of: "#EXT-X-ENDLIST", with: "")
+            )
+        }
+        return result
+    }
+
+    private static func removeDurationMatchedGroups(
+        _ content: String,
+        rules: [String],
+        removed: inout Int
+    ) -> String {
+        let groups = buildGroups(normalize(content).components(separatedBy: "\n"))
+        guard groups.count > 1 else { return content }
+
+        var output: [String] = []
+        for group in groups {
+            let hasBoundary = group.contains {
+                isDiscontinuityTag($0.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            let durations = group.compactMap(parseDuration)
+            guard hasBoundary, !durations.isEmpty else {
+                output.append(contentsOf: group)
+                continue
+            }
+
+            let total = durations.reduce(Decimal.zero) { partial, duration in
+                partial + (Decimal(string: duration.raw) ?? .zero)
+            }
+            let totalText = NSDecimalNumber(decimal: total).stringValue
+            let isAd = rules.contains { rule in
+                if rule.hasPrefix("-") {
+                    let lastDuration = durations.last.flatMap { Decimal(string: $0.raw) }
+                    let ruleDuration = Decimal(string: String(rule.dropFirst()))
+                    guard let lastDuration, let ruleDuration else { return false }
+                    return NSDecimalNumber(decimal: lastDuration).stringValue
+                        .hasPrefix(NSDecimalNumber(decimal: ruleDuration).stringValue)
+                }
+                let firstDuration = durations.first.flatMap { Decimal(string: $0.raw) }
+                let ruleDuration = Decimal(string: rule)
+                let firstMatches = firstDuration.flatMap { duration in
+                    ruleDuration.map {
+                        NSDecimalNumber(decimal: duration).stringValue
+                            .hasPrefix(NSDecimalNumber(decimal: $0).stringValue)
+                    }
+                } ?? false
+                let totalMatches = ruleDuration.map {
+                    totalText.hasPrefix(NSDecimalNumber(decimal: $0).stringValue)
+                } ?? totalText.hasPrefix(rule)
+                return firstMatches || totalMatches
+            }
+            if isAd {
+                removed += mediaCount(group.joined(separator: "\n"))
+            } else {
+                output.append(contentsOf: group)
+            }
+        }
+        return output.joined(separator: "\n")
+    }
+
     private static func removeSuspiciousDiscontinuityGroups(_ content: String, removed: inout Int) -> String {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var groups: [[String]] = [[]]
@@ -529,7 +679,7 @@ struct M3U8ManifestPurifier {
         }
         guard groups.count >= 3 else { return content }
         let stats = groups.map(groupStats)
-        guard let mainIndex = stats.indices.max(by: { stats[$0].duration < stats[$1].duration }) else { return content }
+        guard let mainIndex = stats.indices.max(by: { groupScore(stats[$0]) < groupScore(stats[$1]) }) else { return content }
         let main = stats[mainIndex]
         guard main.segments >= 3 else { return content }
         var output: [String] = []
@@ -640,6 +790,7 @@ struct M3U8ManifestPurifier {
         let precision = components.count > 1 ? fractionDigits.count : 0
         let normalizedFraction = fractionDigits.replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
         return ParsedDuration(
+            raw: value,
             value: duration,
             precision: precision,
             fraction: normalizedFraction.isEmpty ? "0" : "0.\(normalizedFraction)"
@@ -727,6 +878,10 @@ struct M3U8ManifestPurifier {
         var host = ""
         var path = ""
         var adLike = false
+    }
+
+    private static func groupScore(_ stats: GroupStats) -> Double {
+        stats.duration > 0 ? stats.duration : Double(stats.segments)
     }
 
     private static func groupStats(_ lines: [String]) -> GroupStats {

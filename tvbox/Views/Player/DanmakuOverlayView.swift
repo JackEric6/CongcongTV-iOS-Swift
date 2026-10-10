@@ -28,10 +28,10 @@ final class DanmakuOverlayView: UIView {
     private var wallClockAnchor: CFTimeInterval = 0
     private var hasTimeAnchor = false
     private var lastRenderedTime: TimeInterval = 0
+    private var settings = DanmakuDisplaySettings()
 
     private let horizontalInset: CGFloat = 8
     private let rowHeight: CGFloat = 28
-    private let scrollDuration: TimeInterval = 8
     private let fixedDuration: TimeInterval = 3.5
     private let maxActiveBullets = 80
 
@@ -60,6 +60,14 @@ final class DanmakuOverlayView: UIView {
     func setCues(_ cues: [DanmuCue]) {
         self.cues = cues.sorted { $0.timeMs < $1.timeMs }
         reset()
+    }
+
+    func updateSettings(_ settings: DanmakuDisplaySettings) {
+        self.settings = settings.normalized
+        if !activeBullets.isEmpty {
+            clearActiveBullets()
+            nextCueIndex = lowerBound(for: mediaTime)
+        }
     }
 
     /// Supplies the current player time. The display link only interpolates between
@@ -181,8 +189,15 @@ final class DanmakuOverlayView: UIView {
 
         let label = UILabel()
         label.text = cue.text
-        label.textColor = UIColor(rgba: UInt32(truncatingIfNeeded: cue.color))
-        label.font = .systemFont(ofSize: max(12, min(28, CGFloat(cue.size))))
+        let displayColor: UInt32
+        if settings.randomColors {
+            let palette: [UInt32] = [0xFFFFFF, 0xFF6B6B, 0xFFD166, 0x62D6A5, 0x72B7FF, 0xE7A6FF]
+            displayColor = palette[Int(UInt(bitPattern: cue.id.hashValue) % UInt(palette.count))]
+        } else {
+            displayColor = UInt32(truncatingIfNeeded: cue.color)
+        }
+        label.textColor = UIColor(rgba: displayColor, alpha: CGFloat(settings.opacity) / 100)
+        label.font = .systemFont(ofSize: max(12, min(36, CGFloat(cue.size) * settings.sizeScale)))
         label.textAlignment = .center
         label.numberOfLines = 1
         label.lineBreakMode = .byTruncatingTail
@@ -197,14 +212,14 @@ final class DanmakuOverlayView: UIView {
         let lane = availableLane(for: placement)
         addSubview(label)
         let bullet = ActiveBullet(label: label, placement: placement, lane: lane,
-                                  startTime: cueTime, duration: placement == .scrolling ? scrollDuration : fixedDuration,
+                                  startTime: cueTime, duration: placement == .scrolling ? settings.scrollDuration : fixedDuration,
                                   width: width)
         activeBullets.append(bullet)
         position(bullet, age: max(0, lastRenderedTime - cueTime))
     }
 
     private func position(_ bullet: ActiveBullet, age: TimeInterval) {
-        let laneCount = max(1, Int(bounds.height / rowHeight))
+        let laneCount = min(settings.rowCount, max(1, Int(bounds.height / rowHeight)))
         let laneY = CGFloat(min(max(bullet.lane, 0), laneCount - 1)) * rowHeight
         switch bullet.placement {
         case .scrolling:
@@ -224,7 +239,7 @@ final class DanmakuOverlayView: UIView {
     }
 
     private func availableLane(for placement: Placement) -> Int {
-        let laneCount = max(1, Int(bounds.height / rowHeight))
+        let laneCount = min(settings.rowCount, max(1, Int(bounds.height / rowHeight)))
         let occupied = Set(activeBullets.filter { $0.placement == placement }.map(\.lane))
         return (0..<laneCount).first { !occupied.contains($0) } ?? (activeBullets.count % laneCount)
     }
@@ -247,11 +262,11 @@ final class DanmakuOverlayView: UIView {
 }
 
 private extension UIColor {
-    convenience init(rgba: UInt32) {
+    convenience init(rgba: UInt32, alpha: CGFloat) {
         self.init(red: CGFloat((rgba >> 16) & 0xff) / 255,
                   green: CGFloat((rgba >> 8) & 0xff) / 255,
                   blue: CGFloat(rgba & 0xff) / 255,
-                  alpha: 1)
+                  alpha: alpha)
     }
 }
 #endif

@@ -39,6 +39,23 @@ jobs:
             -o /tmp/verify-search-source-ordering
           /tmp/verify-search-source-ordering
 
+      - name: Verify Cz4k search result parsing
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Models/Movie.swift \
+            tvbox/Services/Cz4kSearchParser.swift \
+            scripts/verify-cz4k-search.swift \
+            -o /tmp/verify-cz4k-search
+          /tmp/verify-cz4k-search
+
+      - name: Verify danmaku episode matching
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Services/DanmakuEpisodeMatcher.swift \
+            scripts/verify-danmaku-episode-matcher.swift \
+            -o /tmp/verify-danmaku-episode-matcher
+          /tmp/verify-danmaku-episode-matcher
+
       - name: Verify playback volume button behavior
         run: |
           swiftc -parse-as-library \

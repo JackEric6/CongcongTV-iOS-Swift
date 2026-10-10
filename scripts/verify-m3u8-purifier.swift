@@ -165,6 +165,75 @@ struct VerifyM3U8Purifier {
             frameRateResult.content.contains("main-\($0).ts")
         })
 
+        var targetEpisodeLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:6", "#EXT-X-DISCONTINUITY"]
+        for index in 1...20 {
+            targetEpisodeLines.append("#EXTINF:3.958,")
+            targetEpisodeLines.append(String(format: "https://svip.example/video/main-%04d.ts?hash=main-%04d", index, index))
+        }
+        targetEpisodeLines.append("#EXT-X-DISCONTINUITY")
+        targetEpisodeLines.append("#EXTINF:4.600,")
+        targetEpisodeLines.append("https://svip.example/video/ad-001.ts?hash=ad-001")
+        targetEpisodeLines.append("#EXTINF:5.533,")
+        targetEpisodeLines.append("https://svip.example/video/ad-002.ts?hash=ad-002")
+        targetEpisodeLines.append("#EXTINF:0.233,")
+        targetEpisodeLines.append("https://svip.example/video/ad-003.ts?hash=ad-003")
+        targetEpisodeLines.append("#EXT-X-DISCONTINUITY")
+        for index in 21...30 {
+            targetEpisodeLines.append("#EXTINF:3.958,")
+            targetEpisodeLines.append(String(format: "https://svip.example/video/main-%04d.ts?hash=main-%04d", index, index))
+        }
+        targetEpisodeLines.append("#EXT-X-ENDLIST")
+        let targetEpisodeResult = M3U8ManifestPurifier.purify(
+            baseURL: URL(string: "https://svip.example/video/mixed.m3u8")!,
+            content: targetEpisodeLines.joined(separator: "\n")
+        )
+        precondition(
+            targetEpisodeResult.removedSegmentCount == 3,
+            "target-episode removal count=\(targetEpisodeResult.removedSegmentCount)"
+        )
+        precondition(!targetEpisodeResult.content.contains("ad-001.ts"))
+        precondition(!targetEpisodeResult.content.contains("ad-002.ts"))
+        precondition(!targetEpisodeResult.content.contains("ad-003.ts"))
+        precondition((1...30).allSatisfy {
+            targetEpisodeResult.content.contains(String(format: "main-%04d.ts?hash=main-%04d", $0, $0))
+        })
+
+        var configuredRuleLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:6", "#EXT-X-DISCONTINUITY"]
+        for index in 1...20 {
+            configuredRuleLines.append("#EXTINF:4.111,")
+            configuredRuleLines.append(String(format: "https://svip.example/video/segment-%04d.ts?token=main-%04d", index, index))
+        }
+        configuredRuleLines.append("#EXT-X-DISCONTINUITY")
+        for (offset, duration) in ["4.613", "5.667", "0.239"].enumerated() {
+            configuredRuleLines.append("#EXTINF:\(duration),")
+            configuredRuleLines.append(String(format: "https://svip.example/video/segment-%04d.ts?token=splice-%04d", 21 + offset, 21 + offset))
+        }
+        configuredRuleLines.append("#EXT-X-DISCONTINUITY")
+        for index in 24...33 {
+            configuredRuleLines.append("#EXTINF:4.111,")
+            configuredRuleLines.append(String(format: "https://svip.example/video/segment-%04d.ts?token=main-%04d", index, index))
+        }
+        configuredRuleLines.append("#EXT-X-ENDLIST")
+        let configuredRuleManifest = configuredRuleLines.joined(separator: "\n")
+        let configuredRule = M3U8HostRule(hosts: ["svip.example"], regex: ["-0.239"])
+        let configuredRuleResult = M3U8ManifestPurifier.purify(
+            baseURL: URL(string: "https://svip.example/video/mixed.m3u8")!,
+            content: configuredRuleManifest,
+            hostRules: [configuredRule]
+        )
+        precondition(configuredRuleResult.removedSegmentCount == 3)
+        precondition((1...20).allSatisfy {
+            configuredRuleResult.content.contains(String(format: "segment-%04d.ts?token=main-%04d", $0, $0))
+        })
+        precondition(!configuredRuleResult.content.contains("token=splice-0022"))
+        let nonMatchingHostResult = M3U8ManifestPurifier.purify(
+            baseURL: URL(string: "https://other.example/video/mixed.m3u8")!,
+            content: configuredRuleManifest,
+            hostRules: [configuredRule]
+        )
+        precondition(nonMatchingHostResult.removedSegmentCount == 0)
+        precondition(nonMatchingHostResult.content == configuredRuleManifest)
+
         var finalPrecisionLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:5", "#EXT-X-DISCONTINUITY"]
         for index in 1...20 {
             finalPrecisionLines.append("#EXTINF:4.080,")

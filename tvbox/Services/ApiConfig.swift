@@ -27,6 +27,7 @@ class ApiConfig: ObservableObject {
     @Published var liveConfigUrl: String = ""
     @Published var wallpaper: String = ""
     @Published var danmaku: String = ""
+    private(set) var m3u8HostRules: [M3U8HostRule] = []
 
     /// 玉兔解锁仅在当前应用会话有效；新会话默认从瓜子首页开始。
     private(set) var isYutuUnlocked = false
@@ -758,6 +759,17 @@ class ApiConfig: ObservableObject {
             // 壁纸
             self.wallpaper = config.wallpaper ?? ""
             self.danmaku = config.danmaku?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            self.m3u8HostRules = (config.rules ?? []).compactMap { rule in
+                let hosts = (rule.hosts ?? []) + [rule.host ?? ""]
+                let normalizedHosts = hosts
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                let patterns = (rule.regex ?? []).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                guard !normalizedHosts.isEmpty, !patterns.isEmpty else { return nil }
+                return M3U8HostRule(hosts: normalizedHosts, regex: patterns)
+            }
+            await M3U8Purifier.shared.updateHostRules(m3u8HostRules)
+            guard activeLoadToken == loadToken else { return }
         }
 
         if includeLive {
