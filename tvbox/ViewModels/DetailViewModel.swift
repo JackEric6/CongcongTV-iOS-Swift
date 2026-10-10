@@ -929,8 +929,18 @@ class DetailViewModel: ObservableObject {
     }
 
     var currentPlaybackHeaders: [String: String] {
-        guard let source = currentSource, let playUrl else { return [:] }
-        return playbackHeaders(for: source, mediaURL: purifierFallbackURL ?? playUrl)
+        guard let source = currentSource, let mediaURL = currentResolvedMediaURL else { return [:] }
+        return playbackHeaders(for: source, mediaURL: mediaURL)
+    }
+
+    var currentResolvedMediaURL: String? {
+        guard playUrl != nil else { return nil }
+        return purifierFallbackURL ?? playUrl
+    }
+
+    func playbackHeaders(forPlayableURL mediaURL: String) -> [String: String] {
+        guard let source = currentSource else { return [:] }
+        return playbackHeaders(for: source, mediaURL: mediaURL)
     }
 
     private func playbackHeaders(for source: SourceBean, mediaURL: String) -> [String: String] {

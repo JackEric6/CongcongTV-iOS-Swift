@@ -1553,9 +1553,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private var canPlayNext = false
         private var canSelectEpisode = false
         private var isLandscape = false
-        /// 静音前的真实音量。不要写死成 0.5，否则取消静音会突然跳到
-        /// 系统音量的一半，破坏用户原本的音量设置。
-        private var lastVolume: Float?
+        private var volumeButtonState = PlaybackVolumeState()
         private var verticalSeekConstraints: [NSLayoutConstraint] = []
 
         init(
@@ -1742,12 +1740,6 @@ private struct KSPlayerUIView: UIViewRepresentable {
             self.canPlayNext = canPlayNext
             self.canSelectEpisode = canSelectEpisode
             let toolbar = view.toolBar
-            if lastVolume == nil {
-                let currentVolume = view.volumeViewSlider.value
-                if currentVolume > 0.02 {
-                    lastVolume = currentVolume
-                }
-            }
             let orderedViews: [UIView] = [
                 rewindButton,
                 toolbar.playButton,
@@ -1969,15 +1961,10 @@ private struct KSPlayerUIView: UIViewRepresentable {
         @objc private func volumePressed() {
             guard let playerView else { return }
             let slider = playerView.volumeViewSlider
-            if slider.value > 0.02 {
-                lastVolume = slider.value
-                slider.setValue(0, animated: false)
-                volumeButton.setImage(UIImage(systemName: "speaker.slash.fill"), for: .normal)
-            } else {
-                let restoreVolume = min(max(lastVolume ?? 1.0, 0.02), 1.0)
-                slider.setValue(restoreVolume, animated: false)
-                volumeButton.setImage(UIImage(systemName: "speaker.wave.2.fill"), for: .normal)
-            }
+            let newVolume = volumeButtonState.toggle(currentVolume: slider.value)
+            slider.setValue(newVolume, animated: false)
+            let image = newVolume <= 0.02 ? "speaker.slash.fill" : "speaker.wave.2.fill"
+            volumeButton.setImage(UIImage(systemName: image), for: .normal)
             slider.sendActions(for: .valueChanged)
         }
 

@@ -359,6 +359,12 @@ class SourceService {
         if SearchSourceGroup.classify(sourceKey: sourceBean.key, sourceName: sourceBean.name) == .changzhang {
             return try await Cz4kSourceService.detail(vodID: vodId)
         }
+        if sourceBean.key.caseInsensitiveCompare("ikanbot") == .orderedSame {
+            return try await MigratedWebSourceService.detailIkanbot(source: sourceBean, vodID: vodId)
+        }
+        if sourceBean.key.caseInsensitiveCompare("zanpian") == .orderedSame {
+            return try await MigratedWebSourceService.detailZanpian(source: sourceBean, vodID: vodId)
+        }
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
         guard !vodId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -464,6 +470,18 @@ class SourceService {
         }
         if searchGroup == .changzhang {
             return filterSearchResults(try await Cz4kSourceService.search(keyword: keyword), keyword: keyword)
+        }
+        if sourceBean.key.caseInsensitiveCompare("ikanbot") == .orderedSame {
+            return filterSearchResults(
+                try await MigratedWebSourceService.searchIkanbot(source: sourceBean, keyword: keyword),
+                keyword: keyword
+            )
+        }
+        if sourceBean.key.caseInsensitiveCompare("zanpian") == .orderedSame {
+            return filterSearchResults(
+                try await MigratedWebSourceService.searchZanpian(source: sourceBean, keyword: keyword),
+                keyword: keyword
+            )
         }
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }

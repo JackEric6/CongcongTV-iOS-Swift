@@ -83,6 +83,27 @@ struct VerifyM3U8Purifier {
         })
         precondition(!minorityResult.content.contains("ads.example"))
 
+        var tokenizedLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:6"]
+        for index in 1...8 {
+            tokenizedLines.append("#EXTINF:6.0,")
+            tokenizedLines.append(String(format: "https://cdn.example/video/segment%04d.ts?token=main-%d", index, index))
+        }
+        for index in 1...2 {
+            tokenizedLines.append("#EXTINF:6.0,")
+            tokenizedLines.append(String(format: "https://cdn.example/video/ad%04d.ts?token=ad-%d", index, index))
+        }
+        tokenizedLines.append("#EXT-X-ENDLIST")
+        let tokenizedResult = M3U8ManifestPurifier.purify(
+            baseURL: URL(string: "https://cdn.example/video/index.m3u8")!,
+            content: tokenizedLines.joined(separator: "\n")
+        )
+        precondition(tokenizedResult.removedSegmentCount == 2)
+        precondition((1...8).allSatisfy {
+            tokenizedResult.content.contains(String(format: "segment%04d.ts?token=main-%d", $0, $0))
+        })
+        precondition(!tokenizedResult.content.contains("ad0001.ts"))
+        precondition(!tokenizedResult.content.contains("ad0002.ts"))
+
         var rollbackLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:6"]
         for index in 1...2 {
             rollbackLines.append("#EXTINF:6.0,")

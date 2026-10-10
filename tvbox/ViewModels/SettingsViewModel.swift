@@ -72,6 +72,7 @@ class SettingsViewModel: ObservableObject {
     /// 3) 回填播放/缓存相关设置
     init() {
         let defaults = UserDefaults.standard
+        CongcongBrand.migrateLegacyDefaultConfig(in: defaults)
         if defaults.object(forKey: M3U8PurifierSettings.key) == nil {
             defaults.set(true, forKey: M3U8PurifierSettings.key)
         }
@@ -197,6 +198,9 @@ class SettingsViewModel: ObservableObject {
         vodUrl: String,
         liveUrl: String
     ) async throws -> PendingMultiRepoSelection? {
+        if vodUrl.lowercased().hasPrefix("bundle://") {
+            return nil
+        }
         if let vodOptions = try await ApiConfig.shared.fetchMultiRepoOptions(from: vodUrl) {
             guard !vodOptions.isEmpty else {
                 throw ConfigError.parseError("点播多仓库配置中没有可用地址")
@@ -211,6 +215,9 @@ class SettingsViewModel: ObservableObject {
         let normalizedVod = ApiConfig.normalizeConfigUrl(vodUrl)
         let normalizedLive = ApiConfig.normalizeConfigUrl(liveUrl)
         guard normalizedLive != normalizedVod else {
+            return nil
+        }
+        if liveUrl.lowercased().hasPrefix("bundle://") {
             return nil
         }
         

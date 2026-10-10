@@ -144,7 +144,13 @@ struct DownloadsView: View {
                     HStack(spacing: 6) {
                         Text(downloadProgressLabel(item))
                         Spacer(minLength: 0)
-                        Text(downloadSpeedLabel(item))
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(downloadSpeedLabel(item))
+                            if let remaining = downloadRemainingTimeLabel(item) {
+                                Text("剩余 \(remaining)")
+                                    .foregroundColor(.white.opacity(0.5))
+                            }
+                        }
                     }
                     .font(.caption2.monospacedDigit())
                     .foregroundColor(.white.opacity(0.62))
@@ -306,6 +312,28 @@ struct DownloadsView: View {
         if item.status == .paused { return "已暂停" }
         guard item.speedBytesPerSecond > 0 else { return "准备中" }
         return "\(formatBytes(Int64(item.speedBytesPerSecond)))/秒"
+    }
+
+    private func downloadRemainingTimeLabel(_ item: DownloadItem) -> String? {
+        guard item.status == .downloading,
+              let total = resolvedTotalBytes(for: item)?.bytes,
+              total > item.bytesWritten,
+              item.speedBytesPerSecond.isFinite,
+              item.speedBytesPerSecond > 0 else {
+            return nil
+        }
+        let seconds = Int(ceil(Double(total - item.bytesWritten) / item.speedBytesPerSecond))
+        guard seconds > 0 else { return "即将完成" }
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        let remainingSeconds = seconds % 60
+        if hours > 0 {
+            return "约\(hours)小时\(String(format: "%02d", minutes))分"
+        }
+        if minutes > 0 {
+            return "约\(minutes)分\(String(format: "%02d", remainingSeconds))秒"
+        }
+        return "约\(remainingSeconds)秒"
     }
 
     private func formatBytes(_ bytes: Int64) -> String {

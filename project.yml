@@ -34,10 +34,10 @@ targets:
         excludes:
           - Info.plist
           - Resources/movie2_kktvs.json
-          - Resources/movie2_xgzy_sources.json
+          - Resources/xgzy_config_all.json
       - path: tvbox/Resources/movie2_kktvs.json
         buildPhase: resources
-      - path: tvbox/Resources/movie2_xgzy_sources.json
+      - path: tvbox/Resources/xgzy_config_all.json
         buildPhase: resources
       - path: tvbox/Resources/zh-Hans.lproj/InfoPlist.strings
         buildPhase: resources

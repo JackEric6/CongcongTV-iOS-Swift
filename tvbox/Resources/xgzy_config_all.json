@@ -512,7 +512,7 @@
     },
     {
       "key": "ikunzy",
-      "name": "ikun",
+      "name": "爱坤",
       "type": 1,
       "api": "https://ikunzyapi.com/api.php/provide/vod",
       "searchable": 1,
@@ -613,6 +613,36 @@
       "changeable": 0,
       "filterable": 0,
       "timeout": 25
+    },
+    {
+      "key": "ikanbot",
+      "name": "爱看",
+      "type": 1,
+      "api": "https://www1.ikanbot.com",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 0,
+      "timeout": 25,
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1",
+        "Referer": "https://www1.ikanbot.com/"
+      }
+    },
+    {
+      "key": "zanpian",
+      "name": "赞片",
+      "type": 1,
+      "api": "https://www.zanpian.org",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 1,
+      "filterable": 0,
+      "timeout": 25,
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1",
+        "Referer": "https://www.zanpian.org/"
+      }
     }
   ]
 }

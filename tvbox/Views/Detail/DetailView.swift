@@ -671,14 +671,6 @@ struct DetailView: View {
         let episodeName = viewModel.currentEpisodes[episodeIndex].name
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let sourceKey = video.sourceKey
-        let sourceHeaders: [String: String]
-        if video.sourceKey.caseInsensitiveCompare("guazi") == .orderedSame {
-            // 下载与播放器必须使用同一 UA；瓜子 CDN 对 Safari UA 只返回
-            // 短预览清单，KSPlayer UA 才会返回完整点播流。
-            sourceHeaders = GuaziPlaybackRequest.playbackHeaders
-        } else {
-            sourceHeaders = apiConfig.getSource(key: video.sourceKey)?.headers ?? [:]
-        }
         let videoID = video.id
         let currentIndex = viewModel.selectedEpisodeIndex
         let episodeURL = viewModel.currentEpisodes[episodeIndex].url
@@ -686,7 +678,7 @@ struct DetailView: View {
         // 重新换取地址，不能复用播放器已经打开过的旧 CDN URL。
         let isGuazi = sourceKey.caseInsensitiveCompare("guazi") == .orderedSame
         let guaziPlayRequest = isGuazi ? GuaziService.PlayRequest(url: episodeURL) : nil
-        let currentURL = !isGuazi && episodeIndex == currentIndex ? viewModel.playUrl : nil
+        let currentURL = !isGuazi && episodeIndex == currentIndex ? viewModel.currentResolvedMediaURL : nil
 
         Task { @MainActor in
             let rawURL: String?
@@ -703,6 +695,9 @@ struct DetailView: View {
                 showDownloadToast("该集没有解析到可下载地址，请先切换到可播放线路后重试")
                 return
             }
+            let requestHeaders = isGuazi
+                ? GuaziPlaybackRequest.playbackHeaders
+                : viewModel.playbackHeaders(forPlayableURL: rawURL)
 
             let identifier = DownloadRequest.identifier(
                 sourceKey: sourceKey,
@@ -718,7 +713,7 @@ struct DetailView: View {
                 episodeName: episodeName,
                 url: url,
                 playRequestURL: guaziPlayRequest.flatMap { URL(string: $0.url) },
-                headers: sourceHeaders
+                headers: requestHeaders
             )
 
             do {

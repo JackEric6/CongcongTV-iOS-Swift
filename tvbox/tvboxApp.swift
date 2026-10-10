@@ -8,8 +8,26 @@ import UIKit
 enum CongcongBrand {
     static let appName = "丛丛影视"
     static let credit = "Made By 丛丛"
-    /// 安卓丛丛影视的 41 源 CMS 清单；首个源仍是西瓜，主页默认使用西瓜。
-    static let defaultConfigURL = "https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/xgzy-config-20260922/movie2_xgzy_all"
+    /// 默认点播配置从 App Bundle 读取，不通过网络拉取远程 JSON。
+    static let defaultConfigURL = "bundle://xgzy_config_all.json"
+    static let legacyDefaultConfigURL = "https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/xgzy-config-20260922/movie2_xgzy_all"
+
+    static func migratedConfigURL(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.caseInsensitiveCompare(legacyDefaultConfigURL) == .orderedSame
+            ? defaultConfigURL : trimmed
+    }
+
+    static func migrateLegacyDefaultConfig(in defaults: UserDefaults = .standard) {
+        let savedVod = defaults.string(forKey: HawkConfig.API_URL)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let savedLive = defaults.string(forKey: HawkConfig.LIVE_API_URL)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !savedVod.isEmpty && migratedConfigURL(savedVod) != savedVod {
+            defaults.set(defaultConfigURL, forKey: HawkConfig.API_URL)
+        }
+        if !savedLive.isEmpty && migratedConfigURL(savedLive) != savedLive {
+            defaults.set(defaultConfigURL, forKey: HawkConfig.LIVE_API_URL)
+        }
+    }
 }
 
 /// 应用入口。
@@ -113,8 +131,9 @@ class AppState: ObservableObject {
     ///   - vodUrl: 点播配置地址
     ///   - liveUrl: 直播配置地址；为空时自动回退到点播地址
     func loadConfig(vodUrl: String, liveUrl: String?, refreshHomeOnSuccess: Bool = false) async {
-        let trimmedVod = vodUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedLive = (liveUrl ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        CongcongBrand.migrateLegacyDefaultConfig()
+        let trimmedVod = CongcongBrand.migratedConfigURL(vodUrl)
+        let trimmedLive = CongcongBrand.migratedConfigURL(liveUrl ?? "")
         guard !trimmedVod.isEmpty else { return }
         let resolvedLive = trimmedLive.isEmpty ? trimmedVod : trimmedLive
         

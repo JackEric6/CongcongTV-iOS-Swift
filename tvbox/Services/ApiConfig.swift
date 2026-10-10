@@ -99,9 +99,9 @@ class ApiConfig: ObservableObject {
                 )
             }
         } catch {
-            // 默认西瓜入口保留远程 movie2_xgzy；网络不可用时使用打包的 41 源清单。
+            // 默认内置源清单损坏时仍可恢复打包的站点列表。
             guard Self.isDefaultXgzyConfig(trimmedVod),
-                  let bundledConfig = Self.loadBundledConfig(named: "movie2_xgzy_sources") else {
+                  let bundledConfig = Self.loadBundledConfig(named: "xgzy_config_all") else {
                 throw error
             }
             guard activeLoadToken == loadToken else { return }
@@ -118,8 +118,8 @@ class ApiConfig: ObservableObject {
         self.isLoaded = true
     }
 
-    /// 从应用资源加载点播配置，供默认西瓜入口离线兜底及静态资源审计使用。
-    func loadBundledSources(named resourceName: String = "movie2_xgzy_sources") throws {
+    /// 从应用资源加载点播配置。
+    func loadBundledSources(named resourceName: String = "xgzy_config_all") throws {
         guard let config = Self.loadBundledConfig(named: resourceName) else {
             throw ConfigError.parseError("找不到打包源配置: \(resourceName).json")
         }
@@ -139,8 +139,10 @@ class ApiConfig: ObservableObject {
     }
 
     private static func isDefaultXgzyConfig(_ url: String) -> Bool {
-        let normalized = url.lowercased()
-        return normalized.contains("movie2_xgzy") || normalized.contains("xgzy-config")
+        let normalized = url.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "bundle://xgzy_config_all.json"
+            || normalized.contains("movie2_xgzy")
+            || normalized.contains("xgzy-config")
     }
 
     private static func loadBundledConfig(named resourceName: String) -> AppConfigData? {
@@ -168,7 +170,16 @@ class ApiConfig: ObservableObject {
     }
 
     private func fetchConfig(from apiUrl: String) async throws -> (config: AppConfigData, loadedFrom: String) {
-        try await fetchConfig(
+        let trimmed = apiUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("bundle://") {
+            let resourceName = String(trimmed.dropFirst("bundle://".count))
+                .replacingOccurrences(of: ".json", with: "", options: [.caseInsensitive])
+            guard let config = Self.loadBundledConfig(named: resourceName) else {
+                throw ConfigError.parseError("找不到应用内配置: \(resourceName).json")
+            }
+            return (config, trimmed)
+        }
+        return try await fetchConfig(
             from: apiUrl,
             visitedUrls: Set<String>(),
             depth: 0
@@ -668,19 +679,19 @@ class ApiConfig: ObservableObject {
             // 解析站点列表
             var sources = (config.sites ?? []).map { self.makeSourceBean(from: $0) }
             if self.isYutuUnlocked, !sources.contains(where: { $0.key == "yutu" }),
-               let bundledConfig = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+               let bundledConfig = Self.loadBundledConfig(named: "xgzy_config_all"),
                let yutuSite = bundledConfig.sites?.first(where: { $0.key == "yutu" }) {
                 sources.append(self.makeSourceBean(from: yutuSite))
             }
             // 瓜子使用 iOS 专用加密服务。远程配置中的同名条目可能是旧的
             // JAR/隐藏定义，必须由内置 iOS 定义覆盖，才能进入聚合搜索。
-            if let bundledConfig = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+            if let bundledConfig = Self.loadBundledConfig(named: "xgzy_config_all"),
                let guaziSite = bundledConfig.sites?.first(where: { $0.key == "guazi" }) {
                 sources.removeAll { $0.key.caseInsensitiveCompare("guazi") == .orderedSame }
                 sources.append(self.makeSourceBean(from: guaziSite))
             }
-            if let bundledSites = Self.loadBundledConfig(named: "movie2_xgzy_sources")?.sites {
-                let migratedKeys: Set<String> = ["jianpian", "fhw88", "cz4k", "fan_moli"]
+            if let bundledSites = Self.loadBundledConfig(named: "xgzy_config_all")?.sites {
+                let migratedKeys: Set<String> = ["jianpian", "fhw88", "cz4k", "fan_moli", "ikanbot", "zanpian"]
                 for site in bundledSites {
                     guard let key = site.key?.lowercased(), migratedKeys.contains(key) else { continue }
                     let source = self.makeSourceBean(from: site)
@@ -696,7 +707,7 @@ class ApiConfig: ObservableObject {
             if !sources.isEmpty {
                 self.sourceBeanList = sources
             } else if self.sourceBeanList.isEmpty,
-                      let bundled = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+                      let bundled = Self.loadBundledConfig(named: "xgzy_config_all"),
                       let bundledSites = bundled.sites {
                 let bundledSources = bundledSites.map { self.makeSourceBean(from: $0) }
                 if !bundledSources.isEmpty {
@@ -1067,7 +1078,7 @@ class ApiConfig: ObservableObject {
         guard !hasValidGuazi else { return }
 
         let guazi: SourceBean
-        if let config = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+        if let config = Self.loadBundledConfig(named: "xgzy_config_all"),
            let site = config.sites?.first(where: { $0.key?.caseInsensitiveCompare("guazi") == .orderedSame }) {
             guazi = makeSourceBean(from: site)
         } else {
@@ -1101,7 +1112,7 @@ class ApiConfig: ObservableObject {
             sourceBeanList[index].changeable = 1
             sourceBeanList[index].hidden = false
             sourceBeanList[index].disabled = false
-        } else if let config = Self.loadBundledConfig(named: "movie2_xgzy_sources"),
+        } else if let config = Self.loadBundledConfig(named: "xgzy_config_all"),
                   let site = config.sites?.first(where: { $0.key == "yutu" }) {
             sourceBeanList.append(makeSourceBean(from: site))
         }

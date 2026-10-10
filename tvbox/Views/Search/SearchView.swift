@@ -88,6 +88,7 @@ struct SearchView: View {
     
     /// 顶部搜索输入区。
     private var searchBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
         HStack(spacing: 12) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
@@ -101,6 +102,9 @@ struct SearchView: View {
                     .submitLabel(.search)
                     .onSubmit {
                         Task { await viewModel.search() }
+                    }
+                    .onChange(of: viewModel.keyword) { _, value in
+                        viewModel.updateSearchSuggestions(for: value)
                     }
                     #if os(iOS)
                     .autocapitalization(.none)
@@ -142,9 +146,44 @@ struct SearchView: View {
             }
             .buttonStyle(.plain)
         }
+            if !viewModel.keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !viewModel.isSearching,
+               viewModel.results.isEmpty,
+               !viewModel.searchSuggestions.isEmpty {
+                suggestionSection
+            }
+        }
         .padding(.horizontal, 20)
         .padding(.top, 20)
         .padding(.bottom, 10)
+    }
+
+    private var suggestionSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(viewModel.searchSuggestions, id: \.self) { suggestion in
+                Button {
+                    Task { await viewModel.searchSuggestion(suggestion) }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(suggestion)
+                            .font(.subheadline)
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.white.opacity(0.06))
+        .cornerRadius(8)
     }
     
     // MARK: - 搜索结果
@@ -157,7 +196,7 @@ struct SearchView: View {
 
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(viewModel.filteredResults) { video in
+                    ForEach(viewModel.filteredResults, id: \.searchCardIdentity) { video in
                         NavigationLink(destination: DetailView(video: video)) {
                             VodCardView(video: video, sourceLabel: sourceName(for: video.sourceKey))
                         }
@@ -180,12 +219,17 @@ struct SearchView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 5) {
                 sourceGroupButton(title: "全部", group: nil)
-                ForEach(SearchSourceGroup.allCases.filter { $0 != .other }) { group in
+                ForEach([
+                    SearchSourceGroup.guazi, .jianpian, .xigua, .feifan, .baofeng,
+                    .tiantang, .liangzi, .source360, .xintong
+                ]) { group in
                     sourceGroupButton(title: group.title, group: group)
                 }
                 ForEach(viewModel.availableOtherSourceKeys, id: \.self) { key in
                     sourceKeyButton(title: viewModel.displayName(for: key), key: key)
                 }
+                sourceGroupButton(title: SearchSourceGroup.changzhang.title, group: .changzhang)
+                sourceGroupButton(title: SearchSourceGroup.moli.title, group: .moli)
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 8)

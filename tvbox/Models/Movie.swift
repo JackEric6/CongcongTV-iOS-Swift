@@ -51,6 +51,16 @@ struct Movie: Codable {
             Self.formatDoubanRating(doubanRating)
         }
 
+        var searchCardIdentity: String {
+            let normalizedName = name
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+                .lowercased()
+            let stableID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let stableSourceKey = sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return "\(stableSourceKey)|\(stableID.isEmpty ? normalizedName : stableID)"
+        }
+
         static func formatDoubanRating(_ value: String) -> String {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let range = trimmed.range(of: #"\d+(?:\.\d+)?"#, options: .regularExpression),

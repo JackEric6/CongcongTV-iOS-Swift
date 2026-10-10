@@ -8,6 +8,7 @@ class SearchViewModel: ObservableObject {
     @Published var keyword: String = ""
     /// 当前结果列表。
     @Published var results: [Movie.Video] = []
+    @Published var searchSuggestions: [String] = []
     /// 搜索加载状态，用于控制进度指示器。
     @Published var isSearching = false
     /// 本地搜索历史（最近在前）。
@@ -25,6 +26,9 @@ class SearchViewModel: ObservableObject {
     private var latestSearchRequestId: UUID = UUID()
     /// 当前搜索任务；重新搜索时取消，避免旧请求继续占用网络和回写结果。
     private var activeSearchTask: Task<Void, Never>?
+    private var suggestionTask: Task<Void, Never>?
+    private var suggestionRequestId = UUID()
+    private var ignoredSuggestionKeyword = ""
     /// 避免快速连续点击在同一瞬间创建多个聚合请求。
     private static let searchDebounceNanoseconds: UInt64 = 160_000_000
     /// 暂存所有源返回的数据。`results` 只暴露带有效海报的可展示结果。
@@ -75,6 +79,8 @@ class SearchViewModel: ObservableObject {
     func search() async {
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
+        clearSearchSuggestions()
 
         activeSearchTask?.cancel()
         let requestId = UUID()
@@ -135,6 +141,7 @@ class SearchViewModel: ObservableObject {
     func searchInSource(_ source: SourceBean) async {
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        clearSearchSuggestions()
         activeSearchTask?.cancel()
         activeSearchTask = nil
         let requestId = UUID()
@@ -171,12 +178,7 @@ class SearchViewModel: ObservableObject {
     /// 合并同一源的重复结果，同时保留不同源的播放入口。
     private func appendCandidates(_ videos: [Movie.Video]) {
         for video in videos {
-            let normalizedName = video.name
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
-                .lowercased()
-            let identity = "\(video.sourceKey)|\(video.id)|\(normalizedName)"
-            guard pendingResultKeys.insert(identity).inserted else { continue }
+            guard pendingResultKeys.insert(video.searchCardIdentity).inserted else { continue }
             pendingResults.append(video)
         }
         pendingResults = SearchSourceGroup.sorted(
@@ -206,6 +208,55 @@ class SearchViewModel: ObservableObject {
         activeSearchTask = nil
         latestSearchRequestId = UUID()
         isSearching = false
+    }
+
+    func updateSearchSuggestions(for value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if ignoredSuggestionKeyword == trimmed {
+            ignoredSuggestionKeyword = ""
+            return
+        }
+        cancelSearch()
+        results = []
+        pendingResults = []
+        pendingResultKeys = []
+        selectedSourceGroup = nil
+        selectedSourceKey = nil
+        errorMessage = nil
+        clearSearchSuggestions()
+
+        guard !trimmed.isEmpty else { return }
+        let requestId = suggestionRequestId
+        suggestionTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+                try Task.checkCancellation()
+            } catch {
+                return
+            }
+            let suggestions = await SearchSuggestionService.fetch(keyword: trimmed)
+            guard let self,
+                  requestId == self.suggestionRequestId,
+                  self.keyword.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
+            self.searchSuggestions = suggestions
+            self.suggestionTask = nil
+        }
+    }
+
+    func searchSuggestion(_ value: String) async {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed != keyword.trimmingCharacters(in: .whitespacesAndNewlines) {
+            ignoredSuggestionKeyword = trimmed
+        }
+        keyword = trimmed
+        await search()
+    }
+
+    private func clearSearchSuggestions() {
+        suggestionTask?.cancel()
+        suggestionTask = nil
+        suggestionRequestId = UUID()
+        searchSuggestions = []
     }
     
     // MARK: - 搜索历史

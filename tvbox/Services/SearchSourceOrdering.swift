@@ -10,9 +10,9 @@ enum SearchSourceGroup: Int, CaseIterable, Hashable, Identifiable {
     case liangzi
     case source360
     case xintong
+    case other
     case changzhang
     case moli
-    case other
 
     var id: Int { rawValue }
 
@@ -36,6 +36,10 @@ enum SearchSourceGroup: Int, CaseIterable, Hashable, Identifiable {
     static func displayName(sourceKey: String, sourceName: String?) -> String {
         let group = classify(sourceKey: sourceKey, sourceName: sourceName)
         if group != .other { return group.title }
+
+        if sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("ikunzy") == .orderedSame {
+            return "爱坤"
+        }
 
         let configuredName = sourceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if configuredName.contains("爱奇艺") { return "奇艺" }

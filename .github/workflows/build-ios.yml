@@ -33,10 +33,28 @@ jobs:
       - name: Verify fixed search source ordering
         run: |
           swiftc -parse-as-library \
+            tvbox/Models/Movie.swift \
             tvbox/Services/SearchSourceOrdering.swift \
             scripts/verify-search-source-ordering.swift \
             -o /tmp/verify-search-source-ordering
           /tmp/verify-search-source-ordering
+
+      - name: Verify playback volume button behavior
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Models/PlaybackVolumeState.swift \
+            scripts/verify-playback-volume.swift \
+            -o /tmp/verify-playback-volume
+          /tmp/verify-playback-volume
+
+      - name: Verify migrated web sources and search suggestions
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Services/MigratedWebSourceService.swift \
+            tvbox/Services/SearchSuggestionService.swift \
+            scripts/verify-migrated-web-sources.swift \
+            -o /tmp/verify-migrated-web-sources
+          /tmp/verify-migrated-web-sources
 
       - name: Verify Guazi RSA key import and encryption
         run: |
@@ -135,22 +153,27 @@ jobs:
           import plistlib
           from pathlib import Path
 
-          expected_default_url = "https://ghproxy.net/https://raw.githubusercontent.com/JackEric6/movie/refs/heads/xgzy-config-20260922/movie2_xgzy_all"
+          expected_default_url = "bundle://xgzy_config_all.json"
           app_source = Path("tvbox/tvboxApp.swift").read_text(encoding="utf-8")
           assert expected_default_url in app_source
+          assert 'legacyDefaultConfigURL' in app_source
+          config_loader = Path("tvbox/Services/ApiConfig.swift").read_text(encoding="utf-8")
+          assert 'hasPrefix("bundle://")' in config_loader
+          assert 'normalized == "bundle://xgzy_config_all.json"' in config_loader
 
-          source_config = Path("tvbox/Resources/movie2_xgzy_sources.json")
+          source_config = Path("tvbox/Resources/xgzy_config_all.json")
           import json
           sources = json.loads(source_config.read_text(encoding="utf-8"))["sites"]
-          assert len(sources) == 45
-          assert len({item["key"] for item in sources}) == 45
+          assert len(sources) == 47
+          assert len({item["key"] for item in sources}) == 47
           expected_search_sources = {
               "guazi", "jianpian", "xgzy", "ffzy", "bfzy", "dyttzy",
-              "lzi", "360zy", "fhw88", "cz4k", "fan_moli",
+              "lzi", "360zy", "fhw88", "cz4k", "fan_moli", "ikanbot", "zanpian",
           }
           assert expected_search_sources.issubset({item["key"] for item in sources})
           assert sources[0]["key"] == "xgzy"
           assert all(item["type"] == 1 for item in sources)
+          assert next(item for item in sources if item["key"] == "ikunzy")["name"] == "爱坤"
           assert all("127.0.0.1" not in item["api"] and "localhost" not in item["api"] for item in sources)
 
           app = Path("build/Build/Products/Release-iphoneos/CongcongTV.app")
@@ -162,6 +185,7 @@ jobs:
           assert info["CFBundleDisplayName"] == "CongcongTV"
           assert info["MinimumOSVersion"] == "17.0"
           assert (app / info["CFBundleExecutable"]).is_file()
+          assert (app / "xgzy_config_all.json").is_file()
           assert (app / "zh-Hans.lproj/InfoPlist.strings").is_file()
           print("APP METADATA AND XGZY DEFAULT CONFIG CHECKS PASSED")
           PY

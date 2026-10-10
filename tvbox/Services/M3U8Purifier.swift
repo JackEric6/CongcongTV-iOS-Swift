@@ -408,13 +408,17 @@ struct M3U8ManifestPurifier {
         var hosts: [String: Int] = [:]
         for raw in urls {
             let absolute = absoluteURL(raw, baseURL: baseURL)
-            let path = URL(string: absolute)?.deletingPathExtension().absoluteString ?? absolute
-            let prefix = path.count > 4 ? String(path.dropLast(4)) : path
-            prefixes[prefix, default: 0] += 1
+            if let prefix = mediaURLPrefix(absolute) {
+                prefixes[prefix, default: 0] += 1
+            }
             if let host = URL(string: absolute)?.host { hosts[host, default: 0] += 1 }
         }
         let dominantPrefix = prefixes.max(by: { $0.value < $1.value })
-        let usePrefix = dominantPrefix.map { prefixes.count > 1 && Double($0.value) / Double(urls.count) >= 0.8 } ?? false
+        let prefixedURLCount = prefixes.values.reduce(0, +)
+        let usePrefix = dominantPrefix.map {
+            prefixes.count > 1 && prefixedURLCount > 0
+                && Double($0.value) / Double(prefixedURLCount) >= 0.8
+        } ?? false
         let dominantHost = hosts.max(by: { $0.value < $1.value })
         let useHost = !usePrefix && dominantHost.map { hosts.count > 1 && Double($0.value) / Double(urls.count) >= 0.8 } ?? false
         guard usePrefix || useHost else {
@@ -432,8 +436,7 @@ struct M3U8ManifestPurifier {
                 continue
             }
             let absolute = absoluteURL(raw, baseURL: baseURL)
-            let path = URL(string: absolute)?.deletingPathExtension().absoluteString ?? absolute
-            let prefix = path.count > 4 ? String(path.dropLast(4)) : path
+            let prefix = mediaURLPrefix(absolute)
             let host = URL(string: absolute)?.host ?? ""
             let keep = usePrefix
                 ? prefix == dominantPrefix?.key
@@ -453,6 +456,25 @@ struct M3U8ManifestPurifier {
             content: output.joined(separator: "\n"),
             removedSegmentCount: removed
         )
+    }
+
+    private static func mediaURLPrefix(_ rawURL: String) -> String? {
+        guard let components = URLComponents(string: rawURL),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host?.lowercased() else {
+            return nil
+        }
+        let path = components.percentEncodedPath
+        guard let slash = path.lastIndex(of: "/"),
+              let extensionDot = path.lastIndex(of: "."),
+              extensionDot > slash else {
+            return nil
+        }
+        let stem = String(path[..<extensionDot])
+        guard stem.count > 4 else { return nil }
+        let prefix = String(stem.dropLast(4))
+        let port = components.port.map { ":\($0)" } ?? ""
+        return "\(scheme)://\(host)\(port)\(prefix)"
     }
 
     private static func removeCommonAdMarkers(_ content: String, removed: inout Int) -> String {

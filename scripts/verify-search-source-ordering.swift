@@ -33,10 +33,10 @@ struct VerifySearchSourceOrdering {
         )
         precondition(sorted.map(\.marker) == [
             "guazi", "jianpian", "jianpian-api", "xigua", "feifan", "baofeng", "tiantang",
-            "liangzi", "360", "xintong", "changzhang", "moli", "other-a", "other-b"
+            "liangzi", "360", "xintong", "other-a", "other-b", "changzhang", "moli"
         ])
         precondition(SearchSourceGroup.allCases.map(\.title) == [
-            "瓜子", "荐片", "西瓜", "非凡", "暴风", "天堂", "量子", "360", "鑫同", "厂长", "茉莉", "其他"
+            "瓜子", "荐片", "西瓜", "非凡", "暴风", "天堂", "量子", "360", "鑫同", "其他", "厂长", "茉莉"
         ])
         precondition(SearchSourceGroup.displayName(sourceKey: "iqiyi", sourceName: "爱奇艺") == "奇艺")
         precondition(SearchSourceGroup.displayName(sourceKey: "xinlang", sourceName: "新浪资源") == "新浪")
@@ -45,6 +45,15 @@ struct VerifySearchSourceOrdering {
         precondition(!SearchSourceGroup.allCases.map(\.title).contains("其他影视源"))
         precondition(SearchSourceGroup.classify(sourceKey: "legacy", sourceName: "鑫同采集") == .xintong)
         precondition(SearchSourceGroup.classify(sourceKey: "cms_baofeng", sourceName: "暴风┃本地") == .baofeng)
+        let cardA = Movie.Video(id: "7", name: "沉默的荣耀", sourceKey: "xgzy")
+        let cardB = Movie.Video(id: "7", name: "沉默的荣耀", sourceKey: "ffzy")
+        precondition(cardA.searchCardIdentity != cardB.searchCardIdentity)
+        precondition(cardA.searchCardIdentity == Movie.Video(id: "7", name: "沉默的荣耀", sourceKey: "XGZY").searchCardIdentity)
+        precondition(cardA.searchCardIdentity == Movie.Video(id: "7", name: "沉默的荣耀（高清）", sourceKey: "xgzy").searchCardIdentity)
+        precondition(
+            Movie.Video(id: "", name: " 沉默的荣耀 ", sourceKey: "xgzy").searchCardIdentity
+                == Movie.Video(id: "", name: "沉默的荣耀", sourceKey: "XGZY").searchCardIdentity
+        )
         print("SEARCH SOURCE ORDERING CHECKS PASSED")
     }
 }

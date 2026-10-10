@@ -20,8 +20,8 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
-            // 自动加载已保存的配置
             let defaults = UserDefaults.standard
+            CongcongBrand.migrateLegacyDefaultConfig(in: defaults)
             let configuredVodUrl = defaults.string(forKey: HawkConfig.API_URL)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let savedVodUrl = configuredVodUrl.isEmpty
@@ -31,11 +31,6 @@ struct ContentView: View {
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let savedLiveUrl = configuredLiveUrl.isEmpty ? savedVodUrl : configuredLiveUrl
             if !savedVodUrl.isEmpty {
-                // 首次安装没有用户配置时先载入打包源，主页直接可见；远程配置随后异步更新。
-                if configuredVodUrl.isEmpty, ApiConfig.shared.sourceBeanList.isEmpty {
-                    try? ApiConfig.shared.loadBundledSources()
-                }
-                // 启动自动恢复配置，避免每次重启都回到首次配置页。
                 Task {
                     await appState.loadConfig(vodUrl: savedVodUrl, liveUrl: savedLiveUrl)
                 }
