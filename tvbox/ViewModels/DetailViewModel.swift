@@ -858,7 +858,6 @@ class DetailViewModel: ObservableObject {
                 )
                 guard !Task.isCancelled,
                       self.playableResolveToken == token,
-                      self.qualityBaseEpisodeURL == normalized,
                       self.currentSource?.key == requestSourceKey,
                       self.selectedFlag == requestFlag,
                       self.selectedEpisodeIndex == requestEpisodeIndex else { return }
@@ -885,7 +884,6 @@ class DetailViewModel: ObservableObject {
             } catch {
                 guard !Task.isCancelled,
                       self.playableResolveToken == token,
-                      self.qualityBaseEpisodeURL == normalized,
                       self.currentSource?.key == requestSourceKey,
                       self.selectedFlag == requestFlag,
                       self.selectedEpisodeIndex == requestEpisodeIndex else { return }
@@ -898,7 +896,6 @@ class DetailViewModel: ObservableObject {
             }
             guard !Task.isCancelled else { return }
             guard self.playableResolveToken == token,
-                  self.qualityBaseEpisodeURL == normalized,
                   self.currentSource?.key == requestSourceKey,
                   self.selectedFlag == requestFlag,
                   self.selectedEpisodeIndex == requestEpisodeIndex else { return }
@@ -919,7 +916,6 @@ class DetailViewModel: ObservableObject {
             )
             guard !Task.isCancelled,
                   self.playableResolveToken == token,
-                  self.qualityBaseEpisodeURL == normalized,
                   self.currentSource?.key == requestSourceKey,
                   self.selectedFlag == requestFlag,
                   self.selectedEpisodeIndex == requestEpisodeIndex else { return }
