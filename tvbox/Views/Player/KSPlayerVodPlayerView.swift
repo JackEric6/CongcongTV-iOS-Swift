@@ -126,6 +126,7 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
             && ((hasDisplayedCurrentVideoFrame && hasPlaybackAdvanced) || playbackFailed)
     }
     private var playbackFailed = false
+    fileprivate var onPlaybackFailure: (() -> Void)?
     private var hasPlaybackAdvanced = false
     private weak var observedVideoLayer: AVPlayerLayer?
     private var firstFrameObservation: NSKeyValueObservation?
@@ -518,6 +519,9 @@ private final class CongcongKSVideoPlayerView: IOSVideoPlayerView, UIGestureReco
             customControlsRefresh?()
             toolBar.playButton.isEnabled = true
             startPositionCoverView.isHidden = true
+            DispatchQueue.main.async { [weak self] in
+                self?.onPlaybackFailure?()
+            }
         }
         guard state == .readyToPlay else { return }
 
@@ -1378,6 +1382,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
         coordinator.updateDanmakuMetadata(title: danmakuTitle, episode: danmakuEpisode)
         coordinator.updateDanmakuEnabled(danmakuEnabled)
         coordinator.onDanmakuEnabledChanged = onDanmakuEnabledChanged
+        view.onPlaybackFailure = { [weak coordinator] in
+            coordinator?.reportPlaybackFailure()
+        }
         coordinator.installActionButtons(
             on: view,
             canPlayPrevious: canPlayPrevious,
@@ -1432,6 +1439,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         // 全屏进出只是同一个播放器 UIView 的重挂载，不能重置进度或重新
         // 安装媒体。否则 KSPlayer 会先从 0 开始，再执行一次恢复 seek。
         if needsPlaybackReplacement {
+            coordinator.resetPlaybackFailure()
             view.prepareInitialPlayback(startPosition: startPosition)
             view.configuredPlaybackURL = url
             view.configuredPlaybackHeaders = playbackHeaders
@@ -1541,6 +1549,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         private var danmakuTask: Task<Void, Never>?
         private var lastPlayerTime: TimeInterval = 0
         private var lastPlayerDuration: TimeInterval = 0
+        private var didReportPlaybackFailure = false
         private let previousButton = UIButton(type: .system)
         private let rewindButton = UIButton(type: .system)
         private let forwardButton = UIButton(type: .system)
@@ -2143,13 +2152,23 @@ private struct KSPlayerUIView: UIViewRepresentable {
             danmakuView?.reset()
             guard error == nil else {
                 DispatchQueue.main.async { [weak self] in
-                    self?.onPlaybackFailed?()
+                    self?.reportPlaybackFailure()
                 }
                 return
             }
             DispatchQueue.main.async { [weak self] in
                 self?.onPlaybackEnded?()
             }
+        }
+
+        func resetPlaybackFailure() {
+            didReportPlaybackFailure = false
+        }
+
+        func reportPlaybackFailure() {
+            guard !didReportPlaybackFailure else { return }
+            didReportPlaybackFailure = true
+            onPlaybackFailed?()
         }
 
         func playerController(maskShow: Bool) {

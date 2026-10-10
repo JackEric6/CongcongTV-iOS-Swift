@@ -35,11 +35,11 @@ struct VerifySearchSourceOrdering {
         )
         precondition(sorted.map(\.marker) == [
             "guazi", "jianpian", "jianpian-api", "xigua", "feifan", "baofeng", "tiantang",
-            "liangzi", "xintong", "cheese", "nuomi", "other-a", "other-b", "360",
-            "changzhang", "moli"
+            "liangzi", "xintong", "other-a", "other-b", "360", "changzhang", "moli",
+            "cheese", "nuomi"
         ])
         precondition(SearchSourceGroup.allCases.map(\.title) == [
-            "瓜子", "荐片", "西瓜", "非凡", "暴风", "天堂", "量子", "鑫同", "奶酪", "糯米", "其他", "厂长", "茉莉"
+            "瓜子", "荐片", "西瓜", "非凡", "暴风", "天堂", "量子", "鑫同", "其他", "厂长", "茉莉", "奶酪", "糯米"
         ])
         precondition(SearchSourceGroup.displayName(sourceKey: "iqiyi", sourceName: "爱奇艺") == "奇艺")
         precondition(SearchSourceGroup.displayName(sourceKey: "xinlang", sourceName: "新浪资源") == "新浪")

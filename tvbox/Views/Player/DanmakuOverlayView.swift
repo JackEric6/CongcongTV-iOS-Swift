@@ -28,6 +28,7 @@ final class DanmakuOverlayView: UIView {
     private var wallClockAnchor: CFTimeInterval = 0
     private var hasTimeAnchor = false
     private var lastRenderedTime: TimeInterval = 0
+    private var lastLayoutSize = CGSize.zero
     private var settings = DanmakuDisplaySettings()
 
     private let horizontalInset: CGFloat = 8
@@ -121,11 +122,17 @@ final class DanmakuOverlayView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // A rotation/full-screen transition changes lane geometry; preserving labels
-        // would make them jump across rows, so restart the short-lived overlay state.
-        if !activeBullets.isEmpty {
-            clearActiveBullets()
-        }
+        guard bounds.size != lastLayoutSize else { return }
+        lastLayoutSize = bounds.size
+        guard hasTimeAnchor, !cues.isEmpty else { return }
+
+        // Adding a bullet also schedules layout on this view. Only rebuild the
+        // active window when its actual geometry changes (rotation/full screen).
+        let now = mediaTime + max(0, CACurrentMediaTime() - wallClockAnchor)
+        clearActiveBullets()
+        nextCueIndex = lowerBound(for: max(0, now - max(settings.scrollDuration, fixedDuration)))
+        lastRenderedTime = now
+        render(at: now)
     }
 
     private func startDisplayLinkIfNeeded() {

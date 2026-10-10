@@ -72,13 +72,10 @@ actor M3U8Purifier {
             )
             guard result.removedSegmentCount > 0,
                   let proxyURL = try? await proxy.publish(content: result.content) else {
-                // Android 版在没有命中广告时回退到实际媒体清单；主清单解析出的
-                // 第一条变体同样直接播放，避免把无法净化的 master 交给本地代理。
-                return PreparedURL(
-                    url: targetURL.absoluteString,
-                    didPurify: false,
-                    removedSegmentCount: 0
-                )
+                // Keep the original URL when no filtering occurred. Replacing a
+                // master playlist with its first variant can drop query tokens
+                // and bypass the player's normal variant selection.
+                return PreparedURL(url: urlString, didPurify: false, removedSegmentCount: 0)
             }
             return PreparedURL(
                 url: proxyURL,

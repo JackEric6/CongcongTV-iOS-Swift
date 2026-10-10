@@ -9,11 +9,11 @@ enum SearchSourceGroup: Int, CaseIterable, Hashable, Identifiable {
     case tiantang
     case liangzi
     case xintong
-    case cheese
-    case nuomi
     case other
     case changzhang
     case moli
+    case cheese
+    case nuomi
 
     var id: Int { rawValue }
 
