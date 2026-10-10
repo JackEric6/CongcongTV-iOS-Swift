@@ -22,6 +22,7 @@ actor M3U8Purifier {
               let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
               Self.isHTTPURL(url),
               Self.looksLikeM3U8(url),
+              !url.absoluteString.localizedCaseInsensitiveContains("url="),
               !Self.isLoopbackURL(url) else {
             return PreparedURL(url: urlString, didPurify: false, removedSegmentCount: 0)
         }

@@ -20,6 +20,7 @@ struct KSPlayerVodPlayerView: View {
     var isResolvingPlayback = false
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
+    var onPlaybackFailed: (() -> Void)? = nil
     /// Called when KSPlayer's native back button is pressed.
     var onBack: (() -> Void)? = nil
     var canPlayPrevious: Bool = false
@@ -49,6 +50,7 @@ struct KSPlayerVodPlayerView: View {
                 isResolvingPlayback: isResolvingPlayback,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
+                onPlaybackFailed: onPlaybackFailed,
                 onBack: onBack,
                 onPlayerAction: onPlayerAction,
                 canPlayPrevious: canPlayPrevious,
@@ -1260,6 +1262,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
     let isResolvingPlayback: Bool
     let onProgressChanged: ((Double, Double?) -> Void)?
     let onPlaybackEnded: (() -> Void)?
+    let onPlaybackFailed: (() -> Void)?
     let onBack: (() -> Void)?
     let onPlayerAction: ((PlayerButtonType) -> Void)?
     let canPlayPrevious: Bool
@@ -1281,6 +1284,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         Coordinator(
             onProgressChanged: onProgressChanged,
             onPlaybackEnded: onPlaybackEnded,
+            onPlaybackFailed: onPlaybackFailed,
             onBack: onBack,
             onPlayerAction: onPlayerAction,
             canPlayPrevious: canPlayPrevious,
@@ -1352,6 +1356,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         }
         coordinator.onProgressChanged = isResolvingPlayback ? nil : onProgressChanged
         coordinator.onPlaybackEnded = isResolvingPlayback ? nil : onPlaybackEnded
+        coordinator.onPlaybackFailed = isResolvingPlayback ? nil : onPlaybackFailed
         coordinator.onBack = onBack
         coordinator.onPlayerAction = onPlayerAction
         coordinator.onPlayPrevious = onPlayPrevious
@@ -1501,6 +1506,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         var pendingPlaybackReload = false
         var onProgressChanged: ((Double, Double?) -> Void)?
         var onPlaybackEnded: (() -> Void)?
+        var onPlaybackFailed: (() -> Void)?
         var onBack: (() -> Void)?
         var onPlayerAction: ((PlayerButtonType) -> Void)?
         var onPlayPrevious: (() -> Void)?
@@ -1547,6 +1553,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         init(
             onProgressChanged: ((Double, Double?) -> Void)?,
             onPlaybackEnded: (() -> Void)?,
+            onPlaybackFailed: (() -> Void)?,
             onBack: (() -> Void)?,
             onPlayerAction: ((PlayerButtonType) -> Void)?,
             canPlayPrevious _: Bool,
@@ -1566,6 +1573,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         ) {
             self.onProgressChanged = onProgressChanged
             self.onPlaybackEnded = onPlaybackEnded
+            self.onPlaybackFailed = onPlaybackFailed
             self.onBack = onBack
             self.onPlayerAction = onPlayerAction
             self.onPlayPrevious = onPlayPrevious
@@ -1945,7 +1953,12 @@ private struct KSPlayerUIView: UIViewRepresentable {
 
         func playerController(finish error: Error?) {
             danmakuView?.reset()
-            guard error == nil else { return }
+            guard error == nil else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onPlaybackFailed?()
+                }
+                return
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.onPlaybackEnded?()
             }

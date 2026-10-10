@@ -120,6 +120,7 @@ struct PlayerView: View {
     var isResolvingPlayback = false
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
+    var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onBack: (() -> Void)? = nil
     var canPlayPrevious: Bool = false
@@ -177,6 +178,7 @@ struct PlayerView: View {
                 isResolvingPlayback: isResolvingPlayback,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
+                onPlaybackFailed: onPlaybackFailed,
                 onBack: onBack,
                 canPlayPrevious: canPlayPrevious,
                 onPlayPrevious: onPlayPrevious,

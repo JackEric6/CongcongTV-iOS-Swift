@@ -246,6 +246,10 @@ struct DetailView: View {
                     onPlaybackEnded: { [playbackSessionToken] in
                         playNextEpisodeIfNeeded(sessionToken: playbackSessionToken)
                     },
+                    onPlaybackFailed: { [playbackSessionToken] in
+                        guard playbackSessionToken == self.playbackSessionToken else { return }
+                        viewModel.recoverFromPurifierPlaybackFailure()
+                    },
                     onToggleFullScreen: inlineFullScreenHandler,
                     onBack: { dismiss() },
                     canPlayPrevious: viewModel.selectedEpisodeIndex > 0,

@@ -70,6 +70,7 @@ class DetailViewModel: ObservableObject {
     /// KKT影视播放器页解析任务，避免切换剧集后旧地址回写。
     private var playableResolveTask: Task<Void, Never>?
     private var playableResolveToken = UUID()
+    private var purifierFallbackURL: String?
     /// 详情加载令牌，用于忽略已过期的渐进回调。
     private var detailLoadToken = UUID()
     /// 当前详情请求是否已用首批可播放数据建立过播放会话。
@@ -838,6 +839,7 @@ class DetailViewModel: ObservableObject {
         let requestSourceKey = source.key
         let requestFlag = selectedFlag
         let requestEpisodeIndex = selectedEpisodeIndex
+        purifierFallbackURL = nil
 
         guard !isDirectPlayableURL(normalized, for: source) else {
             guard let selectedURL = selectedPlayableURL(fallback: normalized) else {
@@ -860,6 +862,7 @@ class DetailViewModel: ObservableObject {
                       self.selectedFlag == requestFlag,
                       self.selectedEpisodeIndex == requestEpisodeIndex else { return }
                 self.playUrl = prepared.url
+                self.purifierFallbackURL = prepared.didPurify ? selectedURL : nil
                 self.isPlaying = true
                 self.isResolvingPlaybackURL = false
             }
@@ -919,6 +922,7 @@ class DetailViewModel: ObservableObject {
                   self.selectedFlag == requestFlag,
                   self.selectedEpisodeIndex == requestEpisodeIndex else { return }
             self.playUrl = prepared.url
+            self.purifierFallbackURL = prepared.didPurify ? validURL : nil
             self.isPlaying = true
             self.isResolvingPlaybackURL = false
             self.errorMessage = nil
@@ -931,6 +935,17 @@ class DetailViewModel: ObservableObject {
             return GuaziPlaybackRequest.playbackHeaders
         }
         return source.headers ?? [:]
+    }
+
+    func recoverFromPurifierPlaybackFailure() {
+        guard let fallbackURL = purifierFallbackURL,
+              playUrl != fallbackURL else { return }
+        purifierFallbackURL = nil
+        playUrl = fallbackURL
+        isPlaying = true
+        isResolvingPlaybackURL = false
+        errorMessage = nil
+        shouldRetryAfterNetworkRecovery = false
     }
 
     /// 返回指定剧集的实际播放地址，供下载任务使用。
