@@ -353,6 +353,12 @@ class SourceService {
                 onProgress: onGuaziDetailProgress
             )
         }
+        if SearchSourceGroup.classify(sourceKey: sourceBean.key, sourceName: sourceBean.name) == .jianpian {
+            return try await JianpianSourceService.detail(vodID: vodId)
+        }
+        if SearchSourceGroup.classify(sourceKey: sourceBean.key, sourceName: sourceBean.name) == .changzhang {
+            return try await Cz4kSourceService.detail(vodID: vodId)
+        }
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
         guard !vodId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -451,6 +457,13 @@ class SourceService {
     func search(sourceBean: SourceBean, keyword: String) async throws -> [Movie.Video] {
         if sourceBean.key.caseInsensitiveCompare("guazi") == .orderedSame {
             return try await GuaziService.shared.search(keyword: keyword)
+        }
+        let searchGroup = SearchSourceGroup.classify(sourceKey: sourceBean.key, sourceName: sourceBean.name)
+        if searchGroup == .jianpian {
+            return filterSearchResults(try await JianpianSourceService.search(keyword: keyword), keyword: keyword)
+        }
+        if searchGroup == .changzhang {
+            return filterSearchResults(try await Cz4kSourceService.search(keyword: keyword), keyword: keyword)
         }
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
@@ -707,26 +720,7 @@ class SourceService {
 
     /// 让瓜子和首选资源站在首批并发中启动，避免配置列表末尾的源被多轮请求拖延。
     private func prioritizedSearchSources(_ sources: [SourceBean]) -> [SourceBean] {
-        func priority(_ source: SourceBean) -> Int {
-            let key = source.key
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
-                .lowercased()
-            switch key {
-            case "guazi", "guazizy": return 0
-            case "xgzy", "xigua", "xiguazy": return 1
-            case "ffzy", "feifan", "feifazy": return 2
-            case "lzi", "liangzi", "liangzizy": return 3
-            case "modu", "moduzy": return 4
-            default: return 100
-            }
-        }
-
-        return sources.enumerated().sorted {
-            let leftPriority = priority($0.element)
-            let rightPriority = priority($1.element)
-            return leftPriority == rightPriority ? $0.offset < $1.offset : leftPriority < rightPriority
-        }.map(\.element)
+        SearchSourceGroup.sorted(sources, sourceKey: \.key, sourceName: \.name)
     }
 
     /// 对源返回结果做本地关键词过滤，规避部分接口返回推荐/无关内容。

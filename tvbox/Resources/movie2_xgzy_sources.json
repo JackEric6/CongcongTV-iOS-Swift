@@ -567,6 +567,52 @@
       "timeout": 25,
       "hidden": false,
       "disabled": false
+    },
+    {
+      "key": "jianpian",
+      "name": "荐片",
+      "type": 1,
+      "api": "https://fan123.hzhnl.com",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 0,
+      "filterable": 0,
+      "timeout": 30,
+      "icon": "https://img.ypfbj.com/favicon.ico"
+    },
+    {
+      "key": "fhw88",
+      "name": "鑫同",
+      "type": 1,
+      "api": "https://cj.ffzyapi.com/api.php/provide/vod/",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 0,
+      "filterable": 0,
+      "timeout": 25,
+      "icon": "https://www.fhw88.com.cn/favicon.ico"
+    },
+    {
+      "key": "cz4k",
+      "name": "厂长",
+      "type": 1,
+      "api": "https://www.cz4k.com",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 0,
+      "filterable": 0,
+      "timeout": 60
+    },
+    {
+      "key": "fan_moli",
+      "name": "茉莉",
+      "type": 1,
+      "api": "http://103.236.72.182:3688/api.php/provide/vod",
+      "searchable": 1,
+      "quickSearch": 1,
+      "changeable": 0,
+      "filterable": 0,
+      "timeout": 25
     }
   ]
 }

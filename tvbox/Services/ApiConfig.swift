@@ -679,6 +679,18 @@ class ApiConfig: ObservableObject {
                 sources.removeAll { $0.key.caseInsensitiveCompare("guazi") == .orderedSame }
                 sources.append(self.makeSourceBean(from: guaziSite))
             }
+            if let bundledSites = Self.loadBundledConfig(named: "movie2_xgzy_sources")?.sites {
+                let migratedKeys: Set<String> = ["jianpian", "fhw88", "cz4k", "fan_moli"]
+                for site in bundledSites {
+                    guard let key = site.key?.lowercased(), migratedKeys.contains(key) else { continue }
+                    let source = self.makeSourceBean(from: site)
+                    if let index = sources.firstIndex(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame }) {
+                        sources[index] = source
+                    } else {
+                        sources.append(source)
+                    }
+                }
+            }
             // 远程配置偶发返回只有 lives/parses 的内容时，不能清空已经可用的视频源。
             // 首次启动也保留打包源清单，确保默认瓜子主页可进入。
             if !sources.isEmpty {

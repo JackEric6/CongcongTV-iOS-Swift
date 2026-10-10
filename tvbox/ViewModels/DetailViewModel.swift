@@ -853,7 +853,8 @@ class DetailViewModel: ObservableObject {
                 guard let self else { return }
                 let prepared = await M3U8Purifier.shared.prepare(
                     urlString: selectedURL,
-                    headers: self.playbackHeaders(for: source)
+                    headers: self.playbackHeaders(for: source),
+                    sourceKey: source.key
                 )
                 guard !Task.isCancelled,
                       self.playableResolveToken == token,
@@ -913,7 +914,8 @@ class DetailViewModel: ObservableObject {
             self.updateQualityOptions(for: validURL, resetSelection: true)
             let prepared = await M3U8Purifier.shared.prepare(
                 urlString: validURL,
-                headers: self.playbackHeaders(for: source)
+                headers: self.playbackHeaders(for: source),
+                sourceKey: source.key
             )
             guard !Task.isCancelled,
                   self.playableResolveToken == token,

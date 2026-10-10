@@ -14,8 +14,8 @@ class SearchViewModel: ObservableObject {
     @Published var searchHistory: [String] = []
     /// 搜索失败或空结果提示。
     @Published var errorMessage: String?
-    /// 当前展示筛选源；空字符串表示显示全部来源。
-    @Published var selectedSourceKey: String = ""
+    /// 当前展示来源分组；nil 表示显示全部来源。
+    @Published var selectedSourceGroup: SearchSourceGroup?
     
     /// 源数据服务（负责多源并发搜索）。
     private let sourceService = SourceService.shared
@@ -39,10 +39,14 @@ class SearchViewModel: ObservableObject {
         }
     }
 
+    var availableSourceGroups: Set<SearchSourceGroup> {
+        Set(results.map { sourceGroup(for: $0.sourceKey) })
+    }
+
     /// 站点筛选只改变本地展示，不改变原始视频的 sourceKey、id 或播放配置。
     var filteredResults: [Movie.Video] {
-        guard !selectedSourceKey.isEmpty else { return results }
-        return results.filter { $0.sourceKey == selectedSourceKey }
+        guard let selectedSourceGroup else { return results }
+        return results.filter { sourceGroup(for: $0.sourceKey) == selectedSourceGroup }
     }
     
     /// 初始化时同步加载本地历史记录，确保搜索页首次渲染即可展示。
@@ -62,7 +66,7 @@ class SearchViewModel: ObservableObject {
         isSearching = true
         errorMessage = nil
         results = []
-        selectedSourceKey = ""
+        selectedSourceGroup = nil
         pendingResults = []
         pendingResultKeys = []
 
@@ -133,7 +137,7 @@ class SearchViewModel: ObservableObject {
             guard requestId == latestSearchRequestId else { return }
             pendingResults = []
             pendingResultKeys = []
-            selectedSourceKey = ""
+            selectedSourceGroup = nil
             appendCandidates(videos)
             let enriched = await PosterCache.shared.enrich(pendingResults)
             guard requestId == latestSearchRequestId else { return }
@@ -156,32 +160,21 @@ class SearchViewModel: ObservableObject {
             guard pendingResultKeys.insert(identity).inserted else { continue }
             pendingResults.append(video)
         }
-        // 搜索源按稳定优先级展示。只有实际返回了有效结果的源才会进入列表，
-        // 因此西瓜无结果时不会制造空占位，后续有效源会自然补位。
-        // Swift 的 sort 不保证稳定性，显式保留原始索引，避免同优先级源的结果乱序。
-        pendingResults = pendingResults.enumerated().sorted { lhs, rhs in
-            let leftPriority = sourcePriority(for: lhs.element.sourceKey)
-            let rightPriority = sourcePriority(for: rhs.element.sourceKey)
-            if leftPriority != rightPriority { return leftPriority < rightPriority }
-            return lhs.offset < rhs.offset
-        }.map(\.element)
+        pendingResults = SearchSourceGroup.sorted(
+            pendingResults,
+            sourceKey: \.sourceKey,
+            sourceName: { self.sourceName(for: $0.sourceKey) }
+        )
     }
 
-    /// 瓜子固定排首位，其余优先源随后展示；未列出的源保持相对顺序。
-    private func sourcePriority(for sourceKey: String) -> Int {
-        let key = sourceKey
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
-            .lowercased()
+    private func sourceGroup(for sourceKey: String) -> SearchSourceGroup {
+        SearchSourceGroup.classify(sourceKey: sourceKey, sourceName: sourceName(for: sourceKey))
+    }
 
-        switch key {
-        case "guazi", "guazizy": return 0
-        case "xgzy", "xigua", "xiguazy": return 1
-        case "ffzy", "feifan", "feifazy": return 2
-        case "lzi", "liangzi", "liangzizy": return 3
-        case "modu", "moduzy": return 4
-        default: return 100
-        }
+    private func sourceName(for sourceKey: String) -> String? {
+        ApiConfig.shared.sourceBeanList.first {
+            $0.key.caseInsensitiveCompare(sourceKey) == .orderedSame
+        }?.name
     }
 
     /// 取消当前搜索并结束加载状态。

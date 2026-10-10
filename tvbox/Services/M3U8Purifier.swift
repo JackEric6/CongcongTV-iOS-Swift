@@ -17,7 +17,10 @@ actor M3U8Purifier {
     private let network = NetworkManager.shared
     private let proxy = M3U8LoopbackProxy.shared
 
-    func prepare(urlString: String, headers: [String: String]) async -> PreparedURL {
+    func prepare(urlString: String, headers: [String: String], sourceKey: String) async -> PreparedURL {
+        guard sourceKey.caseInsensitiveCompare("guazi") != .orderedSame else {
+            return PreparedURL(url: urlString, didPurify: false, removedSegmentCount: 0)
+        }
         guard M3U8PurifierSettings.isEnabled,
               let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
               Self.isHTTPURL(url),
@@ -315,6 +318,12 @@ struct M3U8ManifestPurifier {
         let removedSegmentCount: Int
     }
 
+    private struct ParsedDuration {
+        let value: Double
+        let precision: Int
+        let fraction: String
+    }
+
     private struct URLFilterResult {
         let content: String
         let removedSegmentCount: Int
@@ -327,6 +336,7 @@ struct M3U8ManifestPurifier {
         "adservice", "adserver", "adsystem", "doubleclick", "googlesyndication",
         "advertising", "2mdn.net", "moatads", "scorecardresearch", "quantserve"
     ]
+    private static let frameRateFeatures = makeFrameRateFeatures()
 
     static func purify(baseURL: URL, content: String) -> Result {
         let original = normalize(content)
@@ -340,10 +350,11 @@ struct M3U8ManifestPurifier {
         var transformed = urlFilter.removedSegmentCount > 0 ? urlFilter.content : resolved
         var removed = urlFilter.removedSegmentCount
         transformed = removeCommonAdMarkers(transformed, removed: &removed)
-        transformed = removeSuspiciousDiscontinuityGroups(transformed, removed: &removed)
         if hasEndList(transformed) && transformed.contains("#EXT-X-DISCONTINUITY") {
-            transformed = removeDiscontinuityFormatAds(transformed, removed: &removed)
+            transformed = removeDecimalPrecisionGroups(transformed, removed: &removed)
+            transformed = removeFrameRateGroups(transformed, removed: &removed)
         }
+        transformed = removeSuspiciousDiscontinuityGroups(transformed, removed: &removed)
         transformed = normalizeDiscontinuities(transformed)
 
         if originalSegments > 0 && Double(removed) > Double(originalSegments) * 0.5 {
@@ -488,7 +499,7 @@ struct M3U8ManifestPurifier {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var groups: [[String]] = [[]]
         for line in lines {
-            if line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXT-X-DISCONTINUITY"),
+            if isDiscontinuityTag(line.trimmingCharacters(in: .whitespacesAndNewlines)),
                groups.last?.contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#") }) == true {
                 groups.append([])
             }
@@ -515,36 +526,69 @@ struct M3U8ManifestPurifier {
         return output.joined(separator: "\n")
     }
 
-    /// 安卓端还会利用 EXTINF 小数精度和帧率特征识别短广告块，这里保持相同的保守策略。
-    private static func removeDiscontinuityFormatAds(_ content: String, removed: inout Int) -> String {
+    private static func removeDecimalPrecisionGroups(_ content: String, removed: inout Int) -> String {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let groups = buildGroups(lines)
         guard groups.count >= 2 else { return content }
-        let durations = groups.flatMap { $0.compactMap(extinfDuration) }
-        guard durations.count >= 8 else { return content }
-
-        let precisions = durations.map(decimalPrecision)
+        let durations = groups.flatMap { $0.compactMap(parseDuration) }
+        let precisions = durations.map(\.precision)
         let precisionCounts = Dictionary(grouping: precisions, by: { $0 }).mapValues(\.count)
-        let dominantPrecision = precisionCounts.max(by: { $0.value < $1.value })
-        let precisionReliable = dominantPrecision.map { Double($0.value) / Double(durations.count) >= 0.7 } ?? false
-        let dominantRate = dominantFrameRate(durations)
+        guard durations.count >= 8, precisionCounts.count >= 2,
+              let dominantPrecision = precisionCounts.max(by: { $0.value < $1.value }),
+              Double(dominantPrecision.value) / Double(durations.count) >= 0.7 else { return content }
+
         var drop = Set<Int>()
         var removable = 0
         for index in groups.indices.dropLast() {
-            let groupDurations = groups[index].compactMap(extinfDuration)
-            guard !groupDurations.isEmpty, groupDurations.count <= 12 else { continue }
-            let short = groupDurations.count <= 2 || groupDurations.reduce(0, +) < durations.reduce(0, +) * 0.18
-            let precisionMismatch = precisionReliable && groupDurations.allSatisfy { decimalPrecision($0) != dominantPrecision!.key }
-            let rateMismatch = dominantRate != nil && groupDurations.filter { frameRate($0) == dominantRate }.count < groupDurations.count / 2
-            if short && (precisionMismatch || rateMismatch) {
+            let groupDurations = groups[index].compactMap(parseDuration)
+            let segmentCount = mediaCount(groups[index].joined(separator: "\n"))
+            guard !groupDurations.isEmpty, segmentCount > 0, segmentCount <= 12,
+                  groupDurations.allSatisfy({ $0.precision != dominantPrecision.key }) else { continue }
+            if segmentCount <= adSegmentLimit(for: durations) {
                 drop.insert(index)
-                removable += groupDurations.count
+                removable += segmentCount
             }
         }
-        guard !drop.isEmpty, removable <= max(1, durations.count * 3 / 10) else { return content }
+        guard !drop.isEmpty, removable <= adSegmentLimit(for: durations),
+              Double(removable) <= Double(durations.count) * 0.3 else { return content }
         var output: [String] = []
         for index in groups.indices {
-            if drop.contains(index) { removed += groups[index].compactMap(extinfDuration).count }
+            if drop.contains(index) { removed += mediaCount(groups[index].joined(separator: "\n")) }
+            else { output.append(contentsOf: groups[index]) }
+        }
+        return output.joined(separator: "\n")
+    }
+
+    private static func removeFrameRateGroups(_ content: String, removed: inout Int) -> String {
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let groups = buildGroups(lines)
+        guard groups.count >= 2,
+              let masterFrameRate = dominantFrameRate(groups.flatMap { $0 }) else { return content }
+
+        var drop = Set<Int>()
+        var removable = 0
+        for index in groups.indices.dropLast() {
+            let segmentCount = mediaCount(groups[index].joined(separator: "\n"))
+            guard segmentCount > 0, segmentCount <= 12 else { continue }
+            var matched = 0
+            var mismatched = 0
+            for line in groups[index] {
+                guard let duration = parseDuration(line) else { continue }
+                let rate = exclusiveFrameRate(duration)
+                if rate == masterFrameRate { matched += 1 }
+                else if rate != 0 { mismatched += 1 }
+            }
+            if mismatched > 0 && mismatched >= matched {
+                drop.insert(index)
+                removable += segmentCount
+            }
+        }
+        let durations = groups.flatMap { $0.compactMap(parseDuration) }
+        guard !drop.isEmpty, removable <= adSegmentLimit(for: durations) else { return content }
+
+        var output: [String] = []
+        for index in groups.indices {
+            if drop.contains(index) { removed += mediaCount(groups[index].joined(separator: "\n")) }
             else { output.append(contentsOf: groups[index]) }
         }
         return output.joined(separator: "\n")
@@ -553,7 +597,7 @@ struct M3U8ManifestPurifier {
     private static func buildGroups(_ lines: [String]) -> [[String]] {
         var result: [[String]] = [[]]
         for line in lines {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("#EXT-X-DISCONTINUITY"),
+            if isDiscontinuityTag(line.trimmingCharacters(in: .whitespaces)),
                result.last?.contains(where: { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }) == true {
                 result.append([])
             }
@@ -562,31 +606,96 @@ struct M3U8ManifestPurifier {
         return result
     }
 
-    private static func extinfDuration(_ line: String) -> Double? {
-        guard line.hasPrefix("#EXTINF:"), let value = line.dropFirst(8).split(separator: ",").first else { return nil }
-        return Double(value)
+    private static func parseDuration(_ line: String) -> ParsedDuration? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("#EXTINF:"),
+              let raw = trimmed.dropFirst(8).split(separator: ",", maxSplits: 1).first else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespaces)
+        guard let duration = Double(value), duration.isFinite else { return nil }
+        let unsigned = value.first == "-" || value.first == "+" ? String(value.dropFirst()) : value
+        let components = unsigned.split(separator: ".", omittingEmptySubsequences: false)
+        let fractionDigits = components.count > 1 ? String(components[1]) : ""
+        let precision = components.count > 1 ? fractionDigits.count : 0
+        let normalizedFraction = fractionDigits.replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
+        return ParsedDuration(
+            value: duration,
+            precision: precision,
+            fraction: normalizedFraction.isEmpty ? "0" : "0.\(normalizedFraction)"
+        )
     }
 
-    private static func decimalPrecision(_ value: Double) -> Int {
-        let text = String(format: "%.6f", value).replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
-        return text.split(separator: ".").last?.count ?? 0
-    }
-
-    private static func dominantFrameRate(_ values: [Double]) -> Int? {
-        let rates = values.map(frameRate).filter { $0 > 0 }
-        let counts = Dictionary(grouping: rates, by: { $0 }).mapValues(\.count)
-        guard let item = counts.max(by: { $0.value < $1.value }), item.value >= 2 else { return nil }
+    private static func dominantFrameRate(_ lines: [String]) -> Int? {
+        var counts: [Int: Int] = [:]
+        for line in lines {
+            guard let duration = parseDuration(line) else { continue }
+            let rate = exclusiveFrameRate(duration)
+            if rate != 0 { counts[rate, default: 0] += 1 }
+        }
+        guard let item = counts.max(by: { $0.value < $1.value }), item.value >= 2,
+              counts.values.filter({ $0 == item.value }).count == 1 else { return nil }
         return item.key
     }
 
-    private static func frameRate(_ value: Double) -> Int {
-        let fraction = value - floor(value)
-        let candidates: [(Int, Double)] = [(30, 1.0 / 30.0), (25, 1.0 / 25.0), (24, 1.0 / 24.0)]
-        for (rate, step) in candidates {
-            let nearest = (fraction / step).rounded() * step
-            if abs(fraction - nearest) < 0.012 { return rate }
+    private static func exclusiveFrameRate(_ duration: ParsedDuration) -> Int {
+        let matches = [30, 25, 24].filter { frameRateFeatures[$0]?.contains(duration.fraction) == true }
+        return matches.count == 1 ? matches[0] : 0
+    }
+
+    private static func makeFrameRateFeatures() -> [Int: Set<String>] {
+        [30: frameFeatures(frameRate: 30, includeNtsc: true),
+         25: frameFeatures(frameRate: 25, includeNtsc: false),
+         24: frameFeatures(frameRate: 24, includeNtsc: true)]
+    }
+
+    private static func frameFeatures(frameRate: Int, includeNtsc: Bool) -> Set<String> {
+        var result = Set<String>()
+        addFrameFeatures(denominator: frameRate, frameCount: frameRate, into: &result)
+        if includeNtsc {
+            addFrameFeatures(
+                denominator: frameRate * 1_000,
+                frameCount: frameRate * 10,
+                numeratorMultiplier: 1_001,
+                into: &result
+            )
         }
-        return 0
+        return result
+    }
+
+    private static func addFrameFeatures(
+        denominator: Int,
+        frameCount: Int,
+        numeratorMultiplier: Int = 1,
+        into result: inout Set<String>
+    ) {
+        let scale10: Int64 = 10_000_000_000
+        for frame in 1...frameCount {
+            let numerator = (frame * numeratorMultiplier) % denominator
+            guard numerator > 0 else { continue }
+            var ticks10 = (Int64(numerator) * scale10 + Int64(denominator / 2)) / Int64(denominator)
+            if ticks10 >= scale10 { ticks10 = 0 }
+            for precision in 3...6 {
+                let scale = powerOfTen(precision)
+                let roundingUnit = powerOfTen(10 - precision)
+                var ticks = (ticks10 + roundingUnit / 2) / roundingUnit
+                if ticks >= scale { ticks = 0 }
+                guard ticks > 0 else { continue }
+                var digits = String(format: "%0*lld", precision, ticks % scale)
+                while digits.last == "0" { digits.removeLast() }
+                if !digits.isEmpty { result.insert("0.\(digits)") }
+            }
+        }
+    }
+
+    private static func powerOfTen(_ exponent: Int) -> Int64 {
+        (0..<exponent).reduce(Int64(1)) { value, _ in value * 10 }
+    }
+
+    private static func adSegmentLimit(for durations: [ParsedDuration]) -> Int {
+        let totalMinutes = durations.reduce(0) { $0 + $1.value } / 60
+        if totalMinutes <= 30 { return 18 }
+        if totalMinutes <= 60 { return 24 }
+        if totalMinutes <= 90 { return 30 }
+        return 36
     }
 
     private struct GroupStats {
@@ -601,7 +710,7 @@ struct M3U8ManifestPurifier {
         var stats = GroupStats()
         for raw in lines {
             let item = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if item.hasPrefix("#EXTINF:"), let value = item.dropFirst(8).split(separator: ",").first, let duration = Double(value) { stats.duration += duration }
+            if let duration = parseDuration(item) { stats.duration += duration.value }
             guard !item.isEmpty, !item.hasPrefix("#") else {
                 if isAdSignal(item) || isStandaloneAdTag(item) { stats.adLike = true }
                 continue
@@ -641,7 +750,12 @@ struct M3U8ManifestPurifier {
     }
 
     private static func isSegmentTag(_ line: String) -> Bool {
-        ["#EXTINF", "#EXT-X-BYTERANGE", "#EXT-X-PROGRAM-DATE-TIME", "#EXT-X-DISCONTINUITY", "#EXT-X-PART", "#EXT-X-PRELOAD-HINT"].contains { line.hasPrefix($0) }
+        if line.hasPrefix("#EXT-X-DISCONTINUITY-SEQUENCE") { return false }
+        return ["#EXTINF", "#EXT-X-BYTERANGE", "#EXT-X-PROGRAM-DATE-TIME", "#EXT-X-DISCONTINUITY", "#EXT-X-PART", "#EXT-X-PRELOAD-HINT"].contains { line.hasPrefix($0) }
+    }
+
+    private static func isDiscontinuityTag(_ line: String) -> Bool {
+        line.hasPrefix("#EXT-X-DISCONTINUITY") && !line.hasPrefix("#EXT-X-DISCONTINUITY-SEQUENCE")
     }
 
     private static func isAdSignal(_ line: String) -> Bool {

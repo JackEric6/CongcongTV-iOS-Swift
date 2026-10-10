@@ -30,6 +30,14 @@ jobs:
             -o /tmp/verify-m3u8-purifier
           /tmp/verify-m3u8-purifier
 
+      - name: Verify fixed search source ordering
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Services/SearchSourceOrdering.swift \
+            scripts/verify-search-source-ordering.swift \
+            -o /tmp/verify-search-source-ordering
+          /tmp/verify-search-source-ordering
+
       - name: Verify Guazi RSA key import and encryption
         run: |
           swiftc -parse-as-library \
@@ -134,8 +142,13 @@ jobs:
           source_config = Path("tvbox/Resources/movie2_xgzy_sources.json")
           import json
           sources = json.loads(source_config.read_text(encoding="utf-8"))["sites"]
-          assert len(sources) == 41
-          assert len({item["key"] for item in sources}) == 41
+          assert len(sources) == 45
+          assert len({item["key"] for item in sources}) == 45
+          expected_search_sources = {
+              "guazi", "jianpian", "xgzy", "ffzy", "bfzy", "dyttzy",
+              "lzi", "360zy", "fhw88", "cz4k", "fan_moli",
+          }
+          assert expected_search_sources.issubset({item["key"] for item in sources})
           assert sources[0]["key"] == "xgzy"
           assert all(item["type"] == 1 for item in sources)
           assert all("127.0.0.1" not in item["api"] and "localhost" not in item["api"] for item in sources)
@@ -168,11 +181,3 @@ jobs:
             CongcongTV-unsigned.ipa
             build.log
           if-no-files-found: error
-
-      - name: Upload IPA and build log
-        uses: actions/upload-artifact@v4
-        with:
-          name: CongcongTV-unsigned-ipa
-          path: |
-            CongcongTV-unsigned.ipa
-            build.log

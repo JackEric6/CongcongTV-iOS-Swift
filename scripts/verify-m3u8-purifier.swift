@@ -2,19 +2,21 @@ import Foundation
 
 final class NetworkManager {
     static let shared = NetworkManager()
+    private(set) var requestCount = 0
 
     func getString(
         from url: String,
         headers: [String: String]? = nil,
         maxRetries: Int = 3
     ) async throws -> String {
+        requestCount += 1
         throw CocoaError(.fileReadUnknown)
     }
 }
 
 @main
 struct VerifyM3U8Purifier {
-    static func main() {
+    static func main() async {
         let manifest = """
         #EXTM3U
         #EXT-X-VERSION:3
@@ -112,6 +114,42 @@ struct VerifyM3U8Purifier {
         })
 
         precondition(M3U8PurifierSettings.defaultEnabled)
+
+        var frameRateLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:5", "#EXT-X-DISCONTINUITY"]
+        for index in 1...20 {
+            frameRateLines.append("#EXTINF:4.040,")
+            frameRateLines.append("https://cdn.example/video/main-\(index).ts")
+        }
+        frameRateLines.append("#EXT-X-DISCONTINUITY")
+        for index in 1...3 {
+            frameRateLines.append("#EXTINF:4.042,")
+            frameRateLines.append("https://cdn.example/video/block-\(index).ts")
+        }
+        frameRateLines.append("#EXT-X-DISCONTINUITY")
+        for index in 21...30 {
+            frameRateLines.append("#EXTINF:4.040,")
+            frameRateLines.append("https://cdn.example/video/main-\(index).ts")
+        }
+        frameRateLines.append("#EXT-X-ENDLIST")
+        let frameRateResult = M3U8ManifestPurifier.purify(
+            baseURL: URL(string: "https://cdn.example/video/index.m3u8")!,
+            content: frameRateLines.joined(separator: "\n")
+        )
+        precondition(frameRateResult.removedSegmentCount == 3)
+        precondition(!frameRateResult.content.contains("block-1.ts"))
+        precondition((1...30).allSatisfy {
+            frameRateResult.content.contains("main-\($0).ts")
+        })
+
+        let originalGuaziURL = "https://guazi.example/video/index.m3u8?token=original"
+        let guaziResult = await M3U8Purifier.shared.prepare(
+            urlString: originalGuaziURL,
+            headers: ["User-Agent": "Guazi"],
+            sourceKey: "GuAzI"
+        )
+        precondition(guaziResult.url == originalGuaziURL)
+        precondition(!guaziResult.didPurify && guaziResult.removedSegmentCount == 0)
+        precondition(NetworkManager.shared.requestCount == 0)
         print("M3U8 PURIFIER AND PLAYBACK SAFETY CHECKS PASSED")
     }
 }

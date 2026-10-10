@@ -151,62 +151,68 @@ struct SearchView: View {
     
     /// 搜索结果网格。
     private var searchResults: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 12) {
-                ForEach(viewModel.filteredResults) { video in
-                    NavigationLink(destination: DetailView(video: video)) {
-                        VodCardView(video: video, sourceLabel: sourceName(for: video.sourceKey))
+        HStack(spacing: 0) {
+            sourceFilter
+                .frame(width: 78)
+
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(viewModel.filteredResults) { video in
+                        NavigationLink(destination: DetailView(video: video)) {
+                            VodCardView(video: video, sourceLabel: sourceName(for: video.sourceKey))
+                        }
+                        #if os(iOS)
+                        .buttonStyle(VodCardPressStyle())
+                        #else
+                        .buttonStyle(.plain)
+                        #endif
                     }
-                    #if os(iOS)
-                    .buttonStyle(VodCardPressStyle())
-                    #else
-                    .buttonStyle(.plain)
-                    #endif
                 }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, viewModel.availableSourceKeys.isEmpty ? 12 : 52)
-            .padding(.bottom, 12)
-            .overlay(alignment: .top) {
-                if !viewModel.availableSourceKeys.isEmpty {
-                    sourceFilter
-                }
+                .padding(.horizontal, 12)
+                .padding(.top, 12)
+                .padding(.bottom, 12)
             }
         }
     }
 
-    /// 搜索结果来源筛选，仅过滤已返回的结果，不会再次请求网络。
+    /// 固定顺序的来源筛选栏，仅过滤已返回结果。
     private var sourceFilter: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                sourceChip(title: "全部", key: "")
-                ForEach(viewModel.availableSourceKeys, id: \.self) { key in
-                    sourceChip(title: sourceName(for: key), key: key)
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 5) {
+                sourceGroupButton(title: "全部", group: nil)
+                ForEach(SearchSourceGroup.allCases) { group in
+                    sourceGroupButton(title: group.title, group: group)
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 8)
         }
-        .frame(maxWidth: .infinity)
-        .background(Color(red: 0.08, green: 0.08, blue: 0.1).opacity(0.96))
+        .frame(maxHeight: .infinity)
+        .background(Color.white.opacity(0.035))
     }
 
-    private func sourceChip(title: String, key: String) -> some View {
+    private func sourceGroupButton(title: String, group: SearchSourceGroup?) -> some View {
+        let selected = viewModel.selectedSourceGroup == group
+        let available = group.map { viewModel.availableSourceGroups.contains($0) } ?? true
         Button {
-            viewModel.selectedSourceKey = key
+            viewModel.selectedSourceGroup = group
         } label: {
             Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundColor(viewModel.selectedSourceKey == key ? .white : .secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(viewModel.selectedSourceKey == key ? Color.orange : Color.white.opacity(0.08))
-                .clipShape(Capsule())
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .foregroundColor(selected ? .white : (available ? .secondary : .secondary.opacity(0.45)))
+                .background(selected ? Color.orange : Color.clear)
+                .cornerRadius(4)
         }
         .buttonStyle(.plain)
+        .disabled(!available)
     }
 
     private func sourceName(for key: String) -> String {
-        if let name = apiConfig.sourceBeanList.first(where: { $0.key == key })?.name,
+        if let name = apiConfig.sourceBeanList.first(where: {
+            $0.key.caseInsensitiveCompare(key) == .orderedSame
+        })?.name,
            !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return name
         }
