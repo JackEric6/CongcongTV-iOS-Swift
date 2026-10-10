@@ -117,17 +117,17 @@ struct VerifyM3U8Purifier {
 
         var frameRateLines = ["#EXTM3U", "#EXT-X-TARGETDURATION:5", "#EXT-X-DISCONTINUITY"]
         for index in 1...20 {
-            frameRateLines.append("#EXTINF:4.040,")
+            frameRateLines.append("#EXTINF:4.080,")
             frameRateLines.append("https://cdn.example/video/main-\(index).ts")
         }
         frameRateLines.append("#EXT-X-DISCONTINUITY")
         for index in 1...3 {
-            frameRateLines.append("#EXTINF:4.042,")
+            frameRateLines.append("#EXTINF:4.125,")
             frameRateLines.append("https://cdn.example/video/block-\(index).ts")
         }
         frameRateLines.append("#EXT-X-DISCONTINUITY")
         for index in 21...30 {
-            frameRateLines.append("#EXTINF:4.040,")
+            frameRateLines.append("#EXTINF:4.080,")
             frameRateLines.append("https://cdn.example/video/main-\(index).ts")
         }
         frameRateLines.append("#EXT-X-ENDLIST")
@@ -143,6 +143,17 @@ struct VerifyM3U8Purifier {
         precondition((1...30).allSatisfy {
             frameRateResult.content.contains("main-\($0).ts")
         })
+
+        let ambiguousFrameRateLines = frameRateLines.map { line in
+            line.replacingOccurrences(of: "4.080", with: "4.040")
+                .replacingOccurrences(of: "4.125", with: "4.042")
+        }
+        let ambiguousFrameRateResult = M3U8ManifestPurifier.purify(
+            baseURL: URL(string: "https://cdn.example/video/index.m3u8")!,
+            content: ambiguousFrameRateLines.joined(separator: "\n")
+        )
+        precondition(ambiguousFrameRateResult.removedSegmentCount == 0)
+        precondition(ambiguousFrameRateResult.content.contains("block-1.ts"))
 
         let originalGuaziURL = "https://guazi.example/video/index.m3u8?token=original"
         let guaziResult = await M3U8Purifier.shared.prepare(
