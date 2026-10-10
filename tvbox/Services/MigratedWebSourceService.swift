@@ -22,15 +22,10 @@ enum MigratedWebSourceService {
         for anchor in titleAnchors {
             guard let path = attribute("href", in: anchor.attributes),
                   let id = ikanbotID(path), seen.insert(id).inserted else { continue }
-            let imagePattern = #"(?is)<img\b[^>]*\bid=["']\#(NSRegularExpression.escapedPattern(for: id))["'][^>]*>"#
-            let image = capture(imagePattern, in: html, group: 0) ?? ""
             let title = text(anchor.body)
             guard !title.isEmpty else { continue }
             var video = Movie.Video(id: id, name: title)
-            video.pic = absoluteURL(
-                attribute("data-src", in: image) ?? attribute("src", in: image) ?? "",
-                relativeTo: url
-            )
+            video.pic = PosterCache.cachedPoster(for: title, sourceKey: source.key) ?? ""
             video.year = firstMatch(#"(?:19|20)\d{2}"#, in: title) ?? ""
             video.sourceKey = source.key
             videos.append(video)
@@ -53,14 +48,13 @@ enum MigratedWebSourceService {
             attribute("content", in: capture(#"(?is)<meta\b[^>]*property=["']og:title["'][^>]*>"#, in: html, group: 0) ?? ""),
             "爱看影片 \(id)"
         )
-        let cover = capture(#"(?is)<img\b[^>]*class=["'][^"']*\bcover\b[^"']*["'][^>]*>"#, in: html, group: 0) ?? ""
         let descriptionTag = capture(#"(?is)<meta\b[^>]*name=["']description["'][^>]*>"#, in: html, group: 0) ?? ""
         let metadata = captures(#"(?is)<[^>]+class=["'][^"']*\bmeta\b[^"']*["'][^>]*>(.*?)</[^>]+>"#, in: html)
             .map(text)
             .filter { !$0.isEmpty }
 
         var video = Movie.Video(id: id, name: title)
-        video.pic = absoluteURL(attribute("data-src", in: cover) ?? attribute("src", in: cover) ?? "", relativeTo: detailURL)
+        video.pic = PosterCache.cachedPoster(for: title, sourceKey: source.key) ?? ""
         video.note = "爱看线路"
         if metadata.count > 2 { video.year = firstMatch(#"(?:19|20)\d{2}"#, in: metadata[2]) ?? "" }
         if metadata.count > 3 { video.area = metadata[3] }
@@ -122,10 +116,9 @@ enum MigratedWebSourceService {
             attribute("content", in: capture(#"(?is)<meta\b[^>]*property=["']og:title["'][^>]*>"#, in: html, group: 0) ?? ""),
             pageTitle
         )
-        let imageTag = capture(#"(?is)<meta\b[^>]*property=["']og:image["'][^>]*>"#, in: html, group: 0) ?? ""
         let descriptionTag = capture(#"(?is)<meta\b[^>]*name=["']description["'][^>]*>"#, in: html, group: 0) ?? ""
         var video = Movie.Video(id: vodID, name: title.replacingOccurrences(of: #"\s*[-|｜]\s*(赞片网|ZanPian).*$"#, with: "", options: .regularExpression))
-        video.pic = absoluteURL(attribute("content", in: imageTag) ?? "", relativeTo: detailURL)
+        video.pic = PosterCache.cachedPoster(for: video.name, sourceKey: source.key) ?? ""
         video.des = attribute("content", in: descriptionTag) ?? ""
         video.year = firstMatch(#"(?:19|20)\d{2}"#, in: title) ?? ""
         video.sourceKey = source.key
@@ -224,13 +217,7 @@ enum MigratedWebSourceService {
             )
             guard !title.isEmpty else { continue }
             var video = Movie.Video(id: path, name: title)
-            video.pic = absoluteURL(
-                attribute("data-original", in: imageTag)
-                    ?? attribute("data-lazyload-src", in: imageTag)
-                    ?? attribute("data-src", in: imageTag)
-                    ?? attribute("src", in: imageTag) ?? "",
-                relativeTo: baseURL
-            )
+            video.pic = PosterCache.cachedPoster(for: title, sourceKey: sourceKey) ?? ""
             video.note = samePath.map { text($0.body) }.first { $0.contains("集") } ?? ""
             video.year = firstMatch(#"(?:19|20)\d{2}"#, in: title) ?? ""
             video.sourceKey = sourceKey
@@ -241,10 +228,12 @@ enum MigratedWebSourceService {
     }
 
     private static func isZanpianDetail(_ path: String) -> Bool {
-        path.range(
-            of: #"^/[a-z0-9_-]+/[a-z0-9_-]+/$"#,
-            options: [.regularExpression, .caseInsensitive]
-        ) != nil
+        let components = path.split(separator: "/")
+        return components.count == 2 && components.allSatisfy { component in
+            !component.isEmpty && component.allSatisfy {
+                $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_"
+            }
+        }
     }
 
     private static func isZanpianEpisode(_ path: String, under detailPath: String) -> Bool {
@@ -316,8 +305,16 @@ enum MigratedWebSourceService {
     }
 
     private static func attribute(_ name: String, in value: String) -> String? {
-        let pattern = #"(?is)\b\#(name)\s*=\s*(["'])(.*?)\1"#
-        return capture(pattern, in: value, group: 2).map(decodeEntities)
+        let patterns = [
+            #"(?is)\b\#(name)\s*=\s*"([^"]*)""#,
+            #"(?is)\b\#(name)\s*=\s*'([^']*)'"#
+        ]
+        for pattern in patterns {
+            if let result = capture(pattern, in: value) {
+                return decodeEntities(result)
+            }
+        }
+        return nil
     }
 
     private static func text(_ html: String) -> String {

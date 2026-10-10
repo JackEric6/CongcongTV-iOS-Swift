@@ -1,5 +1,11 @@
 import Foundation
 
+extension URL {
+    static func posterURL(from raw: String) -> URL? {
+        URL(string: raw)
+    }
+}
+
 struct SourceBean {
     let api: String
     let key: String
@@ -98,7 +104,7 @@ struct VerifyMigratedWebSources {
         precondition(cards.count == 1)
         precondition(cards[0].id == "/China/chenmoderongyao/")
         precondition(cards[0].name == "沉默的荣耀")
-        precondition(cards[0].pic == "https://img.example/poster.jpg")
+        precondition(cards[0].pic.isEmpty)
 
         let suggestions = SearchSuggestionService.parse("""
         {"code":"A00000","data":[{"name":"沉默的荣耀"},{"title":"荣耀之后"},{"name":"沉默的荣耀"}]}

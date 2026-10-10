@@ -51,10 +51,20 @@ jobs:
         run: |
           swiftc -parse-as-library \
             tvbox/Services/MigratedWebSourceService.swift \
+            tvbox/Services/PosterCache.swift \
             tvbox/Services/SearchSuggestionService.swift \
             scripts/verify-migrated-web-sources.swift \
             -o /tmp/verify-migrated-web-sources
           /tmp/verify-migrated-web-sources
+
+      - name: Verify cross-source poster reuse
+        run: |
+          swiftc -parse-as-library \
+            tvbox/Models/Movie.swift \
+            tvbox/Services/PosterCache.swift \
+            scripts/verify-poster-reuse.swift \
+            -o /tmp/verify-poster-reuse
+          /tmp/verify-poster-reuse
 
       - name: Verify Guazi RSA key import and encryption
         run: |

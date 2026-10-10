@@ -187,7 +187,9 @@ actor PosterCache {
                 && !Self.isLikelyBroken(cached ?? "")
                 && (ownPoster == nil || Self.isLikelyBroken(video.pic, sourceKey: video.sourceKey))
             let poster = canUseCached ? cached : (ownPoster ?? cached)
-            guard let poster, Self.normalizedURL(poster) != nil else { return nil }
+            guard let poster, Self.normalizedURL(poster) != nil else {
+                return Self.canReusePosterFromAnotherSource(video.sourceKey) ? enriched : nil
+            }
             // 没有可复用的正常海报时，隐藏已知会卡住的暴风图片。
             let selectedPosterIsBroken = canUseCached
                 ? Self.isLikelyBroken(poster)
@@ -196,5 +198,9 @@ actor PosterCache {
             enriched.pic = poster
             return enriched
         }
+    }
+
+    private nonisolated static func canReusePosterFromAnotherSource(_ sourceKey: String) -> Bool {
+        ["ikanbot", "zanpian"].contains(sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 }
