@@ -102,7 +102,7 @@ struct VerifyMigratedWebSources {
             baseURL: URL(string: "https://www.zanpian.org/")!
         )
         precondition(cards.count == 1)
-        precondition(cards[0].id == "/China/chenmoderongyao/")
+        precondition(cards[0].id == "/China/chenmoderongyao")
         precondition(cards[0].name == "沉默的荣耀")
         precondition(cards[0].pic.isEmpty)
 

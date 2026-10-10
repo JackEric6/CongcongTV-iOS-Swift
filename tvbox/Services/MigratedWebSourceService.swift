@@ -194,8 +194,6 @@ enum MigratedWebSourceService {
 
     static func parseZanpianCards(_ html: String, sourceKey: String, baseURL: URL) -> [Movie.Video] {
         let anchors = anchorMatches(in: html)
-        let diagnosticHrefs = anchors.compactMap { attribute("href", in: $0.attributes) }
-        FileHandle.standardError.write(Data("ZANPIAN_DIAGNOSTIC anchors=\(anchors.count) hrefs=\(diagnosticHrefs)\n".utf8))
         var seenPaths = Set<String>()
         let detailPaths = anchors.compactMap { anchor -> String? in
             guard let href = attribute("href", in: anchor.attributes),
@@ -203,7 +201,6 @@ enum MigratedWebSourceService {
                   isZanpianDetail(url.path), seenPaths.insert(url.path).inserted else { return nil }
             return url.path
         }
-        FileHandle.standardError.write(Data("ZANPIAN_DIAGNOSTIC paths=\(detailPaths)\n".utf8))
         var videos: [Movie.Video] = []
         for path in detailPaths {
             let samePath = anchors.filter {
