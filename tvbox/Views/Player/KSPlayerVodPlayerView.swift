@@ -37,6 +37,7 @@ struct KSPlayerVodPlayerView: View {
     var outroLabel: String = "片尾"
     var danmakuTitle: String = ""
     var danmakuEpisode: String = ""
+    var danmakuEnabled: Bool = true
     /// Forwards native toolbar actions to the host without replacing KSPlayer's handling.
     var onPlayerAction: ((PlayerButtonType) -> Void)? = nil
 
@@ -66,7 +67,8 @@ struct KSPlayerVodPlayerView: View {
                 introLabel: introLabel,
                 outroLabel: outroLabel,
                 danmakuTitle: danmakuTitle,
-                danmakuEpisode: danmakuEpisode
+                danmakuEpisode: danmakuEpisode,
+                danmakuEnabled: danmakuEnabled
             )
             .background(Color.clear)
         } else {
@@ -1279,6 +1281,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
     let outroLabel: String
     let danmakuTitle: String
     let danmakuEpisode: String
+    let danmakuEnabled: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -1300,7 +1303,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             introLabel: introLabel,
             outroLabel: outroLabel,
             danmakuTitle: danmakuTitle,
-            danmakuEpisode: danmakuEpisode
+            danmakuEpisode: danmakuEpisode,
+            danmakuEnabled: danmakuEnabled
         )
     }
 
@@ -1368,6 +1372,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
         coordinator.onResetOutro = onResetOutro
         coordinator.updateMarkerLabels(intro: introLabel, outro: outroLabel)
         coordinator.updateDanmakuMetadata(title: danmakuTitle, episode: danmakuEpisode)
+        coordinator.updateDanmakuEnabled(danmakuEnabled)
         coordinator.installActionButtons(
             on: view,
             canPlayPrevious: canPlayPrevious,
@@ -1518,6 +1523,9 @@ private struct KSPlayerUIView: UIViewRepresentable {
         var onResetOutro: (() -> Void)?
         private var danmakuTitle: String
         private var danmakuEpisode: String
+        private var danmakuEnabled: Bool
+        private var loadedDanmakuKey: String?
+        private var loadingDanmakuKey: String?
         private weak var danmakuView: DanmakuOverlayView?
         private var danmakuTask: Task<Void, Never>?
         private var lastPlayerTime: TimeInterval = 0
@@ -1569,7 +1577,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
             introLabel: String,
             outroLabel: String,
             danmakuTitle: String,
-            danmakuEpisode: String
+            danmakuEpisode: String,
+            danmakuEnabled: Bool
         ) {
             self.onProgressChanged = onProgressChanged
             self.onPlaybackEnded = onPlaybackEnded
@@ -1587,6 +1596,7 @@ private struct KSPlayerUIView: UIViewRepresentable {
             self.outroLabel = outroLabel
             self.danmakuTitle = danmakuTitle
             self.danmakuEpisode = danmakuEpisode
+            self.danmakuEnabled = danmakuEnabled
         }
 
         func configure(_ view: IOSVideoPlayerView) {
@@ -1603,18 +1613,34 @@ private struct KSPlayerUIView: UIViewRepresentable {
             danmakuTitle = normalizedTitle
             danmakuEpisode = normalizedEpisode
             playerView?.titleLabel.text = normalizedTitle
+            loadedDanmakuKey = nil
+            loadingDanmakuKey = nil
+            danmakuTask?.cancel()
+            danmakuTask = nil
+            danmakuView?.clear()
             guard let danmakuView else { return }
             loadDanmaku(into: danmakuView)
         }
 
+        func updateDanmakuEnabled(_ enabled: Bool) {
+            guard danmakuEnabled != enabled else { return }
+            danmakuEnabled = enabled
+            danmakuView?.isHidden = !enabled
+            guard enabled, let danmakuView else { return }
+            loadDanmaku(into: danmakuView)
+            danmakuView.update(currentTime: lastPlayerTime, duration: lastPlayerDuration)
+        }
+
         func installDanmaku(on view: IOSVideoPlayerView) {
             if let existing = danmakuView, existing.superview === view.contentOverlayView {
+                existing.isHidden = !danmakuEnabled
                 loadDanmaku(into: existing)
                 return
             }
 
             let overlay = DanmakuOverlayView()
             overlay.translatesAutoresizingMaskIntoConstraints = false
+            overlay.isHidden = !danmakuEnabled
             view.contentOverlayView.addSubview(overlay)
             overlay.layer.zPosition = 100
             NSLayoutConstraint.activate([
@@ -1630,6 +1656,8 @@ private struct KSPlayerUIView: UIViewRepresentable {
         func tearDownDanmaku() {
             danmakuTask?.cancel()
             danmakuTask = nil
+            loadedDanmakuKey = nil
+            loadingDanmakuKey = nil
             danmakuView?.clear()
             danmakuView?.removeFromSuperview()
             danmakuView = nil
@@ -1640,19 +1668,28 @@ private struct KSPlayerUIView: UIViewRepresentable {
         }
 
         private func loadDanmaku(into overlay: DanmakuOverlayView) {
-            danmakuTask?.cancel()
-            overlay.clear()
-
             let title = danmakuTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             let episode = danmakuEpisode.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !title.isEmpty else { return }
+            guard danmakuEnabled, !title.isEmpty else { return }
+            let key = "\(title)\u{1F}\(episode)"
+            guard loadedDanmakuKey != key, loadingDanmakuKey != key else { return }
+
+            danmakuTask?.cancel()
+            loadingDanmakuKey = key
+            overlay.clear()
 
             danmakuTask = Task { [weak self, weak overlay] in
                 let cues = await DanmuService.shared.loadCues(title: title, episode: episode)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard let self, let overlay, self.danmakuView === overlay else { return }
+                    guard self.loadingDanmakuKey == key else { return }
+                    self.loadingDanmakuKey = nil
+                    if !cues.isEmpty {
+                        self.loadedDanmakuKey = key
+                    }
                     overlay.setCues(cues)
+                    overlay.isHidden = !self.danmakuEnabled || cues.isEmpty
                     // A cue request can finish between two KSPlayer time
                     // callbacks. Seed the overlay with the latest known time
                     // so the first comments are rendered immediately.
