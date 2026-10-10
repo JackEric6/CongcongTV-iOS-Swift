@@ -135,8 +135,10 @@ struct VerifyM3U8Purifier {
             baseURL: URL(string: "https://cdn.example/video/index.m3u8")!,
             content: frameRateLines.joined(separator: "\n")
         )
-        print("FRAME RATE DIAGNOSTIC removed=\(frameRateResult.removedSegmentCount) blockPresent=\(frameRateResult.content.contains("block-1.ts"))")
-        precondition(frameRateResult.removedSegmentCount == 3)
+        precondition(
+            frameRateResult.removedSegmentCount == 3,
+            "frame-rate removal count=\(frameRateResult.removedSegmentCount), adBlockPresent=\(frameRateResult.content.contains("block-1.ts"))"
+        )
         precondition(!frameRateResult.content.contains("block-1.ts"))
         precondition((1...30).allSatisfy {
             frameRateResult.content.contains("main-\($0).ts")
